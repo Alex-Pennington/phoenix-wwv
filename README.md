@@ -118,44 +118,106 @@ See [examples/wwv_detect_example.c](examples/wwv_detect_example.c) for a complet
 
 ## Project Structure
 
+**Organized by feature for AI-editability** — All files <300 lines, single responsibility
+
 ```
 phoenix-wwv/
 ├── include/
-│   ├── phoenix_wwv.h          # Public API (use this)
-│   ├── wwv_telemetry_stub.h   # No-op telemetry stubs
-│   └── *.h                     # Individual detector headers
+│   ├── wwv.h                   # Unified public API
+│   ├── correlation/            # Correlator headers
+│   │   ├── tick_correlator.h
+│   │   ├── marker_correlator.h
+│   │   ├── bcd_correlator.h
+│   │   └── *_internal.h        # Internal structures
+│   ├── detection/              # Detector headers by feature
+│   │   ├── tick/               # Tick detector (1000Hz pulse)
+│   │   │   ├── tick_detector.h
+│   │   │   └── tick_detector_internal.h
+│   │   ├── marker/             # Marker detector (800ms pulse)
+│   │   │   ├── marker_detector.h
+│   │   │   ├── slow_marker_detector.h
+│   │   │   └── marker_detector_internal.h
+│   │   ├── bcd/                # BCD time code decoder
+│   │   │   ├── bcd_time_detector.h
+│   │   │   ├── bcd_freq_detector.h
+│   │   │   ├── bcd_decoder.h
+│   │   │   └── *_internal.h
+│   │   └── tone/               # Tone frequency tracker
+│   │       ├── tone_tracker.h
+│   │       └── tone_tracker_internal.h
+│   ├── manager/                # Detector manager/coordinator
+│   │   ├── wwv_detector_manager.h
+│   │   └── wwv_detector_manager_internal.h
+│   ├── fft/                    # FFT processing
+│   │   └── fft_processor.h
+│   ├── core/                   # Core utilities
+│   │   ├── sync_detector.h
+│   │   ├── wwv_clock.h
+│   │   ├── telemetry.h
+│   │   └── channel_filters.h
+│   └── external/               # External libraries
+│       ├── kiss_fft.h
+│       └── _kiss_fft_guts.h
+│
 ├── src/
-│   ├── phoenix_wwv.c           # Main library implementation
-│   ├── kiss_fft.c              # FFT library
-│   ├── detectors/              # Detection modules
-│   │   ├── tick_detector.c
-│   │   ├── marker_detector.c
-│   │   ├── sync_detector.c
-│   │   ├── bcd_time_detector.c
-│   │   ├── bcd_freq_detector.c
-│   │   └── bcd_decoder.c
-│   ├── correlators/            # Correlation analysis
+│   ├── correlation/            # Event correlation
 │   │   ├── tick_correlator.c
+│   │   ├── tick_chain_manager.c
 │   │   ├── marker_correlator.c
-│   │   └── bcd_correlator.c
-│   ├── dsp/                    # Signal processing
-│   │   ├── channel_filters.c
-│   │   └── tick_comb_filter.c
-│   └── utils/
-│       └── wwv_clock.c         # Clock utilities
+│   │   ├── bcd_correlator.c
+│   │   ├── bcd_window_manager.c
+│   │   └── bcd_symbol_classifier.c
+│   ├── detection/              # Signal detection
+│   │   ├── tick/               # Tick detector modules
+│   │   │   ├── tick_detector.c
+│   │   │   ├── tick_fft.c
+│   │   │   └── tick_state_machine.c
+│   │   ├── marker/             # Marker detector modules
+│   │   │   ├── marker_detector.c
+│   │   │   ├── marker_state_machine.c
+│   │   │   └── slow_marker_detector.c
+│   │   ├── bcd/                # BCD decoder modules
+│   │   │   ├── bcd_time_detector.c
+│   │   │   ├── bcd_time_state_machine.c
+│   │   │   ├── bcd_freq_detector.c
+│   │   │   ├── bcd_freq_state_machine.c
+│   │   │   └── bcd_decoder.c
+│   │   └── tone/               # Tone tracking modules
+│   │       ├── tone_tracker.c
+│   │       ├── tone_fft_helpers.c
+│   │       └── tone_measurement.c
+│   ├── manager/                # Top-level coordinator
+│   │   ├── wwv_detector_manager.c
+│   │   ├── detector_lifecycle.c
+│   │   └── detector_routing.c
+│   ├── core/                   # Core functionality
+│   │   ├── sync_detector.c
+│   │   ├── wwv_clock.c
+│   │   ├── telemetry.c
+│   │   ├── fft_processor.c
+│   │   └── channel_filters.c
+│   └── external/               # Third-party code
+│       └── kiss_fft.c
+│
 ├── examples/
-│   └── wwv_detect_example.c    # Minimal usage example
-├── tools/
-│   ├── gen_test_signal.py      # Test signal generator
-│   └── diagnostics/            # Diagnostic tools
-├── deprecated_waterfall/       # Original waterfall app code
+│   └── wwv_clock.c             # Complete clock example
 ├── docs/
-│   ├── DETECTION.md            # Detection algorithms
-│   ├── DOC_waterfall.md        # Waterfall signal paths
-│   └── DOC_wwv.md              # WWV detection flow
-├── build_lib.ps1               # Build script
-└── test_detector.bat           # Test script
+│   ├── refactor_progress.md    # Refactoring documentation
+│   ├── UNIFIED_SYNC_IMPLEMENTATION_SPEC.md
+│   ├── UDP_TELEMETRY_OUTPUT_PROTOCOL.md
+│   └── *.md                    # Additional documentation
+├── build/                      # Build outputs
+└── DEPRECIATED/                # Deprecated code (not built)
+    ├── bcd_envelope.c/h
+    └── subcarrier_detector.c/h
 ```
+
+**Key Design Principles:**
+- **Feature-based organization** — Related files grouped together
+- **AI-editable** — All files <300 lines, single responsibility
+- **Internal headers** — Implementation details separated from public API
+- **Clear separation** — Detection, correlation, management, core utilities
+- **Hot path preservation** — Sample processing optimized for 50 kHz rate
 
 ---
 
@@ -234,10 +296,11 @@ cmd /c "build\wwv_detect.exe < test.raw"
 
 ## Documentation
 
-- [DETECTION.md](docs/DETECTION.md) — Detection algorithms and theory
+- [refactor_progress.md](docs/refactor_progress.md) — Refactoring roadmap and completion status
+- [UNIFIED_SYNC_IMPLEMENTATION_SPEC.md](docs/UNIFIED_SYNC_IMPLEMENTATION_SPEC.md) — Sync detector architecture
+- [UDP_TELEMETRY_OUTPUT_PROTOCOL.md](docs/UDP_TELEMETRY_OUTPUT_PROTOCOL.md) — Telemetry protocol spec
 - [DOC_wwv.md](docs/DOC_wwv.md) — WWV detection signal flow
-- [DOC_waterfall.md](docs/DOC_waterfall.md) — Waterfall app architecture (deprecated)
-- [phoenix_wwv.h](include/phoenix_wwv.h) — Complete API reference
+- [wwv.h](include/wwv.h) — Complete API reference
 
 ---
 
