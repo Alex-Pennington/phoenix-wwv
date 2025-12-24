@@ -508,16 +508,16 @@ After each phase:
 
 | Phase | Status | Date | Commit | Notes |
 |-------|--------|------|--------|-------|
-| 0: Prep | ⬜ | - | - | - |
-| 1: FFT | ⬜ | - | - | - |
-| 2: Tick | ⬜ | - | - | - |
-| 3: Sync | ⬜ | - | - | - |
-| 4: Marker | ⬜ | - | - | - |
+| 0: Prep | ✅ | 2025-12-24 | db3eaa1 | Directories + file marking |
+| 1: FFT | ✅ | 2025-12-24 | 591d6ee | FFT extraction (~270 lines eliminated) |
+| 2: Dir reorg | ✅ | 2025-12-24 | 00fec55, e4c5ec1 | Feature-based directories |
+| 3: Tick | ⬜ | - | - | Deferred (complex split) |
+| 4: Marker | ⬜ | - | - | Deferred (complex split) |
 | 5: BCD | ⬜ | - | - | - |
 | 6: Corr | ⬜ | - | - | - |
 | 7: Tone | ⬜ | - | - | - |
 | 8: Mgr | ⬜ | - | - | - |
-| 9: Telem | ⬜ | - | - | - |
+| 9: Telem | ✅ | 2025-12-24 | d454afb | Renamed waterfall_telemetry → telemetry |
 | 10: Move | ⬜ | - | - | - |
 
 **Legend:** ⬜ Not Started | 🔄 In Progress | ✅ Complete | ❌ Blocked
