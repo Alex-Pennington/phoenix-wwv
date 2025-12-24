@@ -22,7 +22,7 @@
 #include "bcd_correlator.h"
 #include "sync_detector.h"
 #include "version.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

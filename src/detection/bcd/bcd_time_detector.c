@@ -16,7 +16,7 @@
  */
 
 #include "bcd_time_detector.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>

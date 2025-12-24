@@ -9,7 +9,7 @@
 #include "sync_detector.h"
 #include "wwv_clock.h"
 #include "version.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

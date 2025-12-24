@@ -8,7 +8,7 @@
  */
 
 #include "tick_correlator.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include "version.h"
 #include <stdlib.h>
 #include <string.h>

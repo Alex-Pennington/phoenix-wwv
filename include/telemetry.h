@@ -1,9 +1,9 @@
 /**
- * @file waterfall_telemetry.h
- * @brief UDP broadcast telemetry for waterfall statistics
+ * @file telemetry.h
+ * @brief UDP broadcast telemetry for WWV detector statistics
  *
  * Non-blocking UDP broadcast of CSV-format telemetry data.
- * Enables remote monitoring without affecting waterfall performance.
+ * Enables remote monitoring without affecting detector performance.
  *
  * Usage:
  *   telem_init(3005);                    // Initialize on port 3005
@@ -12,8 +12,8 @@
  *   telem_cleanup();                     // Shutdown
  */
 
-#ifndef WATERFALL_TELEMETRY_H
-#define WATERFALL_TELEMETRY_H
+#ifndef TELEMETRY_H
+#define TELEMETRY_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -155,4 +155,4 @@ void telem_console_flush(void);
 }
 #endif
 
-#endif /* WATERFALL_TELEMETRY_H */
+#endif /* TELEMETRY_H */

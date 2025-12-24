@@ -19,7 +19,7 @@
 #include "tick_detector.h"
 #include "wwv_clock.h"
 #include "tick_comb_filter.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>

@@ -1,12 +1,12 @@
 /**
- * @file waterfall_telemetry.c
+ * @file telemetry.c
  * @brief UDP broadcast telemetry implementation
  *
  * Non-blocking UDP broadcast for remote monitoring.
  * Uses broadcast address for zero-configuration discovery.
  */
 
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>

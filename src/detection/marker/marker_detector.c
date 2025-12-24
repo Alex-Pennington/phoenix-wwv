@@ -23,7 +23,7 @@
 #include "wwv_clock.h"
 #include "fft_processor.h"
 #include "version.h"
-#include "waterfall_telemetry.h"
+#include "telemetry.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
