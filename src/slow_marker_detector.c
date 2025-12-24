@@ -1,6 +1,9 @@
 /**
  * @file slow_marker_detector.c
  * @brief Slow-path marker detector implementation
+ *
+ * @note UNKNOWN USE - This module's integration status unclear. May be orphaned
+ *       after waterfall removal. Needs investigation before refactoring.
  */
 
 #include "slow_marker_detector.h"

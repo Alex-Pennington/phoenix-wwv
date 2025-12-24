@@ -2,6 +2,9 @@
  * @file slow_marker_detector.h
  * @brief Slow-path marker detector using 12 kHz display stream
  *
+ * @note UNKNOWN USE - This module's integration status unclear. May be orphaned
+ *       after waterfall removal. Needs investigation before refactoring.
+ *
  * High-resolution frequency analysis with ~10 frame integration.
  * Provides noise floor estimate to fast path.
  */

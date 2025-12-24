@@ -1,6 +1,10 @@
 /**
  * @file subcarrier_detector.c
  * @brief WWV 100 Hz BCD subcarrier detector implementation
+ *
+ * @deprecated This module is DEPRECATED. Use bcd_time_detector + bcd_freq_detector
+ *             + bcd_correlator for robust dual-path BCD symbol detection.
+ *             See BCD_Robust_Symbol_Demodulator_Roadmad.md for details.
  */
 
 #include "subcarrier_detector.h"

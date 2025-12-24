@@ -1,0 +1,35 @@
+TASK: Analyze and reorganize this codebase for better separation of concerns and AI-editability.
+
+BEFORE MAKING ANY CHANGES, perform these steps:
+
+1. **INVENTORY**: List all files, their line counts, and primary responsibilities
+2. **IDENTIFY ISSUES**:
+   - Files over 300 lines
+   - Functions/classes with multiple responsibilities
+   - Tightly coupled components
+   - Circular dependencies
+   - Dead code or orphaned functions from prior refactoring
+
+3. **PROPOSE STRUCTURE**: Create a reorganization plan following these rules:
+   - Target 150-300 lines per file maximum
+   - One primary concern per file
+   - Group by feature/domain, not by type
+   - Each module should have a clear public interface
+   - Minimize cross-file dependencies
+   - Name files to clearly indicate their single purpose
+
+4. **PRESENT PLAN**: Show me:
+   - Proposed directory structure
+   - Which code moves where
+   - New files to create
+   - Files to split and how
+   - Interfaces/contracts between modules
+
+5. **WAIT FOR APPROVAL** before making any file changes
+
+CONSTRAINTS:
+- Preserve all existing functionality
+- Maintain git-trackable atomic changes
+- Create clear module boundaries with explicit imports/exports
+- Each file should be understandable in isolation with minimal context
+- Prioritize loose coupling over DRY if they conflict

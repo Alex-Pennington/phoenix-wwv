@@ -2,6 +2,10 @@
  * @file subcarrier_detector.h
  * @brief WWV 100 Hz BCD subcarrier detector
  *
+ * @deprecated This module is DEPRECATED. Use bcd_time_detector + bcd_freq_detector
+ *             + bcd_correlator for robust dual-path BCD symbol detection.
+ *             See BCD_Robust_Symbol_Demodulator_Roadmad.md for details.
+ *
  * Detects presence of the continuous 100 Hz subcarrier used for BCD time code.
  * Uses Goertzel algorithm for efficient single-frequency detection with
  * explicit DC rejection.
