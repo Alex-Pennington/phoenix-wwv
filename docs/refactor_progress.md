@@ -156,7 +156,7 @@ src/
 **Verified:** [x] All 5 detectors compile successfully with fft_processor
 
 **Completed:** 2025-12-24
-**Commit:** (pending)
+**Commit:** 591d6ee "Phase 1: Extract common FFT logic to core/fft_processor"
 
 ---
 
