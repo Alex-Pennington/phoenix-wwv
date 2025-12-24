@@ -17,7 +17,7 @@
 
 #include "bcd_freq_detector.h"
 #include "waterfall_telemetry.h"
-#include "kiss_fft.h"
+#include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>
 #include <string.h>
@@ -59,10 +59,7 @@ typedef enum {
 
 struct bcd_freq_detector {
     /* FFT resources */
-    kiss_fft_cfg fft_cfg;
-    kiss_fft_cpx *fft_in;
-    kiss_fft_cpx *fft_out;
-    float *window_func;
+    fft_processor_t *fft;
 
     /* Sample buffer for FFT */
     float *i_buffer;
@@ -121,30 +118,7 @@ struct bcd_freq_detector {
  * 100 Hz is in bin ~4 (100/24.4 ≈ 4.1)
  */
 static float calculate_bucket_energy(bcd_freq_detector_t *fd) {
-    int center_bin = (int)(BCD_FREQ_TARGET_FREQ_HZ / HZ_PER_BIN + 0.5f);
-    int bin_span = (int)(BCD_FREQ_BANDWIDTH_HZ / HZ_PER_BIN + 0.5f);
-    if (bin_span < 1) bin_span = 1;
-
-    float pos_energy = 0.0f;
-    float neg_energy = 0.0f;
-
-    for (int b = -bin_span; b <= bin_span; b++) {
-        int pos_bin = center_bin + b;
-        int neg_bin = BCD_FREQ_FFT_SIZE - center_bin + b;
-
-        if (pos_bin >= 0 && pos_bin < BCD_FREQ_FFT_SIZE) {
-            float re = fd->fft_out[pos_bin].r;
-            float im = fd->fft_out[pos_bin].i;
-            pos_energy += sqrtf(re * re + im * im) / BCD_FREQ_FFT_SIZE;
-        }
-        if (neg_bin >= 0 && neg_bin < BCD_FREQ_FFT_SIZE) {
-            float re = fd->fft_out[neg_bin].r;
-            float im = fd->fft_out[neg_bin].i;
-            neg_energy += sqrtf(re * re + im * im) / BCD_FREQ_FFT_SIZE;
-        }
-    }
-
-    return pos_energy + neg_energy;
+    return fft_processor_get_bucket_energy(fd->fft, BCD_FREQ_TARGET_FREQ_HZ, BCD_FREQ_BANDWIDTH_HZ);
 }
 
 /**
@@ -311,28 +285,19 @@ bcd_freq_detector_t *bcd_freq_detector_create(const char *csv_path) {
     bcd_freq_detector_t *fd = (bcd_freq_detector_t *)calloc(1, sizeof(bcd_freq_detector_t));
     if (!fd) return NULL;
 
-    fd->fft_cfg = kiss_fft_alloc(BCD_FREQ_FFT_SIZE, 0, NULL, NULL);
-    if (!fd->fft_cfg) {
+    fd->fft = fft_processor_create(BCD_FREQ_FFT_SIZE, BCD_FREQ_SAMPLE_RATE);
+    if (!fd->fft) {
         free(fd);
         return NULL;
     }
 
-    fd->fft_in = (kiss_fft_cpx *)malloc(BCD_FREQ_FFT_SIZE * sizeof(kiss_fft_cpx));
-    fd->fft_out = (kiss_fft_cpx *)malloc(BCD_FREQ_FFT_SIZE * sizeof(kiss_fft_cpx));
-    fd->window_func = (float *)malloc(BCD_FREQ_FFT_SIZE * sizeof(float));
     fd->i_buffer = (float *)malloc(BCD_FREQ_FFT_SIZE * sizeof(float));
     fd->q_buffer = (float *)malloc(BCD_FREQ_FFT_SIZE * sizeof(float));
     fd->energy_history = (float *)malloc(WINDOW_FRAMES * sizeof(float));
 
-    if (!fd->fft_in || !fd->fft_out || !fd->window_func ||
-        !fd->i_buffer || !fd->q_buffer || !fd->energy_history) {
+    if (!fd->i_buffer || !fd->q_buffer || !fd->energy_history) {
         bcd_freq_detector_destroy(fd);
         return NULL;
-    }
-
-    /* Hann window */
-    for (int i = 0; i < BCD_FREQ_FFT_SIZE; i++) {
-        fd->window_func[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (BCD_FREQ_FFT_SIZE - 1)));
     }
 
     memset(fd->i_buffer, 0, BCD_FREQ_FFT_SIZE * sizeof(float));
@@ -380,10 +345,7 @@ void bcd_freq_detector_destroy(bcd_freq_detector_t *fd) {
     if (!fd) return;
 
     if (fd->csv_file) fclose(fd->csv_file);
-    if (fd->fft_cfg) kiss_fft_free(fd->fft_cfg);
-    free(fd->fft_in);
-    free(fd->fft_out);
-    free(fd->window_func);
+    if (fd->fft) fft_processor_destroy(fd->fft);
     free(fd->i_buffer);
     free(fd->q_buffer);
     free(fd->energy_history);
@@ -416,14 +378,8 @@ bool bcd_freq_detector_process_sample(bcd_freq_detector_t *fd,
     /* Buffer full - run FFT */
     fd->buffer_idx = 0;
 
-    /* Apply window and load FFT input */
-    for (int i = 0; i < BCD_FREQ_FFT_SIZE; i++) {
-        fd->fft_in[i].r = fd->i_buffer[i] * fd->window_func[i];
-        fd->fft_in[i].i = fd->q_buffer[i] * fd->window_func[i];
-    }
-
     /* Run FFT */
-    kiss_fft(fd->fft_cfg, fd->fft_in, fd->fft_out);
+    fft_processor_process(fd->fft, fd->i_buffer, fd->q_buffer);
 
     /* Extract bucket energy */
     fd->current_energy = calculate_bucket_energy(fd);

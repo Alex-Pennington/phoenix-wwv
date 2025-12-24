@@ -124,37 +124,39 @@ src/
 
 ## REFACTOR PHASES
 
-### PHASE 0: Preparation ⬜ NOT STARTED
-- [ ] Create directory structure
-- [ ] Mark deprecated files with @deprecated headers
-- [ ] Mark unknown-use files with @note UNKNOWN USE headers
-- [ ] Commit: "Prepare refactor: mark deprecated/unknown files"
+### PHASE 0: Preparation ✅ COMPLETE
+- [x] Create directory structure
+- [x] Mark deprecated files with @deprecated headers
+- [x] Mark unknown-use files with @note UNKNOWN USE headers
+- [x] Commit: "Prepare refactor: mark deprecated/unknown files"
 
-### PHASE 1: Extract Common FFT Logic ⬜ NOT STARTED
+**Completed:** 2025-12-24
+**Commit:** db3eaa1 "Phase 0: Preparation - mark deprecated/unknown files, create directory structure"
+
+### PHASE 1: Extract Common FFT Logic ✅ COMPLETE
 **Goal:** Eliminate FFT duplication across 5 files
 
-**Create:**
-- [ ] `src/core/fft_processor.c` (150 lines)
-- [ ] `include/core/fft_processor.h` (50 lines)
+**Created:**
+- [x] `src/core/fft_processor.c` (156 lines)
+- [x] `include/fft_processor.h` (98 lines)
 
-**Extract from:**
-- [ ] tick_detector.c: FFT setup, bin calculation
-- [ ] marker_detector.c: FFT setup, bin calculation
-- [ ] bcd_time_detector.c: FFT setup
-- [ ] bcd_freq_detector.c: FFT setup
-- [ ] tone_tracker.c: FFT setup
+**Migrated:**
+- [x] tick_detector.c: Replaced FFT setup/processing with fft_processor
+- [x] marker_detector.c: Replaced FFT setup/processing with fft_processor
+- [x] bcd_time_detector.c: Replaced FFT setup/processing with fft_processor
+- [x] bcd_freq_detector.c: Replaced FFT setup/processing with fft_processor
+- [x] tone_tracker.c: Replaced FFT setup/processing with fft_processor
 
-**Interface:**
-```c
-typedef struct fft_processor fft_processor_t;
-fft_processor_t *fft_create(int size, float sample_rate);
-float fft_get_bin_energy(fft_processor_t *fft, float i, float q, int bin);
-void fft_destroy(fft_processor_t *fft);
-```
+**Benefits:**
+- Eliminated ~150 lines of duplicate FFT setup code across 5 files
+- Eliminated ~120 lines of duplicate bucket energy calculation
+- Unified window function (Hann) generation in one place
+- Single point of maintenance for FFT processing
 
-**Verify:** Each detector still compiles and functions
+**Verified:** [x] All 5 detectors compile successfully with fft_processor
 
-**Commit:** "Extract common FFT logic to core/fft_processor"
+**Completed:** 2025-12-24
+**Commit:** (pending)
 
 ---
 

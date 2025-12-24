@@ -17,7 +17,7 @@
 
 #include "bcd_time_detector.h"
 #include "waterfall_telemetry.h"
-#include "kiss_fft.h"
+#include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>
 #include <string.h>
@@ -60,10 +60,7 @@ typedef enum {
 
 struct bcd_time_detector {
     /* FFT resources */
-    kiss_fft_cfg fft_cfg;
-    kiss_fft_cpx *fft_in;
-    kiss_fft_cpx *fft_out;
-    float *window_func;
+    fft_processor_t *fft;
 
     /* Sample buffer for FFT */
     float *i_buffer;
@@ -118,30 +115,7 @@ struct bcd_time_detector {
  * For 100 Hz, we need bin 0-1 area (coarse resolution)
  */
 static float calculate_bucket_energy(bcd_time_detector_t *td) {
-    int center_bin = (int)(BCD_TIME_TARGET_FREQ_HZ / HZ_PER_BIN + 0.5f);
-    int bin_span = (int)(BCD_TIME_BANDWIDTH_HZ / HZ_PER_BIN + 0.5f);
-    if (bin_span < 1) bin_span = 1;
-
-    float pos_energy = 0.0f;
-    float neg_energy = 0.0f;
-
-    for (int b = -bin_span; b <= bin_span; b++) {
-        int pos_bin = center_bin + b;
-        int neg_bin = BCD_TIME_FFT_SIZE - center_bin + b;
-
-        if (pos_bin >= 0 && pos_bin < BCD_TIME_FFT_SIZE) {
-            float re = td->fft_out[pos_bin].r;
-            float im = td->fft_out[pos_bin].i;
-            pos_energy += sqrtf(re * re + im * im) / BCD_TIME_FFT_SIZE;
-        }
-        if (neg_bin >= 0 && neg_bin < BCD_TIME_FFT_SIZE) {
-            float re = td->fft_out[neg_bin].r;
-            float im = td->fft_out[neg_bin].i;
-            neg_energy += sqrtf(re * re + im * im) / BCD_TIME_FFT_SIZE;
-        }
-    }
-
-    return pos_energy + neg_energy;
+    return fft_processor_get_bucket_energy(td->fft, BCD_TIME_TARGET_FREQ_HZ, BCD_TIME_BANDWIDTH_HZ);
 }
 
 /**
@@ -288,27 +262,18 @@ bcd_time_detector_t *bcd_time_detector_create(const char *csv_path) {
     if (!td) return NULL;
 
     /* Allocate FFT */
-    td->fft_cfg = kiss_fft_alloc(BCD_TIME_FFT_SIZE, 0, NULL, NULL);
-    if (!td->fft_cfg) {
+    td->fft = fft_processor_create(BCD_TIME_FFT_SIZE, BCD_TIME_SAMPLE_RATE);
+    if (!td->fft) {
         free(td);
         return NULL;
     }
 
-    td->fft_in = (kiss_fft_cpx *)malloc(BCD_TIME_FFT_SIZE * sizeof(kiss_fft_cpx));
-    td->fft_out = (kiss_fft_cpx *)malloc(BCD_TIME_FFT_SIZE * sizeof(kiss_fft_cpx));
-    td->window_func = (float *)malloc(BCD_TIME_FFT_SIZE * sizeof(float));
     td->i_buffer = (float *)malloc(BCD_TIME_FFT_SIZE * sizeof(float));
     td->q_buffer = (float *)malloc(BCD_TIME_FFT_SIZE * sizeof(float));
 
-    if (!td->fft_in || !td->fft_out || !td->window_func ||
-        !td->i_buffer || !td->q_buffer) {
+    if (!td->i_buffer || !td->q_buffer) {
         bcd_time_detector_destroy(td);
         return NULL;
-    }
-
-    /* Initialize Hann window */
-    for (int i = 0; i < BCD_TIME_FFT_SIZE; i++) {
-        td->window_func[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (BCD_TIME_FFT_SIZE - 1)));
     }
 
     /* Initialize buffers */
@@ -353,10 +318,7 @@ void bcd_time_detector_destroy(bcd_time_detector_t *td) {
     if (!td) return;
 
     if (td->csv_file) fclose(td->csv_file);
-    if (td->fft_cfg) kiss_fft_free(td->fft_cfg);
-    free(td->fft_in);
-    free(td->fft_out);
-    free(td->window_func);
+    if (td->fft) fft_processor_destroy(td->fft);
     free(td->i_buffer);
     free(td->q_buffer);
     free(td);
@@ -388,14 +350,8 @@ bool bcd_time_detector_process_sample(bcd_time_detector_t *td,
     /* Buffer full - run FFT */
     td->buffer_idx = 0;
 
-    /* Apply window and load FFT input */
-    for (int i = 0; i < BCD_TIME_FFT_SIZE; i++) {
-        td->fft_in[i].r = td->i_buffer[i] * td->window_func[i];
-        td->fft_in[i].i = td->q_buffer[i] * td->window_func[i];
-    }
-
     /* Run FFT */
-    kiss_fft(td->fft_cfg, td->fft_in, td->fft_out);
+    fft_processor_process(td->fft, td->i_buffer, td->q_buffer);
 
     /* Extract bucket energy */
     td->current_energy = calculate_bucket_energy(td);

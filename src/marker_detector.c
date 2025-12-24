@@ -21,7 +21,7 @@
 
 #include "marker_detector.h"
 #include "wwv_clock.h"
-#include "kiss_fft.h"
+#include "fft_processor.h"
 #include "version.h"
 #include "waterfall_telemetry.h"
 #include <stdlib.h>
@@ -68,10 +68,7 @@ typedef enum {
 
 struct marker_detector {
     /* FFT resources */
-    kiss_fft_cfg fft_cfg;
-    kiss_fft_cpx *fft_in;
-    kiss_fft_cpx *fft_out;
-    float *window_func;
+    fft_processor_t *fft;
 
     /* Sample buffer for FFT */
     float *i_buffer;
@@ -130,30 +127,7 @@ struct marker_detector {
  *============================================================================*/
 
 static float calculate_bucket_energy(marker_detector_t *md) {
-    int center_bin = (int)(MARKER_TARGET_FREQ_HZ / HZ_PER_BIN + 0.5f);
-    int bin_span = (int)(MARKER_BANDWIDTH_HZ / HZ_PER_BIN + 0.5f);
-    if (bin_span < 1) bin_span = 1;
-
-    float pos_energy = 0.0f;
-    float neg_energy = 0.0f;
-
-    for (int b = -bin_span; b <= bin_span; b++) {
-        int pos_bin = center_bin + b;
-        int neg_bin = MARKER_FFT_SIZE - center_bin + b;
-
-        if (pos_bin >= 0 && pos_bin < MARKER_FFT_SIZE) {
-            float re = md->fft_out[pos_bin].r;
-            float im = md->fft_out[pos_bin].i;
-            pos_energy += sqrtf(re * re + im * im) / MARKER_FFT_SIZE;
-        }
-        if (neg_bin >= 0 && neg_bin < MARKER_FFT_SIZE) {
-            float re = md->fft_out[neg_bin].r;
-            float im = md->fft_out[neg_bin].i;
-            neg_energy += sqrtf(re * re + im * im) / MARKER_FFT_SIZE;
-        }
-    }
-
-    return pos_energy + neg_energy;
+    return fft_processor_get_bucket_energy(md->fft, MARKER_TARGET_FREQ_HZ, MARKER_BANDWIDTH_HZ);
 }
 
 static void get_wall_time_str(marker_detector_t *md, float timestamp_ms, char *buf, size_t buflen) {
@@ -319,28 +293,19 @@ marker_detector_t *marker_detector_create(const char *csv_path) {
     marker_detector_t *md = (marker_detector_t *)calloc(1, sizeof(marker_detector_t));
     if (!md) return NULL;
 
-    md->fft_cfg = kiss_fft_alloc(MARKER_FFT_SIZE, 0, NULL, NULL);
-    if (!md->fft_cfg) {
+    md->fft = fft_processor_create(MARKER_FFT_SIZE, MARKER_SAMPLE_RATE);
+    if (!md->fft) {
         free(md);
         return NULL;
     }
 
-    md->fft_in = (kiss_fft_cpx *)malloc(MARKER_FFT_SIZE * sizeof(kiss_fft_cpx));
-    md->fft_out = (kiss_fft_cpx *)malloc(MARKER_FFT_SIZE * sizeof(kiss_fft_cpx));
-    md->window_func = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
     md->i_buffer = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
     md->q_buffer = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
     md->energy_history = (float *)malloc(MARKER_WINDOW_FRAMES * sizeof(float));
 
-    if (!md->fft_in || !md->fft_out || !md->window_func ||
-        !md->i_buffer || !md->q_buffer || !md->energy_history) {
+    if (!md->i_buffer || !md->q_buffer || !md->energy_history) {
         marker_detector_destroy(md);
         return NULL;
-    }
-
-    /* Hann window */
-    for (int i = 0; i < MARKER_FFT_SIZE; i++) {
-        md->window_func[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MARKER_FFT_SIZE - 1)));
     }
 
     memset(md->i_buffer, 0, MARKER_FFT_SIZE * sizeof(float));
@@ -417,10 +382,7 @@ void marker_detector_destroy(marker_detector_t *md) {
     if (md->wwv_clock) wwv_clock_destroy(md->wwv_clock);
     if (md->csv_file) fclose(md->csv_file);
     if (md->debug_file) fclose(md->debug_file);
-    if (md->fft_cfg) kiss_fft_free(md->fft_cfg);
-    free(md->fft_in);
-    free(md->fft_out);
-    free(md->window_func);
+    if (md->fft) fft_processor_destroy(md->fft);
     free(md->i_buffer);
     free(md->q_buffer);
     free(md->energy_history);
@@ -446,12 +408,7 @@ bool marker_detector_process_sample(marker_detector_t *md, float i_sample, float
 
     md->buffer_idx = 0;
 
-    for (int i = 0; i < MARKER_FFT_SIZE; i++) {
-        md->fft_in[i].r = md->i_buffer[i] * md->window_func[i];
-        md->fft_in[i].i = md->q_buffer[i] * md->window_func[i];
-    }
-
-    kiss_fft(md->fft_cfg, md->fft_in, md->fft_out);
+    fft_processor_process(md->fft, md->i_buffer, md->q_buffer);
     md->current_energy = calculate_bucket_energy(md);
     run_state_machine(md);
     md->frame_count++;

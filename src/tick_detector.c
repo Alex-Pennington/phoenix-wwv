@@ -20,7 +20,7 @@
 #include "wwv_clock.h"
 #include "tick_comb_filter.h"
 #include "waterfall_telemetry.h"
-#include "kiss_fft.h"
+#include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>
 #include <string.h>
@@ -97,10 +97,7 @@ typedef struct {
 
 struct tick_detector {
     /* FFT resources */
-    kiss_fft_cfg fft_cfg;
-    kiss_fft_cpx *fft_in;
-    kiss_fft_cpx *fft_out;
-    float *window_func;
+    fft_processor_t *fft;
 
     /* Sample buffer for FFT */
     float *i_buffer;
@@ -248,30 +245,7 @@ static float compute_correlation(tick_detector_t *td) {
 }
 
 static float calculate_bucket_energy(tick_detector_t *td) {
-    int center_bin = (int)(TICK_TARGET_FREQ_HZ / HZ_PER_BIN + 0.5f);
-    int bin_span = (int)(TICK_BANDWIDTH_HZ / HZ_PER_BIN + 0.5f);
-    if (bin_span < 1) bin_span = 1;
-
-    float pos_energy = 0.0f;
-    float neg_energy = 0.0f;
-
-    for (int b = -bin_span; b <= bin_span; b++) {
-        int pos_bin = center_bin + b;
-        int neg_bin = TICK_FFT_SIZE - center_bin + b;
-
-        if (pos_bin >= 0 && pos_bin < TICK_FFT_SIZE) {
-            float re = td->fft_out[pos_bin].r;
-            float im = td->fft_out[pos_bin].i;
-            pos_energy += sqrtf(re * re + im * im) / TICK_FFT_SIZE;
-        }
-        if (neg_bin >= 0 && neg_bin < TICK_FFT_SIZE) {
-            float re = td->fft_out[neg_bin].r;
-            float im = td->fft_out[neg_bin].i;
-            neg_energy += sqrtf(re * re + im * im) / TICK_FFT_SIZE;
-        }
-    }
-
-    return pos_energy + neg_energy;
+    return fft_processor_get_bucket_energy(td->fft, TICK_TARGET_FREQ_HZ, TICK_BANDWIDTH_HZ);
 }
 
 static float calculate_avg_interval(tick_detector_t *td, float current_time_ms) {
@@ -564,15 +538,12 @@ tick_detector_t *tick_detector_create(const char *csv_path) {
     if (!td) return NULL;
 
     /* Allocate FFT */
-    td->fft_cfg = kiss_fft_alloc(TICK_FFT_SIZE, 0, NULL, NULL);
-    if (!td->fft_cfg) {
+    td->fft = fft_processor_create(TICK_FFT_SIZE, TICK_SAMPLE_RATE);
+    if (!td->fft) {
         free(td);
         return NULL;
     }
 
-    td->fft_in = (kiss_fft_cpx *)malloc(TICK_FFT_SIZE * sizeof(kiss_fft_cpx));
-    td->fft_out = (kiss_fft_cpx *)malloc(TICK_FFT_SIZE * sizeof(kiss_fft_cpx));
-    td->window_func = (float *)malloc(TICK_FFT_SIZE * sizeof(float));
     td->i_buffer = (float *)malloc(TICK_FFT_SIZE * sizeof(float));
     td->q_buffer = (float *)malloc(TICK_FFT_SIZE * sizeof(float));
 
@@ -582,15 +553,10 @@ tick_detector_t *tick_detector_create(const char *csv_path) {
     td->corr_buf_i = (float *)malloc(TICK_CORR_BUFFER_SIZE * sizeof(float));
     td->corr_buf_q = (float *)malloc(TICK_CORR_BUFFER_SIZE * sizeof(float));
 
-    if (!td->fft_in || !td->fft_out || !td->window_func || !td->i_buffer || !td->q_buffer ||
+    if (!td->i_buffer || !td->q_buffer ||
         !td->template_i || !td->template_q || !td->corr_buf_i || !td->corr_buf_q) {
         tick_detector_destroy(td);
         return NULL;
-    }
-
-    /* Initialize window function (Hann) */
-    for (int i = 0; i < TICK_FFT_SIZE; i++) {
-        td->window_func[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (TICK_FFT_SIZE - 1)));
     }
 
     /* Initialize buffers */
@@ -666,10 +632,7 @@ void tick_detector_destroy(tick_detector_t *td) {
     if (td->wwv_clock) wwv_clock_destroy(td->wwv_clock);
     if (td->comb_filter) comb_destroy(td->comb_filter);
     if (td->csv_file) fclose(td->csv_file);
-    if (td->fft_cfg) kiss_fft_free(td->fft_cfg);
-    free(td->fft_in);
-    free(td->fft_out);
-    free(td->window_func);
+    fft_processor_destroy(td->fft);
     free(td->i_buffer);
     free(td->q_buffer);
     free(td->template_i);
@@ -738,14 +701,8 @@ bool tick_detector_process_sample(tick_detector_t *td, float i_sample, float q_s
     /* Buffer full - run FFT */
     td->buffer_idx = 0;
 
-    /* Apply window and load FFT input */
-    for (int i = 0; i < TICK_FFT_SIZE; i++) {
-        td->fft_in[i].r = td->i_buffer[i] * td->window_func[i];
-        td->fft_in[i].i = td->q_buffer[i] * td->window_func[i];
-    }
-
     /* Run FFT */
-    kiss_fft(td->fft_cfg, td->fft_in, td->fft_out);
+    fft_processor_process(td->fft, td->i_buffer, td->q_buffer);
 
     /* Extract bucket energy */
     td->current_energy = calculate_bucket_energy(td);

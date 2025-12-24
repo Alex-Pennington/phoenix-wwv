@@ -9,7 +9,7 @@
  */
 
 #include "tone_tracker.h"
-#include "kiss_fft.h"
+#include "fft_processor.h"
 #include "version.h"
 #include <stdlib.h>
 #include <string.h>
@@ -43,10 +43,7 @@ struct tone_tracker {
     int samples_collected;
 
     /* FFT */
-    kiss_fft_cfg fft_cfg;
-    kiss_fft_cpx *fft_in;
-    kiss_fft_cpx *fft_out;
-    float *window;
+    fft_processor_t *fft;
     float *magnitudes;
 
     /* Results */
@@ -157,21 +154,20 @@ static float estimate_noise_floor(float *mag, int fft_size, int exclude_bin, int
 
 static void measure_tone(tone_tracker_t *tt) {
     /* Apply window and load FFT input */
+    /* Rearrange circular buffer into linear arrays for FFT */
+    float temp_i[TONE_FFT_SIZE];
+    float temp_q[TONE_FFT_SIZE];
     for (int i = 0; i < TONE_FFT_SIZE; i++) {
         int idx = (tt->buffer_idx + i) % TONE_FFT_SIZE;
-        tt->fft_in[i].r = tt->buffer_i[idx] * tt->window[i];
-        tt->fft_in[i].i = tt->buffer_q[idx] * tt->window[i];
+        temp_i[i] = tt->buffer_i[idx];
+        temp_q[i] = tt->buffer_q[idx];
     }
 
     /* Run FFT */
-    kiss_fft(tt->fft_cfg, tt->fft_in, tt->fft_out);
+    fft_processor_process(tt->fft, temp_i, temp_q);
 
-    /* Calculate magnitudes */
-    for (int i = 0; i < TONE_FFT_SIZE; i++) {
-        float re = tt->fft_out[i].r;
-        float im = tt->fft_out[i].i;
-        tt->magnitudes[i] = sqrtf(re * re + im * im);
-    }
+    /* Get magnitudes */
+    fft_processor_get_magnitudes(tt->fft, tt->magnitudes);
 
     /* Special case for DC/carrier (0 Hz) */
     if (tt->nominal_hz < 1.0f) {
@@ -313,26 +309,19 @@ tone_tracker_t *tone_tracker_create(float nominal_hz, const char *csv_path) {
     /* Allocate buffers */
     tt->buffer_i = (float *)calloc(TONE_FFT_SIZE, sizeof(float));
     tt->buffer_q = (float *)calloc(TONE_FFT_SIZE, sizeof(float));
-    tt->fft_in = (kiss_fft_cpx *)malloc(TONE_FFT_SIZE * sizeof(kiss_fft_cpx));
-    tt->fft_out = (kiss_fft_cpx *)malloc(TONE_FFT_SIZE * sizeof(kiss_fft_cpx));
-    tt->window = (float *)malloc(TONE_FFT_SIZE * sizeof(float));
     tt->magnitudes = (float *)malloc(TONE_FFT_SIZE * sizeof(float));
 
-    if (!tt->buffer_i || !tt->buffer_q || !tt->fft_in ||
-        !tt->fft_out || !tt->window || !tt->magnitudes) {
+    if (!tt->buffer_i || !tt->buffer_q || !tt->magnitudes) {
         tone_tracker_destroy(tt);
         return NULL;
     }
 
     /* Initialize FFT */
-    tt->fft_cfg = kiss_fft_alloc(TONE_FFT_SIZE, 0, NULL, NULL);
-    if (!tt->fft_cfg) {
+    tt->fft = fft_processor_create(TONE_FFT_SIZE, TONE_SAMPLE_RATE);
+    if (!tt->fft) {
         tone_tracker_destroy(tt);
         return NULL;
     }
-
-    /* Generate window */
-    generate_blackman_harris(tt->window, TONE_FFT_SIZE);
 
     /* Open CSV file */
     if (csv_path) {
@@ -362,12 +351,9 @@ void tone_tracker_destroy(tone_tracker_t *tt) {
     if (!tt) return;
 
     if (tt->csv_file) fclose(tt->csv_file);
-    if (tt->fft_cfg) kiss_fft_free(tt->fft_cfg);
+    if (tt->fft) fft_processor_destroy(tt->fft);
     free(tt->buffer_i);
     free(tt->buffer_q);
-    free(tt->fft_in);
-    free(tt->fft_out);
-    free(tt->window);
     free(tt->magnitudes);
     free(tt);
 }
