@@ -161,18 +161,59 @@ src/
 ---
 
 ### PHASE 2: Reorganize File Structure ✅ COMPLETE
-**Goal:** Move files into organized directory structure without splitting
+**Goal:** Move files into organized directory structure
 
-**Relocated:**
-- [x] `tick_detector.c` → `src/detection/tick/tick_detector.c`
+**New Structure:**
+```
+src/
+├── core/                        # Core utilities
+│   ├── fft_processor.c          # FFT processing (Phase 1)
+│   ├── waterfall_telemetry.c   # Telemetry
+│   └── wwv_clock.c              # Timing
+│
+├── signal/                      # Signal conditioning
+│   ├── channel_filters.c        # I/Q filtering
+│   └── tick_comb_filter.c       # Comb filter
+│
+├── detection/                   # Primary detectors
+│   ├── tick/
+│   │   └── tick_detector.c      # Tick pulse detection (768 lines)
+│   ├── marker/
+│   │   ├── marker_detector.c    # Minute marker (534 lines)
+│   │   └── slow_marker_detector.c  # UNKNOWN USE (166 lines)
+│   ├── bcd/
+│   │   ├── bcd_time_detector.c  # Time-domain BCD (409 lines)
+│   │   ├── bcd_freq_detector.c  # Freq-domain BCD (441 lines)
+│   │   ├── bcd_decoder.c        # BCD decoding (181 lines)
+│   │   ├── bcd_envelope.c       # DEPRECATED (479 lines)
+│   │   └── subcarrier_detector.c # DEPRECATED (479 lines)
+│   └── tone/
+│       └── tone_tracker.c       # Tone tracking (421 lines)
+│
+├── correlation/                 # Post-detection analysis
+│   ├── tick_correlator.c        # Tick chains (501 lines)
+│   ├── marker_correlator.c      # Marker correlation (183 lines)
+│   └── bcd_correlator.c         # BCD correlation (533 lines)
+│
+├── sync/                        # Frame synchronization
+│   └── sync_detector.c          # Sync state machine (922 lines)
+│
+├── manager/                     # Orchestration
+│   └── wwv_detector_manager.c   # Manager (387 lines)
+│
+└── kiss_fft.c                   # External lib (402 lines)
+```
+
+**Relocated:** 18 files organized into 7 feature-based directories
 
 **Benefits:**
-- Clearer directory organization by feature domain
+- Clear separation by feature domain (not by type)
+- Easy to navigate and understand project structure
 - Foundation for future file splits
 - Maintains all functionality intact
-- Simple, low-risk reorganization
+- Low-risk reorganization
 
-**Verified:** [x] Compilation successful after relocation
+**Verified:** [x] All 18 modules compile successfully
 
 **Completed:** 2025-12-24
 **Commit:** (pending)
