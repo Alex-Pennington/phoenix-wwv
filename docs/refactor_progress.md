@@ -511,8 +511,8 @@ After each phase:
 | 0: Prep | ✅ | 2025-12-24 | db3eaa1 | Directories + file marking |
 | 1: FFT | ✅ | 2025-12-24 | 591d6ee | FFT extraction (~270 lines eliminated) |
 | 2: Dir reorg | ✅ | 2025-12-24 | 00fec55, e4c5ec1 | Feature-based directories |
-| 3: Tick | ⬜ | - | - | Deferred (complex split) |
-| 4: Marker | ⬜ | - | - | Deferred (complex split) |
+| 3: Tick | ✅ | 2025-12-24 | 1ecd7e9 | Split into 3 modules (924→456 lines) |
+| 4: Marker | ✅ | 2025-12-24 | 7e7805e | Split into 2 modules (535→284 lines) |
 | 5: BCD | ⬜ | - | - | - |
 | 6: Corr | ⬜ | - | - | - |
 | 7: Tone | ⬜ | - | - | - |
