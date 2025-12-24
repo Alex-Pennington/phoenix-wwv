@@ -422,10 +422,98 @@ src/
 
 ---
 
-### PHASE 6: Split Correlators ⬜ NOT STARTED
+### PHASE 6: Split Correlators ✅ COMPLETED
+
+**Status:** ✅ COMPLETED - December 24, 2025
+
+**Original Files:**
+- `src/correlation/bcd_correlator.c` (534 lines)
+- `src/correlation/tick_correlator.c` (501 lines)
+- `src/correlation/marker_correlator.c` (183 lines) - Already optimal, no split needed
+
+**BCD Correlator Split:**
+
+1. ✅ `include/correlation/bcd_correlator_internal.h` (157 lines)
+   - struct bcd_correlator
+   - Window timing constants
+   - Function declarations for window manager and symbol classifier
+
+2. ✅ `src/correlation/bcd_window_manager.c` (209 lines)
+   - bcd_window_get_minute_anchor() - sync timing reference
+   - bcd_window_get_second_for_timestamp() - second calculation (0-59)
+   - bcd_window_open/close() - window lifecycle
+   - bcd_window_check_transition() - hot path window state machine
+   - Energy accumulation and symbol emission
+
+3. ✅ `src/correlation/bcd_symbol_classifier.c` (91 lines)
+   - VALID_P_POSITIONS[] - position marker gating
+   - bcd_symbol_is_valid_p_position() - position validation
+   - bcd_symbol_classify_duration() - symbol classification (0/1/P)
+   - bcd_window_estimate_pulse_duration() - pulse width estimation
+
+4. ✅ `src/correlation/bcd_correlator.c` (297 lines, was 534)
+   - 12 public API functions
+   - create/destroy
+   - set_sync_source, set_callback
+   - time_event / freq_event (hot path entry points)
+   - Accessors and stats
+
+**Tick Correlator Split (Minimal):**
+
+1. ✅ `include/correlation/tick_correlator_internal.h` (127 lines)
+   - struct tick_correlator
+   - Prediction tracking structure
+   - Function declarations
+
+2. ✅ `src/correlation/tick_chain_manager.c` (64 lines)
+   - tick_chain_start_new() - chain initialization
+   - tick_chain_update_stats() - statistics tracking
+
+3. ✅ `src/correlation/tick_correlator.c` (400 lines, was 501)
+   - 12 public API functions
+   - Correlation decision logic (kept intact - tightly coupled)
+   - Prediction/epoch tracking (kept intact - intertwined with correlation)
+   - create/destroy, add_tick, accessors
+
+**Marker Correlator:**
+- ⚠️ No changes - already optimal at 183 lines
+
+**Line Count Results:**
+- bcd_correlator.c: 534 → 297 lines (44% reduction)
+- tick_correlator.c: 501 → 400 lines (20% reduction)
+- marker_correlator.c: 183 lines (unchanged)
+- New BCD files: 457 lines (internal.h + window_manager + symbol_classifier)
+- New tick files: 191 lines (internal.h + chain_manager)
+- Net change: +411 lines, but much clearer separation of concerns
+
+**Hot Path Verification:**
+✅ `bcd_correlator_time_event()` and `bcd_correlator_freq_event()`:
+- Identical logic: check window transition → accumulate energy
+- Only change: `check_window_transition()` → `bcd_window_check_transition()`
+
+✅ `tick_correlator_add_tick()`:
+- Minimal changes: `start_new_chain()` → `tick_chain_start_new()`
+- Core correlation logic preserved intact
+- Prediction/epoch logic untouched
+
+**Design Approach:**
+- **BCD**: Separated window management from symbol classification
+- **Tick**: Minimal split - only extracted clearly separable helpers
+- **Marker**: Left unchanged (already optimal)
+- Different from detector pattern - correlators are event processors, not sample processors
+
+**Verification:**
+- ✅ Compilation successful
+- ✅ Hot paths preserved (only function name changes)
+- ✅ No performance regressions
+
+**Commit:** "Phase 6: Split correlators - event processor pattern"
+
+---
+
+### PHASE 7: Split tone_tracker.c ⬜ NOT STARTED
 
 **Current:**
-- `src/correlation/bcd_correlator.c` (534 lines)
 - `src/bcd_envelope.c` (475 lines) DEPRECATED
 - `src/subcarrier_detector.c` (475 lines) DEPRECATED
 

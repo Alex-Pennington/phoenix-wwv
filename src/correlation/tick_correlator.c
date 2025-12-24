@@ -8,6 +8,7 @@
  */
 
 #include "tick_correlator.h"
+#include "correlation/tick_correlator_internal.h"
 #include "telemetry.h"
 #include "version.h"
 #include <stdlib.h>
@@ -17,116 +18,14 @@
 #include <time.h>
 
 /*============================================================================
- * Configuration
- *============================================================================*/
-
-#define MAX_CHAINS          1000    /* Max chains to track stats for */
-#define MAX_TICKS_STORED    10000   /* Max ticks to keep in memory */
-
-/*============================================================================
  * Internal State
  *============================================================================*/
-
-struct tick_correlator {
-    /* Tick storage */
-    tick_record_t *ticks;
-    int tick_count;
-    int tick_capacity;
-
-    /* Chain tracking */
-    chain_stats_t *chains;
-    int chain_count;
-    int chain_capacity;
-
-    /* Current chain state */
-    int current_chain_id;
-    int current_chain_length;
-    float current_chain_start_ms;
-    float last_tick_ms;
-    float cumulative_drift_ms;
-
-    /* Overall stats */
-    int total_correlated;
-    int total_uncorrelated;
-    float longest_chain_ticks;
-
-    /* Logging */
-    FILE *csv_file;
-    time_t start_time;
-
-    /* Epoch callback */
-    epoch_callback_fn epoch_callback;
-    void *epoch_callback_user_data;
-
-    /* Interval tracking for std_dev calculation */
-    float recent_intervals[5];
-    int recent_interval_idx;
-    int recent_interval_count;
-
-    /* Prediction-based tracking state */
-    struct {
-        bool active;                    /* Tracking loop engaged */
-        int retained_chain_id;          /* Chain to reattach to */
-        float predicted_next_ms;        /* When we expect next tick */
-        float discipline_window_ms;     /* Acceptance window (4σ) */
-        float last_std_dev_ms;          /* For discipline monitoring */
-        int consecutive_misses;         /* Count prediction failures */
-    } tracking;
-
-    /* Tunable parameters (runtime adjustable via UDP commands) */
-    float epoch_confidence_threshold;   /* Min confidence to activate tracking (0.5-0.95, default 0.8) */
-    int max_consecutive_misses;         /* Misses before dropping lock (2-10, default 5) */
-};
+/* struct tick_correlator defined in tick_correlator_internal.h */
 
 /*============================================================================
  * Internal Functions
  *============================================================================*/
-
-static void start_new_chain(tick_correlator_t *tc, float timestamp_ms) {
-    tc->chain_count++;
-    tc->current_chain_id = tc->chain_count;
-    tc->current_chain_length = 0;
-    tc->current_chain_start_ms = timestamp_ms;
-    tc->cumulative_drift_ms = 0.0f;
-
-    /* Reset interval tracking for epoch calculation */
-    tc->recent_interval_idx = 0;
-    tc->recent_interval_count = 0;
-    memset(tc->recent_intervals, 0, sizeof(tc->recent_intervals));
-
-    /* Initialize chain stats */
-    if (tc->chain_count <= tc->chain_capacity) {
-        chain_stats_t *cs = &tc->chains[tc->chain_count - 1];
-        cs->chain_id = tc->current_chain_id;
-        cs->tick_count = 0;
-        cs->inferred_count = 0;
-        cs->start_ms = timestamp_ms;
-        cs->end_ms = timestamp_ms;
-        cs->total_drift_ms = 0.0f;
-        cs->avg_interval_ms = 0.0f;
-        cs->min_interval_ms = 99999.0f;
-        cs->max_interval_ms = 0.0f;
-    }
-}
-
-static void update_chain_stats(tick_correlator_t *tc, float interval_ms, float timestamp_ms) {
-    if (tc->current_chain_id <= 0 || tc->current_chain_id > tc->chain_capacity) return;
-
-    chain_stats_t *cs = &tc->chains[tc->current_chain_id - 1];
-    cs->tick_count = tc->current_chain_length;
-    cs->end_ms = timestamp_ms;
-    cs->total_drift_ms = tc->cumulative_drift_ms;
-
-    /* Update interval stats */
-    if (interval_ms > 0) {
-        if (interval_ms < cs->min_interval_ms) cs->min_interval_ms = interval_ms;
-        if (interval_ms > cs->max_interval_ms) cs->max_interval_ms = interval_ms;
-
-        /* Running average */
-        float n = (float)cs->tick_count;
-        cs->avg_interval_ms = ((n - 1.0f) * cs->avg_interval_ms + interval_ms) / n;
-    }
-}
+/* Helper functions moved to tick_chain_manager.c */
 
 /*============================================================================
  * Public API
@@ -277,7 +176,7 @@ void tick_correlator_add_tick(tick_correlator_t *tc,
 
     if (!correlates && !one_skip) {
         /* Start new chain - neither normal interval nor single skip */
-        start_new_chain(tc, timestamp_ms);
+        tick_chain_start_new(tc, timestamp_ms);
         tc->total_uncorrelated++;
     } else if (one_skip && tc->current_chain_id != 0) {
         /* Single tick dropout - continue chain, split drift across both */
@@ -289,7 +188,7 @@ void tick_correlator_add_tick(tick_correlator_t *tc,
         }
     } else if (tc->current_chain_id == 0) {
         /* First tick or after uncorrelated - start new chain */
-        start_new_chain(tc, timestamp_ms);
+        tick_chain_start_new(tc, timestamp_ms);
         tc->total_uncorrelated++;
     } else {
         /* Normal correlation */
@@ -302,7 +201,7 @@ void tick_correlator_add_tick(tick_correlator_t *tc,
     tc->cumulative_drift_ms += drift_this_tick;
 
     /* Update chain stats */
-    update_chain_stats(tc, actual_interval, timestamp_ms);
+    tick_chain_update_stats(tc, actual_interval, timestamp_ms);
 
     /* Track longest chain */
     if (tc->current_chain_length > tc->longest_chain_ticks) {
