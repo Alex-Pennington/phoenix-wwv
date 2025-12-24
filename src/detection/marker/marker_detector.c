@@ -1,288 +1,37 @@
 /**
  * @file marker_detector.c
- * @brief WWV minute marker detector implementation
+ * @brief WWV minute marker detector - public API and coordination
  *
- * Detects 800ms pulses at 1000Hz using sliding window accumulator.
+ * This module provides the public API for marker detection and coordinates
+ * the detection pipeline. The core detection logic has been extracted to:
+ *   - marker_internal.h: Shared state and configuration
+ *   - marker_state_machine.c: Detection state machine
  *
- * Detection strategy:
- *   1. Extract 1000Hz bucket energy each FFT frame (5.12ms)
- *   2. Accumulate energy over sliding 1-second window (~195 frames)
- *   3. When accumulated energy exceeds 3x baseline, marker detected
- *   4. Require minimum duration (500ms) above threshold before triggering
- *
- * Baseline tracking:
- *   Uses self-tracking baseline that slowly adapts to accumulated energy
- *   during IDLE state. This was proven reliable in v133.
- *
- * IMPORTANT: This detector is self-contained. Do NOT inject external
- * baseline values from other FFT paths - they have incompatible scaling.
- * See 12/17/2025 analysis: external baselines caused 720x scale mismatch.
+ * Responsibilities:
+ *   - FFT processing and energy extraction
+ *   - Public API functions
+ *   - Resource management
  */
 
 #include "marker_detector.h"
-#include "wwv_clock.h"
-#include "fft_processor.h"
+#include "detection/marker_internal.h"
 #include "version.h"
-#include "telemetry.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
 
 /*============================================================================
- * Internal Configuration
- *============================================================================*/
-
-#define FRAME_DURATION_MS   ((float)MARKER_FFT_SIZE * 1000.0f / MARKER_SAMPLE_RATE)
-#define HZ_PER_BIN          ((float)MARKER_SAMPLE_RATE / MARKER_FFT_SIZE)
-
-/* Detection thresholds - proven values from v133 */
-#define MARKER_THRESHOLD_MULT       3.0f    /* Accumulated must be 3x baseline */
-#define MARKER_NOISE_ADAPT_RATE     0.001f  /* Slow baseline adaptation */
-#define MARKER_COOLDOWN_MS          30000.0f /* 30 sec between markers (they're 60 sec apart) */
-#define MARKER_MAX_DURATION_MS      5000.0f /* Max time in IN_MARKER before forced exit */
-
-/* Warmup */
-#define MARKER_WARMUP_FRAMES        200     /* ~1 second warmup */
-#define MARKER_WARMUP_ADAPT_RATE    0.02f   /* Faster adaptation during warmup */
-#define MARKER_MIN_STARTUP_MS       10000.0f /* No markers in first 10 seconds */
-
-/* Display */
-#define MARKER_FLASH_FRAMES         30      /* UI flash duration */
-
-#define MS_TO_FRAMES(ms)    ((int)((ms) / FRAME_DURATION_MS + 0.5f))
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846f
-#endif
-
-/*============================================================================
- * Internal State
- *============================================================================*/
-
-typedef enum {
-    STATE_IDLE,
-    STATE_IN_MARKER,
-    STATE_COOLDOWN
-} detector_state_t;
-
-struct marker_detector {
-    /* FFT resources */
-    fft_processor_t *fft;
-
-    /* Sample buffer for FFT */
-    float *i_buffer;
-    float *q_buffer;
-    int buffer_idx;
-
-    /* Sliding window accumulator */
-    float *energy_history;          /* Circular buffer of frame energies */
-    int history_idx;                /* Write position */
-    int history_count;              /* Frames accumulated so far */
-    float accumulated_energy;       /* Sum of energy_history */
-    float baseline_energy;          /* Self-tracked noise floor */
-
-    /* Detection state */
-    detector_state_t state;
-    float current_energy;           /* Current frame's 1000Hz bucket energy */
-    float threshold;                /* Detection threshold */
-
-    /* Marker measurement */
-    uint64_t marker_start_frame;
-    float marker_peak_energy;
-    int marker_duration_frames;
-    int cooldown_frames;
-
-    /* Statistics */
-    int markers_detected;
-    uint64_t last_marker_frame;
-    uint64_t frame_count;
-    uint64_t start_frame;
-    bool warmup_complete;
-
-    /* UI feedback */
-    int flash_frames_remaining;
-    bool detection_enabled;
-
-    /* Tunable parameters (runtime adjustable via UDP commands) */
-    float threshold_multiplier;     /* Threshold above baseline (2.0-5.0, default 3.0) */
-    float noise_adapt_rate;         /* Baseline adaptation rate (0.0001-0.01, default 0.001) */
-    float min_duration_ms;          /* Minimum pulse duration (300.0-700.0, default 500.0) */
-
-    /* Callback */
-    marker_callback_fn callback;
-    void *callback_user_data;
-
-    /* Logging */
-    FILE *csv_file;
-    FILE *debug_file;
-    time_t start_time;
-
-    /* WWV clock for expected event lookup */
-    wwv_clock_t *wwv_clock;
-};
-
-/*============================================================================
- * Internal Functions
+ * Helper Functions
  *============================================================================*/
 
 static float calculate_bucket_energy(marker_detector_t *md) {
     return fft_processor_get_bucket_energy(md->fft, MARKER_TARGET_FREQ_HZ, MARKER_BANDWIDTH_HZ);
 }
 
-static void get_wall_time_str(marker_detector_t *md, float timestamp_ms, char *buf, size_t buflen) {
+void marker_get_wall_time_str(marker_detector_t *md, float timestamp_ms, char *buf, size_t buflen) {
     time_t event_time = md->start_time + (time_t)(timestamp_ms / 1000.0f);
     struct tm *tm_info = localtime(&event_time);
     strftime(buf, buflen, "%H:%M:%S", tm_info);
-}
-
-static void update_accumulator(marker_detector_t *md, float energy) {
-    if (md->history_count >= MARKER_WINDOW_FRAMES) {
-        md->accumulated_energy -= md->energy_history[md->history_idx];
-    }
-
-    md->energy_history[md->history_idx] = energy;
-    md->accumulated_energy += energy;
-
-    md->history_idx = (md->history_idx + 1) % MARKER_WINDOW_FRAMES;
-    if (md->history_count < MARKER_WINDOW_FRAMES) {
-        md->history_count++;
-    }
-}
-
-static void run_state_machine(marker_detector_t *md) {
-    float energy = md->current_energy;
-    uint64_t frame = md->frame_count;
-
-    update_accumulator(md, energy);
-
-    /* Debug logging - every 20th frame (~100ms) */
-    if (md->debug_file && (frame % 20 == 0)) {
-        char time_str[16];
-        get_wall_time_str(md, frame * FRAME_DURATION_MS, time_str, sizeof(time_str));
-        const char *state_names[] = {"IDLE", "IN_MARKER", "COOLDOWN"};
-        float ratio = (md->baseline_energy > 0.001f) ? md->accumulated_energy / md->baseline_energy : 0.0f;
-        fprintf(md->debug_file, "%s,%.1f,%s,%.1f,%.1f,%.1f,%.4f,%.2f\n",
-                time_str, frame * FRAME_DURATION_MS, state_names[md->state],
-                md->accumulated_energy, md->baseline_energy, md->threshold,
-                energy, ratio);
-        fflush(md->debug_file);
-    }
-
-    /* Warmup phase - fast adaptation to learn baseline */
-    if (!md->warmup_complete) {
-        md->baseline_energy += MARKER_WARMUP_ADAPT_RATE * (md->accumulated_energy - md->baseline_energy);
-        md->threshold = md->baseline_energy * md->threshold_multiplier;
-
-        if (frame >= md->start_frame + MARKER_WARMUP_FRAMES) {
-            md->warmup_complete = true;
-            printf("[MARKER] Warmup complete. Baseline=%.1f, Thresh=%.1f, Accum=%.1f\n",
-                   md->baseline_energy, md->threshold, md->accumulated_energy);
-        }
-        return;
-    }
-
-    /* No markers in first few seconds - baseline still stabilizing */
-    float timestamp_ms = md->frame_count * FRAME_DURATION_MS;
-    if (timestamp_ms < MARKER_MIN_STARTUP_MS) {
-        md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
-        md->threshold = md->baseline_energy * md->threshold_multiplier;
-        return;
-    }
-
-    /* Self-track baseline during IDLE (proven approach from v133) */
-    if (md->state == STATE_IDLE) {
-        md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
-        if (md->baseline_energy < 0.001f) md->baseline_energy = 0.001f;
-        md->threshold = md->baseline_energy * md->threshold_multiplier;
-    }
-
-    /* State machine */
-    switch (md->state) {
-        case STATE_IDLE:
-            if (md->accumulated_energy > md->threshold) {
-                md->state = STATE_IN_MARKER;
-                md->marker_start_frame = frame;
-                md->marker_peak_energy = md->accumulated_energy;
-                md->marker_duration_frames = 1;
-            }
-            break;
-
-        case STATE_IN_MARKER:
-            md->marker_duration_frames++;
-            if (md->accumulated_energy > md->marker_peak_energy) {
-                md->marker_peak_energy = md->accumulated_energy;
-            }
-
-            /* Check for timeout */
-            float duration_ms = md->marker_duration_frames * FRAME_DURATION_MS;
-            bool timed_out = (duration_ms > MARKER_MAX_DURATION_MS);
-
-            if (md->accumulated_energy < md->threshold || timed_out) {
-                if (duration_ms >= md->min_duration_ms && duration_ms < MARKER_MAX_DURATION_MS) {
-                    /* Valid marker! */
-                    md->markers_detected++;
-                    md->flash_frames_remaining = MARKER_FLASH_FRAMES;
-
-                    float timestamp_ms = frame * FRAME_DURATION_MS;
-                    float since_last = (md->last_marker_frame > 0) ?
-                        (md->marker_start_frame - md->last_marker_frame) * FRAME_DURATION_MS / 1000.0f : 0.0f;
-
-                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms  since=%.1fs  accum=%.2f\n",
-                           timestamp_ms / 1000.0f, md->markers_detected,
-                           duration_ms, since_last, md->marker_peak_energy);
-
-                    /* CSV logging and telemetry */
-                    char time_str[16];
-                    get_wall_time_str(md, timestamp_ms, time_str, sizeof(time_str));
-                    wwv_time_t wwv = md->wwv_clock ? wwv_clock_now(md->wwv_clock) : (wwv_time_t){0};
-
-                    if (md->csv_file) {
-                        fprintf(md->csv_file, "%s,%.1f,M%d,%d,%s,%.6f,%.1f,%.1f,%.6f,%.6f\n",
-                                time_str, timestamp_ms, md->markers_detected, wwv.second,
-                                wwv_event_name(wwv.expected_event),
-                                md->marker_peak_energy, duration_ms, since_last,
-                                md->baseline_energy, md->threshold);
-                        fflush(md->csv_file);
-                    }
-
-                    /* UDP telemetry */
-                    telem_sendf(TELEM_MARKERS, "%s,%.1f,M%d,%d,%s,%.6f,%.1f,%.1f,%.6f,%.6f",
-                                time_str, timestamp_ms, md->markers_detected, wwv.second,
-                                wwv_event_name(wwv.expected_event),
-                                md->marker_peak_energy, duration_ms, since_last,
-                                md->baseline_energy, md->threshold);
-
-                    if (md->callback) {
-                        marker_event_t event = {
-                            .marker_number = md->markers_detected,
-                            .timestamp_ms = timestamp_ms,
-                            .since_last_marker_sec = since_last,
-                            .accumulated_energy = md->marker_peak_energy,
-                            .peak_energy = md->current_energy,
-                            .duration_ms = duration_ms
-                        };
-                        md->callback(&event, md->callback_user_data);
-                    }
-
-                    md->last_marker_frame = md->marker_start_frame;
-                } else if (timed_out) {
-                    printf("[MARKER] Timeout after %.0fms - resetting baseline\n", duration_ms);
-                    md->baseline_energy = md->accumulated_energy;
-                    md->threshold = md->baseline_energy * md->threshold_multiplier;
-                }
-
-                md->state = STATE_COOLDOWN;
-                md->cooldown_frames = MS_TO_FRAMES(MARKER_COOLDOWN_MS);
-            }
-            break;
-
-        case STATE_COOLDOWN:
-            if (--md->cooldown_frames <= 0) {
-                md->state = STATE_IDLE;
-            }
-            break;
-    }
 }
 
 /*============================================================================
@@ -410,7 +159,7 @@ bool marker_detector_process_sample(marker_detector_t *md, float i_sample, float
 
     fft_processor_process(md->fft, md->i_buffer, md->q_buffer);
     md->current_energy = calculate_bucket_energy(md);
-    run_state_machine(md);
+    marker_state_machine_run(md);
     md->frame_count++;
 
     return (md->flash_frames_remaining == MARKER_FLASH_FRAMES);
