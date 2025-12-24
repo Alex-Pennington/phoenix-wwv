@@ -4,7 +4,7 @@
  */
 
 #include "fft_processor.h"
-#include "kiss_fft.h"
+#include "external/kiss_fft.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>

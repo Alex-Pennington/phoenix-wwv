@@ -30,7 +30,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "kiss_fft.h"
+#include "external/kiss_fft.h"
 
 #ifdef __cplusplus
 extern "C" {
