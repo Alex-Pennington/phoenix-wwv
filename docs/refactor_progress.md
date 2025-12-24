@@ -577,24 +577,61 @@ src/
 
 ---
 
-### PHASE 7: Split tone_tracker.c ⬜ NOT STARTED
+### PHASE 7: Split tone_tracker.c ✅ COMPLETED
 
-**Current:** 
-- `src/tone_tracker.c` (435 lines)
-- `src/slow_marker_detector.c` (163 lines) UNKNOWN USE
+**Original:**
+- `src/detection/tone/tone_tracker.c` (422 lines)
+- `src/detection/marker/slow_marker_detector.c` (139 lines) - already properly located
 
 **Split tone_tracker into:**
-1. [ ] `src/detection/tone/tone_fft.c` (200 lines)
-   - FFT processing for tone tracking
-2. [ ] `src/detection/tone/tone_tracker.c` (150 lines)
-   - Tone following logic
-   - Frequency tracking
 
-**Also handle:**
-- [ ] Move `src/slow_marker_detector.c` → `src/detection/tone/slow_marker.c`
-- [ ] Mark with @note UNKNOWN USE header
+1. ✅ `include/detection/tone/tone_tracker_internal.h` (96 lines)
+   - struct tone_tracker with FFT state
+   - Configuration constants (SEARCH_BINS, MIN_SNR_DB, NOISE_BINS)
+   - Function declarations for helpers and measurement
 
-**Commit:** "Split tone_tracker, mark slow_marker as unknown use"
+2. ✅ `src/detection/tone/tone_fft_helpers.c` (80 lines)
+   - `tone_generate_blackman_harris()` - window function
+   - `tone_parabolic_peak()` - sub-bin interpolation
+   - `tone_find_peak_bin()` - peak search in range
+   - `tone_estimate_noise_floor()` - noise estimation
+
+3. ✅ `src/detection/tone/tone_measurement.c` (133 lines)
+   - `tone_measure_frequency()` - core FFT measurement logic
+   - Handles DC case (0 Hz) and normal tones (500/600 Hz)
+   - Dual-sideband averaging for accuracy
+   - `tone_log_measurement()` - CSV logging
+
+4. ✅ `src/detection/tone/tone_tracker.c` (118 lines)
+   - 11 public API functions only
+   - Sample buffering in `tone_tracker_process_sample()`
+   - Global noise floor variable
+
+**Line Count Results:**
+- tone_tracker.c: 422 → 118 lines (72% reduction)
+- New files: 309 lines (internal.h + fft_helpers + measurement)
+- Net change: +5 lines, but much cleaner separation
+
+**Hot Path Verification:**
+✅ `tone_tracker_process_sample()`:
+- Identical logic: buffer samples → check if full → measure → log
+- Only changes: `measure_tone()` → `tone_measure_frequency()`, `log_measurement()` → `tone_log_measurement()`
+- FFT processing frequency unchanged
+- No performance regressions
+
+**Design Approach:**
+- Followed detector pattern (sample processor, not event processor)
+- FFT helpers extracted for testability
+- Core measurement logic isolated
+- API-only main file for clarity
+- slow_marker_detector.c left unchanged (already in correct location with UNKNOWN USE note)
+
+**Verification:**
+- ✅ Compilation successful
+- ✅ Hot path preserved (only function name changes)
+- ✅ No performance regressions
+
+**Commit:** "Phase 7: Split tone_tracker - detector pattern"
 
 ---
 
