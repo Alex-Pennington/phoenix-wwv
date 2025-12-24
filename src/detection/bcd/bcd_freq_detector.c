@@ -16,6 +16,7 @@
  */
 
 #include "bcd_freq_detector.h"
+#include "bcd_internal.h"
 #include "telemetry.h"
 #include "fft_processor.h"
 #include "version.h"
@@ -24,258 +25,7 @@
 #include <math.h>
 #include <time.h>
 
-/*============================================================================
- * Internal Configuration
- *============================================================================*/
 
-#define FRAME_DURATION_MS   ((float)BCD_FREQ_FFT_SIZE * 1000.0f / BCD_FREQ_SAMPLE_RATE)
-#define HZ_PER_BIN          ((float)BCD_FREQ_SAMPLE_RATE / BCD_FREQ_FFT_SIZE)
-#define WINDOW_FRAMES       ((int)(BCD_FREQ_WINDOW_MS / FRAME_DURATION_MS))
-
-/* Detection timing */
-#define BCD_FREQ_COOLDOWN_MS        500.0f  /* Cooldown between detections */
-#define BCD_FREQ_MAX_DURATION_MS    2000.0f /* Max time in pulse before timeout */
-
-/* Warmup */
-#define BCD_FREQ_WARMUP_FRAMES      50      /* ~2 seconds warmup */
-#define BCD_FREQ_WARMUP_ADAPT_RATE  0.02f
-#define BCD_FREQ_MIN_STARTUP_MS     5000.0f /* No pulses in first 5 seconds */
-
-#define MS_TO_FRAMES(ms)    ((int)((ms) / FRAME_DURATION_MS + 0.5f))
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846f
-#endif
-
-/*============================================================================
- * Internal State
- *============================================================================*/
-
-typedef enum {
-    STATE_IDLE,
-    STATE_IN_PULSE,
-    STATE_COOLDOWN
-} detector_state_t;
-
-struct bcd_freq_detector {
-    /* FFT resources */
-    fft_processor_t *fft;
-
-    /* Sample buffer for FFT */
-    float *i_buffer;
-    float *q_buffer;
-    int buffer_idx;
-
-    /* Sliding window accumulator */
-    float *energy_history;          /* Circular buffer of frame energies */
-    int history_idx;
-    int history_count;
-    float accumulated_energy;       /* Sum of energy_history */
-    float baseline_energy;          /* Self-tracked noise floor */
-
-    /* Detection state */
-    detector_state_t state;
-    float current_energy;           /* Current frame's 100Hz bucket energy */
-    float threshold;
-
-    /* Pulse measurement */
-    uint64_t pulse_start_frame;
-    float pulse_peak_energy;
-    int pulse_duration_frames;
-    int cooldown_frames;
-
-    /* Phase 9: Minimum duration validation */
-    int consecutive_low_frames;  /* Debounce pulse end */
-    #define MIN_LOW_FRAMES 3         /* Require 3 frames below threshold */
-
-    /* Statistics */
-    int pulses_detected;
-    int pulses_rejected;
-    uint64_t last_pulse_frame;
-    uint64_t frame_count;
-    uint64_t start_frame;
-    bool warmup_complete;
-
-    /* Enabled flag */
-    bool detection_enabled;
-
-    /* Callback */
-    bcd_freq_callback_fn callback;
-    void *callback_user_data;
-
-    /* Logging */
-    FILE *csv_file;
-    time_t start_time;
-};
-
-/*============================================================================
- * Internal Functions
- *============================================================================*/
-
-/**
- * Calculate energy in the 100Hz frequency bucket
- * At 50kHz with 2048-pt FFT, each bin is ~24.4 Hz
- * 100 Hz is in bin ~4 (100/24.4 ≈ 4.1)
- */
-static float calculate_bucket_energy(bcd_freq_detector_t *fd) {
-    return fft_processor_get_bucket_energy(fd->fft, BCD_FREQ_TARGET_FREQ_HZ, BCD_FREQ_BANDWIDTH_HZ);
-}
-
-/**
- * Get wall clock time string for CSV output
- */
-static void get_wall_time_str(bcd_freq_detector_t *fd, float timestamp_ms, char *buf, size_t buflen) {
-    time_t event_time = fd->start_time + (time_t)(timestamp_ms / 1000.0f);
-    struct tm *tm_info = localtime(&event_time);
-    strftime(buf, buflen, "%H:%M:%S", tm_info);
-}
-
-/**
- * Update sliding window accumulator
- */
-static void update_accumulator(bcd_freq_detector_t *fd, float energy) {
-    if (fd->history_count >= WINDOW_FRAMES) {
-        fd->accumulated_energy -= fd->energy_history[fd->history_idx];
-    }
-
-    fd->energy_history[fd->history_idx] = energy;
-    fd->accumulated_energy += energy;
-
-    fd->history_idx = (fd->history_idx + 1) % WINDOW_FRAMES;
-    if (fd->history_count < WINDOW_FRAMES) {
-        fd->history_count++;
-    }
-}
-
-static void run_state_machine(bcd_freq_detector_t *fd) {
-    float energy = fd->current_energy;
-    uint64_t frame = fd->frame_count;
-
-    update_accumulator(fd, energy);
-
-    /* Warmup phase - fast adaptation to learn baseline */
-    if (!fd->warmup_complete) {
-        fd->baseline_energy += BCD_FREQ_WARMUP_ADAPT_RATE * (fd->accumulated_energy - fd->baseline_energy);
-        fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
-
-        if (frame >= fd->start_frame + BCD_FREQ_WARMUP_FRAMES) {
-            fd->warmup_complete = true;
-            printf("[BCD_FREQ] Warmup complete. Baseline=%.4f, Thresh=%.4f, Accum=%.4f\n",
-                   fd->baseline_energy, fd->threshold, fd->accumulated_energy);
-        }
-        return;
-    }
-
-    /* No pulses in first few seconds - baseline still stabilizing */
-    float timestamp_ms = fd->frame_count * FRAME_DURATION_MS;
-    if (timestamp_ms < BCD_FREQ_MIN_STARTUP_MS) {
-        fd->baseline_energy += BCD_FREQ_NOISE_ADAPT_RATE * (fd->accumulated_energy - fd->baseline_energy);
-        fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
-        return;
-    }
-
-    /* Self-track baseline during IDLE */
-    if (fd->state == STATE_IDLE) {
-        fd->baseline_energy += BCD_FREQ_NOISE_ADAPT_RATE * (fd->accumulated_energy - fd->baseline_energy);
-        if (fd->baseline_energy < 0.0001f) fd->baseline_energy = 0.0001f;
-        fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
-    }
-
-    /* State machine */
-    switch (fd->state) {
-        case STATE_IDLE:
-            if (fd->accumulated_energy > fd->threshold) {
-                fd->state = STATE_IN_PULSE;
-                fd->pulse_start_frame = frame;
-                fd->pulse_peak_energy = fd->accumulated_energy;
-                fd->pulse_duration_frames = 1;
-                fd->consecutive_low_frames = 0;
-            }
-            break;
-
-        case STATE_IN_PULSE:
-            fd->pulse_duration_frames++;
-            if (fd->accumulated_energy > fd->pulse_peak_energy) {
-                fd->pulse_peak_energy = fd->accumulated_energy;
-            }
-
-            /* Check for timeout or signal drop */
-            float duration_ms = fd->pulse_duration_frames * FRAME_DURATION_MS;
-            bool timed_out = (duration_ms > BCD_FREQ_MAX_DURATION_MS);
-
-            /* Phase 9: Require consecutive low frames before ending pulse */
-            if (fd->accumulated_energy < fd->threshold) {
-                fd->consecutive_low_frames++;
-            } else {
-                fd->consecutive_low_frames = 0;  /* Reset if signal returns */
-            }
-
-            if ((fd->consecutive_low_frames >= MIN_LOW_FRAMES) || timed_out) {
-                float start_timestamp_ms = fd->pulse_start_frame * FRAME_DURATION_MS;
-
-                if (duration_ms >= BCD_FREQ_PULSE_MIN_MS &&
-                    duration_ms <= BCD_FREQ_PULSE_MAX_MS) {
-                    /* Valid pulse! */
-                    fd->pulses_detected++;
-
-                    float snr_db = 10.0f * log10f(fd->pulse_peak_energy / fd->baseline_energy);
-
-                    printf("[BCD_FREQ] Pulse #%d at %.1fms  dur=%.0fms  accum=%.4f  SNR=%.1fdB\n",
-                           fd->pulses_detected, start_timestamp_ms, duration_ms,
-                           fd->pulse_peak_energy, snr_db);
-
-                    /* CSV logging and telemetry */
-                    char time_str[16];
-                    get_wall_time_str(fd, start_timestamp_ms, time_str, sizeof(time_str));
-
-                    if (fd->csv_file) {
-                        fprintf(fd->csv_file, "%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f\n",
-                                time_str, start_timestamp_ms, fd->pulses_detected,
-                                fd->pulse_peak_energy, duration_ms,
-                                fd->baseline_energy, snr_db);
-                        fflush(fd->csv_file);
-                    }
-
-                    /* UDP telemetry */
-                    telem_sendf(TELEM_BCDS, "FREQ,%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f",
-                                time_str, start_timestamp_ms, fd->pulses_detected,
-                                fd->pulse_peak_energy, duration_ms,
-                                fd->baseline_energy, snr_db);
-
-                    fd->last_pulse_frame = fd->pulse_start_frame;
-
-                    /* Callback */
-                    if (fd->callback) {
-                        bcd_freq_event_t event = {
-                            .timestamp_ms = start_timestamp_ms,
-                            .duration_ms = duration_ms,
-                            .accumulated_energy = fd->pulse_peak_energy,
-                            .baseline_energy = fd->baseline_energy,
-                            .snr_db = snr_db
-                        };
-                        fd->callback(&event, fd->callback_user_data);
-                    }
-                } else if (timed_out) {
-                    printf("[BCD_FREQ] Timeout after %.0fms - resetting baseline\n", duration_ms);
-                    fd->baseline_energy = fd->accumulated_energy;
-                    fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
-                    fd->pulses_rejected++;
-                } else {
-                    fd->pulses_rejected++;
-                }
-
-                fd->state = STATE_COOLDOWN;
-                fd->cooldown_frames = MS_TO_FRAMES(BCD_FREQ_COOLDOWN_MS);
-            }
-            break;
-
-        case STATE_COOLDOWN:
-            if (--fd->cooldown_frames <= 0) {
-                fd->state = STATE_IDLE;
-            }
-            break;
-    }
-}
 
 /*============================================================================
  * Public API Implementation
@@ -291,9 +41,12 @@ bcd_freq_detector_t *bcd_freq_detector_create(const char *csv_path) {
         return NULL;
     }
 
+    float frame_duration_ms = bcd_freq_detector_get_frame_duration_ms();
+    int window_frames = (int)(BCD_FREQ_WINDOW_MS / frame_duration_ms);
+
     fd->i_buffer = (float *)malloc(BCD_FREQ_FFT_SIZE * sizeof(float));
     fd->q_buffer = (float *)malloc(BCD_FREQ_FFT_SIZE * sizeof(float));
-    fd->energy_history = (float *)malloc(WINDOW_FRAMES * sizeof(float));
+    fd->energy_history = (float *)malloc(window_frames * sizeof(float));
 
     if (!fd->i_buffer || !fd->q_buffer || !fd->energy_history) {
         bcd_freq_detector_destroy(fd);
@@ -304,7 +57,7 @@ bcd_freq_detector_t *bcd_freq_detector_create(const char *csv_path) {
     memset(fd->q_buffer, 0, BCD_FREQ_FFT_SIZE * sizeof(float));
     fd->buffer_idx = 0;
 
-    memset(fd->energy_history, 0, WINDOW_FRAMES * sizeof(float));
+    memset(fd->energy_history, 0, window_frames * sizeof(float));
     fd->history_idx = 0;
     fd->history_count = 0;
     fd->accumulated_energy = 0.0f;
@@ -325,7 +78,7 @@ bcd_freq_detector_t *bcd_freq_detector_create(const char *csv_path) {
             fprintf(fd->csv_file, "# Phoenix SDR BCD Freq Detector Log v%s\n", PHOENIX_VERSION_FULL);
             fprintf(fd->csv_file, "# Started: %s\n", time_str);
             fprintf(fd->csv_file, "# FFT: %d (%.2fms), Window: %d frames (%.0fms)\n",
-                    BCD_FREQ_FFT_SIZE, FRAME_DURATION_MS, WINDOW_FRAMES, BCD_FREQ_WINDOW_MS);
+                    BCD_FREQ_FFT_SIZE, frame_duration_ms, window_frames, BCD_FREQ_WINDOW_MS);
             fprintf(fd->csv_file, "# Target: %dHz ±%dHz\n",
                     BCD_FREQ_TARGET_FREQ_HZ, BCD_FREQ_BANDWIDTH_HZ);
             fprintf(fd->csv_file, "time,timestamp_ms,pulse_num,accum_energy,duration_ms,baseline,snr_db\n");
@@ -334,7 +87,7 @@ bcd_freq_detector_t *bcd_freq_detector_create(const char *csv_path) {
     }
 
     printf("[BCD_FREQ] Detector created: FFT=%d (%.2fms), window=%d frames (%.0fms)\n",
-           BCD_FREQ_FFT_SIZE, FRAME_DURATION_MS, WINDOW_FRAMES, BCD_FREQ_WINDOW_MS);
+           BCD_FREQ_FFT_SIZE, frame_duration_ms, window_frames, BCD_FREQ_WINDOW_MS);
     printf("[BCD_FREQ] Target: %dHz ±%dHz, self-tracking baseline\n",
            BCD_FREQ_TARGET_FREQ_HZ, BCD_FREQ_BANDWIDTH_HZ);
 
@@ -382,10 +135,10 @@ bool bcd_freq_detector_process_sample(bcd_freq_detector_t *fd,
     fft_processor_process(fd->fft, fd->i_buffer, fd->q_buffer);
 
     /* Extract bucket energy */
-    fd->current_energy = calculate_bucket_energy(fd);
+    fd->current_energy = bcd_freq_calculate_bucket_energy(fd);
 
     /* Run detection state machine */
-    run_state_machine(fd);
+    bcd_freq_run_state_machine(fd);
 
     fd->frame_count++;
 
@@ -423,11 +176,13 @@ int bcd_freq_detector_get_pulse_count(bcd_freq_detector_t *fd) {
 void bcd_freq_detector_print_stats(bcd_freq_detector_t *fd) {
     if (!fd) return;
 
-    float elapsed = fd->frame_count * FRAME_DURATION_MS / 1000.0f;
+    float frame_duration_ms = bcd_freq_detector_get_frame_duration_ms();
+    int window_frames = (int)(BCD_FREQ_WINDOW_MS / frame_duration_ms);
+    float elapsed = fd->frame_count * frame_duration_ms / 1000.0f;
 
     printf("\n=== BCD FREQ DETECTOR STATS ===\n");
     printf("FFT: %d (%.2fms), Window: %d frames (%.0fms)\n",
-           BCD_FREQ_FFT_SIZE, FRAME_DURATION_MS, WINDOW_FRAMES, BCD_FREQ_WINDOW_MS);
+           BCD_FREQ_FFT_SIZE, frame_duration_ms, window_frames, BCD_FREQ_WINDOW_MS);
     printf("Target: %d Hz ±%d Hz\n", BCD_FREQ_TARGET_FREQ_HZ, BCD_FREQ_BANDWIDTH_HZ);
     printf("Elapsed: %.1fs  Detected: %d  Rejected: %d\n",
            elapsed, fd->pulses_detected, fd->pulses_rejected);
@@ -437,5 +192,5 @@ void bcd_freq_detector_print_stats(bcd_freq_detector_t *fd) {
 }
 
 float bcd_freq_detector_get_frame_duration_ms(void) {
-    return FRAME_DURATION_MS;
+    return (float)BCD_FREQ_FFT_SIZE * 1000.0f / BCD_FREQ_SAMPLE_RATE;
 }

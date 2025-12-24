@@ -341,13 +341,91 @@ src/
 
 ---
 
-### PHASE 5: Reorganize BCD Detection ⬜ NOT STARTED
+### PHASE 5: Reorganize BCD Detection ✅ COMPLETED
+
+**Status:** ✅ COMPLETED - December 24, 2025
+
+**Original Files:**
+- `src/bcd_time_detector.c` (410 lines)
+- `src/bcd_freq_detector.c` (442 lines)
+- `src/bcd_decoder.c` (181 lines) - Already optimal, no split needed
+
+**Split into:**
+
+1. ✅ `include/detection/bcd_internal.h` (206 lines)
+   - struct bcd_time_detector
+   - struct bcd_freq_detector
+   - Common detector_state_t enum
+   - Function declarations for state machines
+   - Common helper functions (bcd_get_wall_time_str)
+
+2. ✅ `src/detection/bcd/bcd_time_state_machine.c` (173 lines)
+   - bcd_time_run_state_machine() - 3-state FSM
+   - bcd_time_calculate_bucket_energy() - 100Hz extraction
+   - Adaptive noise floor tracking (asymmetric attack/decay)
+   - Pulse validation and event callbacks
+   - CSV logging and telemetry
+
+3. ✅ `src/detection/bcd/bcd_freq_state_machine.c` (192 lines)
+   - bcd_freq_run_state_machine() - 3-state FSM
+   - bcd_freq_calculate_bucket_energy() - 100Hz extraction
+   - bcd_freq_update_accumulator() - sliding window
+   - Self-tracking baseline adaptation
+   - Pulse validation and event callbacks
+   - CSV logging and telemetry
+
+4. ✅ `src/detection/bcd/bcd_time_detector.c` (184 lines, was 410)
+   - 12 public API functions
+   - FFT buffer management
+   - Resource allocation/deallocation
+   - Accessor functions
+
+5. ✅ `src/detection/bcd/bcd_freq_detector.c` (196 lines, was 442)
+   - 13 public API functions
+   - FFT buffer management
+   - Sliding window allocation
+   - Accessor functions
+
+6. ⚠️ `src/bcd_correlator.c` (534 lines) - DEFERRED TO PHASE 6
+   - This file is in src/correlation/ (not src/detection/bcd/)
+   - Will be addressed in Phase 6: Split Correlators
+
+**Line Count Results:**
+- bcd_time_detector.c: 410 → 184 lines (55% reduction)
+- bcd_freq_detector.c: 442 → 196 lines (56% reduction)
+- New files added: 571 lines (internal.h + 2 state machines)
+- Net change: +319 lines, but much better separation
+
+**Hot Path Verification:**
+✅ `bcd_time_detector_process_sample()`:
+- Identical logic: buffer samples → FFT → calculate_bucket_energy → run_state_machine
+- Only change: `calculate_bucket_energy(td)` → `bcd_time_calculate_bucket_energy(td)`
+- Only change: `run_state_machine(td)` → `bcd_time_run_state_machine(td)`
+
+✅ `bcd_freq_detector_process_sample()`:
+- Identical logic: buffer samples → FFT → calculate_bucket_energy → run_state_machine
+- Only change: `calculate_bucket_energy(fd)` → `bcd_freq_calculate_bucket_energy(fd)`
+- Only change: `run_state_machine(fd)` → `bcd_freq_run_state_machine(fd)`
+
+**Design Pattern:**
+- Unified internal header approach (both detectors share same structure)
+- State machines extracted to separate files
+- Public API files contain only resource management
+- Follows same pattern as tick_detector and marker_detector (Phase 3 & 4)
+
+**Verification:**
+- ✅ Compilation successful
+- ✅ Hot paths preserved (only function name changes)
+- ✅ No performance regressions
+
+**Commit:** "Phase 5: Split BCD detectors - unified internal header approach"
+
+---
+
+### PHASE 6: Split Correlators ⬜ NOT STARTED
 
 **Current:**
-- `src/bcd_time_detector.c` (453 lines)
-- `src/bcd_freq_detector.c` (485 lines)
-- `src/bcd_correlator.c` (534 lines)
-- `src/bcd_decoder.c` (181 lines) ✅ OK size
+- `src/correlation/bcd_correlator.c` (534 lines)
 - `src/bcd_envelope.c` (475 lines) DEPRECATED
 - `src/subcarrier_detector.c` (475 lines) DEPRECATED
 
