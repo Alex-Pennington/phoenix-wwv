@@ -518,7 +518,7 @@ After each phase:
 | 7: Tone | ⬜ | - | - | - |
 | 8: Mgr | ⬜ | - | - | - |
 | 9: Telem | ✅ | 2025-12-24 | d454afb | Renamed waterfall_telemetry → telemetry |
-| 10: Move | ⬜ | - | - | - |
+| 10: Move | ✅ | 2025-12-24 | 527e5fd | kiss_fft → external/ directory |
 
 **Legend:** ⬜ Not Started | 🔄 In Progress | ✅ Complete | ❌ Blocked
 
