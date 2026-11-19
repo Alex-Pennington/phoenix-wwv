@@ -6,46 +6,39 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Detection
 
-- **BCD symbol accuracy is now limited by the BTIME detector and the sync anchor, not the
-  correlator's window logic.** Symbols are 67-82% correct (54/70, 69/101, 109/163, 153/187).
-  `tests/air/trace_all.sh <out-dir>` gives every wrong symbol a cause. What remains, on kiwi
-  plain / kiwi agc / saga plain / saga agc:
-  - width 6/18/28/12: the window holds the pulse at the second, and the detector measured its
+- **BCD symbol accuracy is now limited by the BTIME detector, not the anchor or the
+  correlator's window logic.** Symbols are 73-83% correct (70/96, 231/294, 257/339, 178/215),
+  and every symbol reports the right second-in-minute. `tests/air/trace_all.sh <out-dir>` gives
+  every wrong symbol a cause. What remains, on kiwi plain / kiwi agc / saga plain / saga agc:
+  - width 10/41/55/27: the window holds the pulse at the second, and the detector measured its
     width wrong. The class medians are right (0: 220-250 ms, 1: 497-532 ms, P: 788-876 ms) and
     the 350/650 ms cuts sit between them, but each class has a wide tail (0 p90 425-502 ms).
     That is detector width noise, not a threshold error.
-  - spurious 10/8/16/16: no BTIME event starts near the second. The window classifies a
-    mid-second event, which is right about half the time. Of the seconds a window covers, 19-31%
-    have no boundary pulse. Emitting NONE for these windows was measured and not adopted: with a
-    "first event within 350 ms of the window start" gate, correct falls to 43/38/73/116, wrong
-    to 6/20/26/12. It also cuts the real pulses in the marker-anchored minutes (next bullet).
-    Revisit once the anchor is right.
-  - misaligned 0/1/6/6: minutes anchored 150-165 ms late (saga tick-path lead edges). Every
-    pulse lands at the end of the previous window, and the minute decodes one second shifted.
-    A window lead over 100 ms makes kiwi agc worse, because its marker-anchored minutes open
-    about 400 ms early.
-  - sec-index 0/3/3/0 and 2 of 3 multi-span: the marker-anchored minutes, 2 s off (the
-    `start_timestamp_ms` bullet below).
+  - spurious 16/21/25/10: no BTIME event starts near the second. The window classifies a
+    mid-second event, which is right about half the time. Emitting NONE for these windows was
+    measured at 85001f9 and not adopted (correct fell to 43/38/73/116). The anchor is now right
+    (every window on all four runs opens 0-150 ms before its second; minutes anchored by the
+    marker detector alone sit -52..+100 ms off :00, tick-path ones -2..+15 ms), so it can be
+    re-measured.
+  - misaligned 0/1/2/0: all three are duplicate windows (Sync and correlator, below).
 - **`bcd_freq` cannot detect per-second pulses.** It thresholds a 1 s sliding sum of 100 Hz
   energy at 3x a baseline that tracks that same sum. The subcarrier is present every second, so
   the sum barely moves. It fires only on the P-marker clusters: saga BFREQ events land at UTC
   :09.7, :19.7, :29.8 and :49.8. There are 3-15 events per 629 s run.
-- **The marker detector fires on the :52.5 voice announcement in the AGC wiring.** On kiwi agc
-  there are 6 false events, 4 of which start at :52.8-:56.3. The other two, at 11:39:47.7 and
-  11:40:19.8, are not identified.
-  - Cause, measured on kiwi agc: with the 800-1400 Hz Butterworth sync filter, the voice window's
-    p90 marker-bucket sum is 3.45x the tone-period median, over the 3x threshold. With the old
-    filter it was 1.95x.
-  - A length bound cannot separate voice from weak real markers: real f spans 0.03-0.69, voice
-    f spans 0.27-0.94.
-  - A tone-purity test (bins 4-6 against bins 7-8) would discriminate. It is not done.
-- **Wire `marker_event_t.start_timestamp_ms` into the sync detector.** waterfall.c, and so the
-  harness, passes `timestamp_ms`, the end of the window run (+1.3-1.8 s). Minutes anchored on a
-  marker-detector event therefore start late, and BCD second indices come out 2 s off: 28/161 on
-  saga plain, 54/98 on kiwi agc.
-  - Passing `start_timestamp_ms` makes saga plain 156/156 exact.
-  - On kiwi agc the voice false markers then anchor at +4 s (BCD correct 50 -> 43).
-  - Fix the voice false markers first.
+- **The marker detector's tone-purity test reads bin 7 (1367 Hz), next to WWVH's 1500 Hz minute
+  marker, which is sent at the same :00.** On both captures WWVH is weak there (bin 8 / bin 5 at
+  :00 is 0.007-0.059) and real markers score 0.01-0.06 against the 0.2 limit. At a site where
+  WWVH is as strong as WWV, its marker would add flank excess and could reject WWV's. Not
+  measured: no capture has that. Testing bin 3 alone (real 0.02-0.03, voice 0.13-0.30) would
+  avoid it with less margin on the voice side.
+- **A purity rejection is printed to stdout only.** It reaches no CSV or telemetry line.
+- **A marker-detector run shorter than `min_duration_ms` still takes the 30 s cooldown.** A
+  short in-band blip in the seconds before :00 would hide that minute's marker, as the voice
+  runs did before the purity test. Not seen on air.
+- **The tick-path marker edge is taken from the trailing edge when a run is more than 40 ms off
+  a clean marker's length.** That assumes the end is right. On air it is (runs of 614-763 and
+  983 ms ended +814..+828 ms after :00). A marker that fades out before 800 ms would get an early
+  edge.
 - **A false tick-path minute marker at UTC 11:34:20 (983 ms), kiwi agc only,** is present at
   baseline and on main. It is not explained. The sync re-anchor now recovers from it.
 - **Tick-path `MARKER_MAX_DURATION_MS` (1000 ms bail-out) contradicts
@@ -62,6 +55,19 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Sync and correlator
 
+- **A second is emitted twice when the minute anchor is replaced while its window is open.** The
+  correlator indexes windows by whole seconds from the anchor (1b3b401). When the next minute's
+  anchor arrives during second 1 or 2, the open window's index changes from 61 to 1. The window
+  is closed under the old anchor and a new one opens for the same second. The first copy holds
+  the boundary pulse; the second holds only the later mid-second event. 6 seconds at the branch
+  tip (kiwi agc 11:40:01, 11:41:01, 11:42:01; saga plain 12:13:02, 12:14:02, 12:16:01), 2 at
+  85001f9. Both copies report the right second, so a frame decoder sees two symbols for it. An
+  anchor a whole number of minutes from the old one should keep the open window.
+- **`src/manager/detector_routing.c` does not wire sync the way the harness does.** It passes
+  the tick-path marker's `timestamp_ms` (trailing edge, +0.8 s) to
+  `sync_detector_tick_marker()` and never feeds marker-detector events to sync. The sync header
+  now says both entry points take the leading edge. waterfall.c (outside this repo) must pass
+  `marker_event_t.start_timestamp_ms` to `sync_detector_marker_event()`, as the harness now does.
 - `sync_detector_full_reset()` does not clear `last_confirmed_ms`, so a stale anchor survives a
   reset. The re-anchor rule mitigates it.
 - The sync detector gets no per-tick events in the waterfall.c wiring, so tick-hole evidence never
@@ -73,9 +79,6 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - The correlator opens a window only when an event arrives. A second with no BCD event produces
   no callback at all, not a NONE symbol, so a frame decoder cannot tell "no pulse" from "not
   locked".
-- Minute anchors from tick-path markers are off by up to -158..+165 ms on saga (TMARK lead
-  edges, e.g. 12:16 -158 ms with dur 983, 12:17 +111 ms with dur 645). Every BCD window in the
-  minute inherits that offset.
 - `bcd_window_get_second_for_timestamp()` no longer has a caller inside the correlator
   (`bcd_window_get_index()` replaced it). It is kept for its declared interface, and its unused
   `corr` parameter warns.
@@ -90,7 +93,10 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - `data_channel_t` gained `hp[2]`, and `sync_channel_t` is now `bp[4]` (same size). Consumers must
   rebuild.
 - `marker_event_t` gained `start_timestamp_ms`, and `duration_ms` now carries the de-stretched
-  length. `bcd_symbol_event_t` gained `second`, and the `SYMBOL` telemetry line gained a trailing
+  length. The marker detector no longer reports runs that fail the tone-purity test.
+- `sync_detector_marker_event()` and `sync_detector_tick_marker()` take the marker's leading
+  edge. `tick_marker_event_t.start_timestamp_ms` comes from the trailing edge for off-length
+  runs. `sync_detector_periodic_check()` now confirms a lone pending marker after 3 s. `bcd_symbol_event_t` gained `second`, and the `SYMBOL` telemetry line gained a trailing
   `second` field.
 
 ## Documentation
