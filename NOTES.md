@@ -185,7 +185,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **A raw 2 MS/s replay does not reproduce the harness scores exactly**: wwv_live decimates in one
   pass, the converted 50 kHz streams went through a 12 kHz int16 round trip and a GPS-fit
   resampler. Saga plain: ticks 262 vs 255, symbols 244/331 vs 257/336; agc: ticks 351 vs 358,
-  symbols 245/286 vs 178/215 (07ffb51 detectors). False confirms 0 in both.
+  symbols 245/286 vs 178/215 (07ffb51 detectors). With the 21ba9aa BTIME fix: plain symbols
+  430/460 vs 426/463, agc 383/409 vs 297/324. False confirms 0 in all.
 - The tone trackers send no telemetry; wwv_live runs them only for the manager's display path.
 - `marker_correlator` and `tick_correlator` are disabled in both hosts; the tick correlator is
   created by the manager when enabled but never fed (it needs tick-detector internals).
