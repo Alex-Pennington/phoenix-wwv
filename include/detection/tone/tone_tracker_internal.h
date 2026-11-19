@@ -9,6 +9,7 @@
 #include "tone_tracker.h"
 #include "fft_processor.h"
 #include <stdio.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdbool.h>
 
