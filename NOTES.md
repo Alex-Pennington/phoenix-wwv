@@ -6,12 +6,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Detection
 
-- **BCD symbol accuracy after the BTIME half-amplitude edges.** Symbols are 437/445, 446/450,
-  426/463 and 297/324 correct on kiwi plain / kiwi agc / saga plain / saga agc. Of symbols whose
-  pulse starts within 250 ms of the second, a sent 0 reads 1 in 0/292, 0/293, 2/262, 6/183 and a
-  sent 1 reads 0 in 1/105, 0/108, 7/103, 0/67. `tests/air/trace_all.sh <out-dir>` gives every
-  wrong symbol a cause: spurious 3/3/21/18, width 1/0/13/8, freq-avg 4/1/2/0, misaligned
-  0/0/1/1. `tests/air/btime_frames` and `tests/air/btime_width_forensics.py` give the per-pulse
+- **BCD symbol accuracy after the BTIME half-amplitude edges, with BTIME's width taking
+  precedence over BFREQ's.** Symbols are 441/445, 447/450, 428/463 and 297/324 correct on kiwi
+  plain / kiwi agc / saga plain / saga agc. Of symbols whose pulse starts within 250 ms of the
+  second, a sent 0 reads 1 in 0/292, 0/293, 2/262, 6/183 and a sent 1 reads 0 in 0/105, 0/108,
+  6/103, 0/67; a sent P reads 1 in 1/44, 0/45, 4/42, 0/26 (decoder frames).
+  `tests/air/trace_all.sh <out-dir>` gives every wrong symbol a cause: spurious 3/3/21/18, width
+  1/0/13/8, misaligned 0/0/1/1. `tests/air/btime_frames` and `tests/air/btime_width_forensics.py` give the per-pulse
   view.
   - **Saga still starts events on the low-level subcarrier.** On saga plain, 8 of the 14 sent 1s
     and Ps read short, and all 4 on saga agc, follow a cooldown after an event that started before
@@ -82,11 +83,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   reset. The re-anchor rule mitigates it.
 - The sync detector gets no per-tick events in the waterfall.c wiring, so tick-hole evidence never
   arrives.
-- The BCD correlator averages BFREQ's duration with BTIME's when a window holds both. BFREQ fires
-  mostly on P-marker clusters, and its durations (164-983 ms over the four runs) do not cluster
-  at 200/500/800 ms. With the BTIME widths now right, the average makes 4/1/2/0 wrong symbols on
-  the four runs (freq-avg in `tests/air/trace_all.sh`). BFREQ-only windows give 7 wrong symbols
-  at b2ede79.
+- **BFREQ still sets the width of a window with no BTIME event, and can set its pulse offset.**
+  Its durations (164-983 ms over the four runs) do not cluster at 200/500/800 ms; BFREQ-only
+  windows gave 7 wrong symbols at b2ede79 (not re-measured). When a window holds both, the
+  pulse offset is the earlier of the two first events (`src/correlation/bcd_correlator.c`), so
+  a BFREQ event can mark a window as a boundary detection. Not changed.
 - **The correlator's P positions include second 0** (`VALID_P_POSITIONS`,
   `src/correlation/bcd_symbol_classifier.c:20`): the WWVB frame reference. WWV sends no pulse at
   second 0, so a long event there is labelled P instead of 1. Neither is a WWV symbol; the time
@@ -194,3 +195,6 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - "Tests: BCD time detector pulse width on a synthetic WWV time code" says that at 07ffb51 the
   steady case's 0s end 72-132 ms after the sent end and its 1s start at +227..+229 ms. It is 9 of
   the 11 sent 0s (the other 2 within 60 ms), and 25 of the 27 late 1s start at +226..+230 ms.
+- "Time decoder: measured error model, CONFIRMED at ln 10^6" says the status bits "need 8
+  frames at ln 10^6". Not measured: the rollover run (from 23:55) leaves its status bits DECODED
+  after 12 minutes, 7 frames past 00:00, and CONFIRMS them all by 16 minutes.
