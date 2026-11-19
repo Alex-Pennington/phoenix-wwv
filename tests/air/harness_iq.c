@@ -31,6 +31,7 @@
 
 #define FS 50000.0
 static int PRINT_TELEM = 1;
+static double g_now_ms;    /* stream time of the sample being processed */
 
 /* ---- telemetry interposition ---- */
 bool telem_init(int port) { (void)port; return true; }
@@ -84,11 +85,11 @@ static void trace_event(char src, float t, float dur, bcd_correlator_t *c) {
     else printf("WEV src=%c t=%.1f dur=%.1f win_sec=-1\n", src, t, dur);
 }
 static void on_bt(const bcd_time_event_t *e, void *u) {
-    printf("BTIME t=%.1f dur=%.1f\n", e->timestamp_ms, e->duration_ms);
+    printf("BTIME t=%.1f dur=%.1f at=%.1f\n", e->timestamp_ms, e->duration_ms, g_now_ms);
     bcd_correlator_time_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->peak_energy);
     trace_event('T', e->timestamp_ms, e->duration_ms, (bcd_correlator_t *)u); }
 static void on_bf(const bcd_freq_event_t *e, void *u) {
-    printf("BFREQ t=%.1f dur=%.1f\n", e->timestamp_ms, e->duration_ms);
+    printf("BFREQ t=%.1f dur=%.1f at=%.1f\n", e->timestamp_ms, e->duration_ms, g_now_ms);
     bcd_correlator_freq_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->accumulated_energy);
     trace_event('F', e->timestamp_ms, e->duration_ms, (bcd_correlator_t *)u); }
 static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
@@ -128,6 +129,7 @@ int main(int argc, char **argv) {
     while ((got = fread(buf, sizeof(float) * 2, 8192, fp)) > 0) {
         for (size_t k = 0; k < got; k++, n++) {
             float I = buf[2 * k], Q = buf[2 * k + 1];
+            g_now_ms = n / FS * 1000.0;
             if (norm) { float nf = normalize(&g_normalizer, I, Q); I *= nf; Q *= nf; }
             float s_i = sync_channel_process(&si, I), s_q = sync_channel_process(&sq, Q);
             float d_i = data_channel_process(&di, I), d_q = data_channel_process(&dq, Q);
