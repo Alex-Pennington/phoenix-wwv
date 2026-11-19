@@ -19,7 +19,8 @@
 #
 # sdrplay.service is started here and stopped on every exit path (end, Ctrl-C,
 # error): it stays disabled except while recording. The last line printed is the
-# service state after the stop.
+# service state after the stop. The vendor service can crash on stop; the script
+# then reports it and clears the unit's failed state.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -87,6 +88,13 @@ cleanup() {
   if [ -n "$STARTED" ]; then
     echo "[wwv_rsp2_live] stopping sdrplay.service" >&2
     sudo systemctl stop sdrplay.service || echo "[wwv_rsp2_live] ERROR: systemctl stop sdrplay.service failed" >&2
+    # sdrplay_apiService (3.15.2) sometimes segfaults while it shuts down, after the
+    # stream is closed; the unit is then stopped but "failed". Record that and clear
+    # the flag, so the unit reads inactive (the journal keeps the crash).
+    if [ "$(systemctl is-active sdrplay.service || true)" = failed ]; then
+      echo "[wwv_rsp2_live] sdrplay.service stopped with Result=$(systemctl show -p Result --value sdrplay.service); clearing the failed state" >&2
+      sudo systemctl reset-failed sdrplay.service || true
+    fi
   fi
   echo "[wwv_rsp2_live] sdrplay.service: $(systemctl is-active sdrplay.service || true)" >&2
   exit "$rc"
