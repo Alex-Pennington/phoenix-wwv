@@ -53,11 +53,15 @@ typedef struct marker_detector marker_detector_t;
 
 typedef struct {
     int marker_number;
-    float timestamp_ms;
+    float timestamp_ms;             /* When the detector fired (end of the 1 s window excursion) */
     float since_last_marker_sec;
     float accumulated_energy;
     float peak_energy;
-    float duration_ms;
+    float duration_ms;              /* Estimated pulse length, window stretch removed.
+                                       Unreliable when the window sum barely clears the
+                                       threshold (weak or faded markers). */
+    float start_timestamp_ms;       /* Leading edge (on-time marker): window-run midpoint
+                                       minus (window + 800 ms)/2 */
 } marker_event_t;
 
 typedef void (*marker_callback_fn)(const marker_event_t *event, void *user_data);

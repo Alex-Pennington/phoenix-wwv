@@ -39,6 +39,42 @@ static void update_accumulator(marker_detector_t *md, float energy) {
 }
 
 /*============================================================================
+ * Pulse estimate
+ *============================================================================*/
+
+/**
+ * Recover the pulse from the window-sum excursion.
+ *
+ * The detector thresholds a W-frame sliding sum, so it reports the run of that
+ * sum above threshold, not the pulse: a rectangular pulse of length L gives a
+ * run of D = W + L - 2*f*min(L, W), where f = (T - b)/(peak - b) is the
+ * threshold's fraction of the plateau above baseline. That is the 800 ms marker
+ * read as 1.6-1.8 s.
+ *
+ * The run's midpoint is start + (W + L)/2 whatever f is, and a WWV minute marker
+ * is 800 ms, so the leading edge is midpoint - (W + 800)/2. The length estimate
+ * solves D for L; it is ill-conditioned as f nears 0.5 and is for reporting only.
+ */
+static void marker_estimate_pulse(const marker_detector_t *md, uint64_t end_frame,
+                                  float *start_ms, float *length_ms) {
+    const float W = MARKER_WINDOW_FRAMES * FRAME_DURATION_MS;
+    float up = md->marker_start_frame * FRAME_DURATION_MS;
+    float down = end_frame * FRAME_DURATION_MS;
+    float D = down - up;
+
+    *start_ms = 0.5f * (up + down) - 0.5f * (W + MARKER_PULSE_MS);
+
+    float plateau = md->marker_peak_energy - md->baseline_energy;
+    float f = (plateau > 0.0f) ? (md->threshold - md->baseline_energy) / plateau : 0.5f;
+    float g = 1.0f - 2.0f * f;
+    float L = (fabsf(g) > 1e-3f) ? (D - W) / g : -1.0f;   /* case L <= W */
+    if (L < 0.0f || L > W) L = D - W * g;                 /* case L > W */
+    if (L < 0.0f) L = 0.0f;
+    if (L > D) L = D;
+    *length_ms = L;
+}
+
+/*============================================================================
  * State Machine
  *============================================================================*/
 
@@ -115,6 +151,9 @@ void marker_state_machine_run(marker_detector_t *md) {
             bool timed_out = (duration_ms > MARKER_MAX_DURATION_MS);
 
             if (md->accumulated_energy < md->threshold || timed_out) {
+                float pulse_start_ms, pulse_ms;
+                marker_estimate_pulse(md, frame, &pulse_start_ms, &pulse_ms);
+
                 if (duration_ms >= md->min_duration_ms && duration_ms < MARKER_MAX_DURATION_MS) {
                     /* Valid marker! */
                     md->markers_detected++;
@@ -124,9 +163,9 @@ void marker_state_machine_run(marker_detector_t *md) {
                     float since_last = (md->last_marker_frame > 0) ?
                         (md->marker_start_frame - md->last_marker_frame) * FRAME_DURATION_MS / 1000.0f : 0.0f;
 
-                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms  since=%.1fs  accum=%.2f\n",
+                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms (window run %.0fms)  start=%.1fms  since=%.1fs  accum=%.2f\n",
                            timestamp_ms / 1000.0f, md->markers_detected,
-                           duration_ms, since_last, md->marker_peak_energy);
+                           pulse_ms, duration_ms, pulse_start_ms, since_last, md->marker_peak_energy);
 
                     /* CSV logging and telemetry */
                     char time_str[16];
@@ -159,13 +198,18 @@ void marker_state_machine_run(marker_detector_t *md) {
                             .since_last_marker_sec = since_last,
                             .accumulated_energy = md->accumulated_energy,
                             .peak_energy = md->marker_peak_energy,
-                            .duration_ms = duration_ms
+                            .duration_ms = pulse_ms,
+                            .start_timestamp_ms = pulse_start_ms
                         };
                         md->callback(&event, md->callback_user_data);
                     }
                 } else if (timed_out) {
-                    printf("[%7.1fs] MARKER timed out after %.0fms\n",
+                    printf("[%7.1fs] MARKER timed out after %.0fms - resetting baseline\n",
                            frame * FRAME_DURATION_MS / 1000.0f, duration_ms);
+                    /* Restored from before 7e7805e: without it, sustained in-band
+                     * energy keeps the detector cycling IN_MARKER -> timeout. */
+                    md->baseline_energy = md->accumulated_energy;
+                    md->threshold = md->baseline_energy * md->threshold_multiplier;
                 }
 
                 md->state = STATE_COOLDOWN;

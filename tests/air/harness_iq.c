@@ -70,7 +70,7 @@ static void on_tick_marker(const tick_marker_event_t *e, void *u) { (void)u;
         tick_detector_set_epoch_with_source(g_tick, e->start_timestamp_ms, EPOCH_SOURCE_MARKER, 0.7f);
 }
 static void on_marker(const marker_event_t *e, void *u) { (void)u;
-    printf("MARK n=%d t=%.1f dur=%.1f\n", e->marker_number, e->timestamp_ms, e->duration_ms);
+    printf("MARK n=%d t=%.1f dur=%.1f lead=%.1f\n", e->marker_number, e->timestamp_ms, e->duration_ms, e->start_timestamp_ms);
     sync_detector_marker_event(g_sync, e->timestamp_ms, e->accumulated_energy, e->duration_ms);
 }
 static void on_bt(const bcd_time_event_t *e, void *u) {

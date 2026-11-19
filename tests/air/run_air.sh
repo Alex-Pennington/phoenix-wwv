@@ -20,7 +20,8 @@ for c in kiwi saga; do
     flag=(); [ "$w" = agc ] && flag=(-n)
     ( "$H" "${flag[@]}" "${CAP[$c]}/air_50k.f32" > "$OUT/${c}_${w}.txt" 2>&1
       python3 -I "$ROOT/score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" "$c/$w" > "$OUT/score_${c}_${w}.txt"
-      python3 -I "$ROOT/bcd_pulse_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt" ) &
+      python3 -I "$ROOT/bcd_pulse_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
+      python3 -I "$(dirname "$0")/marker_lead_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt" ) &
     pids+=($!)
   done
 done
@@ -32,8 +33,8 @@ for c in kiwi saga; do for w in plain agc; do
   grep -o 'false@:29/:59=[0-9]*' "$f" | tr '\n' ' '
   grep -o 'off-second=[0-9]*' "$f" | tr '\n' ' '
   printf 'tmark@:00(±200ms)=%s ' "$(grep 'tick-path TMARK' "$f" | grep -cE '= [+-]1?[0-9]?[0-9]\.[0-9] ms from' || true)"
-  printf 'mark@:00(start ±300ms)=%s ' "$(grep 'marker-det MARK' "$f" | grep -cE 'implied start [+-][12]?[0-9]?[0-9]\.[0-9] ms' || true)"
   printf 'marks=%s ' "$(grep -c 'marker-det MARK' "$f" || true)"
+  grep -oE '^MARKER LEAD: .*false\(>500 ms off\)=[0-9]+' "$f" | sed -E 's/MARKER LEAD: events=[0-9]+ within \+-100 ms of :00=([0-9]+) within \+-500 ms=([0-9]+) false\(>500 ms off\)=([0-9]+)/lead@:00 ±100=\1 ±500=\2 false=\3/' | tr '\n' ' ' 
   grep -o 'decoded(0/1/P)=[0-9]* correct=[0-9]*' "$f" | tr '\n' ' '
   grep -o '^BTIME: events=[0-9]*' "$f" | tr '\n' ' '
   grep -o '^BFREQ: events=[0-9]*' "$f" | tr '\n' ' '
