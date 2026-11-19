@@ -87,6 +87,8 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 td->pulse_peak_energy = energy;
                 td->pulse_duration_frames = 1;
                 td->consecutive_low_frames = 0;
+                td->pulse_energy_sum = energy;
+                td->pulse_energy_frames = 1;
             }
             break;
 
@@ -96,11 +98,18 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 td->pulse_peak_energy = energy;
             }
 
-            /* Phase 9: Require consecutive low frames before ending pulse */
-            if (energy < td->threshold_low) {
+            /* The pulse ends at half its own amplitude (BCD_TIME_EDGE_FRACTION of the
+             * mean of its frames so far), or at threshold_low if that is higher.
+             * Require consecutive low frames before ending it. */
+            float end_threshold = BCD_TIME_EDGE_FRACTION *
+                                  (td->pulse_energy_sum / td->pulse_energy_frames);
+            if (end_threshold < td->threshold_low) end_threshold = td->threshold_low;
+            if (energy < end_threshold) {
                 td->consecutive_low_frames++;
             } else {
                 td->consecutive_low_frames = 0;  /* Reset if signal returns */
+                td->pulse_energy_sum += energy;
+                td->pulse_energy_frames++;
             }
 
             if (td->consecutive_low_frames >= MIN_LOW_FRAMES) {

@@ -43,6 +43,11 @@ extern "C" {
 /* Detection parameters */
 #define BCD_TIME_THRESHOLD_MULT     2.0f    /* Energy must be 2x noise floor */
 #define BCD_TIME_HYSTERESIS_RATIO   0.7f    /* Drop-off threshold */
+/* A pulse ends where its energy falls below this fraction of its own mean level:
+ * width at half amplitude (the bucket value is a magnitude). WWV keeps the 100 Hz
+ * subcarrier on at a low level (15 dB under the pulse) between pulses, and the floor
+ * settles under that low level, so threshold_low alone does not see a pulse end. */
+#define BCD_TIME_EDGE_FRACTION      0.5f
 
 /* Pulse classification thresholds (same as existing bcd_decoder) */
 #define BCD_TIME_PULSE_MIN_MS       100.0f  /* Ignore pulses shorter than this */
