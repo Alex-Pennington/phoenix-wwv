@@ -34,10 +34,12 @@ set(PHOENIX_WWV_SOURCES
     src/detection/tone/tone_measurement.c
     src/detection/tone/tone_tracker.c
     src/external/kiss_fft.c
+    src/manager/chain_log.c
     src/manager/detector_lifecycle.c
     src/manager/detector_routing.c
     src/manager/wwv_detector_manager.c
     src/signal/channel_filters.c
+    src/signal/iq_frontend.c
     src/signal/tick_comb_filter.c
     src/sync/sync_detector.c
     src/decode/wwv_time_decoder.c
@@ -57,6 +59,13 @@ if(WIN32)
     target_link_libraries(phoenix_wwv PUBLIC ws2_32)
 else()
     target_link_libraries(phoenix_wwv PUBLIC m)
+endif()
+
+# Live host: I/Q stream (stdin or sdr_server TCP) -> full chain -> UDP telemetry
+if(NOT WIN32)
+    add_executable(wwv_live apps/wwv_live.c)
+    target_link_libraries(wwv_live PRIVATE phoenix_wwv)
+    target_compile_options(wwv_live PRIVATE -Wall -Wextra)
 endif()
 
 include(CTest)
