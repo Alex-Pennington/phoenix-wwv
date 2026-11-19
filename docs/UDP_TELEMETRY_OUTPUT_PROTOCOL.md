@@ -605,6 +605,22 @@ CONS,[SYNC] Startup state: ACQUIRING (markers=0, good_intervals=0)
 CONS,[EPOCH] 1234 frames = 105.192 sec, avg frame = 85.33 ms
 ```
 
+#### CONS ANCHOR - Stream Time to UTC (wwv_live)
+
+Every `timestamp_ms` field on every channel is ms since detector sample 0. `wwv_live` sends this
+line when it sets the anchor (first block, and again once refined after 10 s of stream):
+
+**Format:** `CONS,ANCHOR,in_sample0_unix,utc0_unix,group_delay_ms,input_rate`
+
+| Field | Description |
+|-------|-------------|
+| `in_sample0_unix` | UTC (Unix seconds) of input sample 0 |
+| `utc0_unix` | UTC of detector time 0: `in_sample0_unix` minus the front-end group delay |
+| `group_delay_ms` | Decimation filter group delay |
+| `input_rate` | Input sample rate, Hz (the sample counter's rate) |
+
+UTC of an event = `utc0_unix + timestamp_ms / 1000`.
+
 ---
 
 ## Enabling/Disabling Channels
