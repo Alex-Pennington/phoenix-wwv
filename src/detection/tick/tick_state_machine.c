@@ -39,6 +39,28 @@ bool tick_state_is_gate_open(tick_detector_t *td, float current_ms) {
 }
 
 /*============================================================================
+ * Floor reset
+ *============================================================================*/
+
+/**
+ * Re-learn the noise floor from the mean energy of the current above-threshold
+ * run. The floor otherwise adapts only in IDLE below threshold, so a step rise
+ * in background (a 500/600 Hz tone change, a skywave fade-up) holds the detector
+ * above threshold for good: every run is rejected and the cooldown after it
+ * swallows the next tick. Only raises the floor.
+ */
+static void tick_state_reset_floor(tick_detector_t *td) {
+    if (td->tick_duration_frames <= 0) return;
+    float mean = td->tick_energy_sum / (float)td->tick_duration_frames;
+    if (mean <= td->noise_floor) return;
+    if (mean > NOISE_FLOOR_MAX) mean = NOISE_FLOOR_MAX;
+    printf("[TICK] Floor reset %.6f -> %.6f (sustained in-band energy)\n", td->noise_floor, mean);
+    td->noise_floor = mean;
+    td->threshold_high = td->noise_floor * td->threshold_multiplier;
+    td->threshold_low = td->threshold_high * TICK_HYSTERESIS_RATIO;
+}
+
+/*============================================================================
  * State Machine
  *============================================================================*/
 
@@ -103,6 +125,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                 td->state = STATE_IN_TICK;
                 td->tick_start_frame = frame;
                 td->tick_peak_energy = energy;
+                td->tick_energy_sum = energy;
                 td->tick_duration_frames = 1;
                 td->corr_peak = 0.0f;  /* Reset correlation peak for new detection */
                 td->corr_sum = 0.0f;   /* Reset accumulated correlation */
@@ -112,6 +135,7 @@ void tick_state_machine_run(tick_detector_t *td) {
 
         case STATE_IN_TICK:
             td->tick_duration_frames++;
+            td->tick_energy_sum += energy;
             if (energy > td->tick_peak_energy) {
                 td->tick_peak_energy = energy;
             }
@@ -267,6 +291,9 @@ void tick_state_machine_run(tick_detector_t *td) {
                     if (duration_ms > TICK_MAX_DURATION_MS && duration_ms < MARKER_MIN_DURATION_MS) {
                         printf("[%7.1fs] REJECTED: dur=%.0fms (gap zone 50-600ms)\n",
                                timestamp_ms / 1000.0f, duration_ms);
+                        /* Too long for a tick and too short for a marker: the
+                         * background has risen. Re-learn the floor from it. */
+                        tick_state_reset_floor(td);
                     } else if (is_marker_duration && !valid_marker_interval) {
                         printf("[%7.1fs] REJECTED: dur=%.0fms (marker-like but only %.1fs since last marker)\n",
                                timestamp_ms / 1000.0f, duration_ms, since_last_marker_ms / 1000.0f);
@@ -281,6 +308,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                 td->ticks_rejected++;
                 printf("[%7.1fs] REJECTED: pulse >1s, bailing out\n",
                        frame * FRAME_DURATION_MS / 1000.0f);
+                tick_state_reset_floor(td);
                 td->state = STATE_COOLDOWN;
                 td->cooldown_frames = MS_TO_FRAMES(TICK_COOLDOWN_MS);
             }

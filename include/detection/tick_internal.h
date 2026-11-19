@@ -126,6 +126,7 @@ struct tick_detector {
     /* Tick measurement */
     uint64_t tick_start_frame;
     float tick_peak_energy;
+    float tick_energy_sum;      /* Sum of energy over the current above-threshold run */
     int tick_duration_frames;
     int cooldown_frames;
 

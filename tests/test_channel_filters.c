@@ -37,6 +37,14 @@ int main(void) {
     check("data: 500 Hz tone", 0, 500.0, -1000, -40);
     check("data: 1000 Hz tick", 0, 1000.0, -1000, -60);
 
+    /* Sync channel: 800-1400 Hz bandpass for the 1000 Hz tick. The 500/600 Hz
+     * tones run 30-40 dB over the floor on air and must be rejected. */
+    check("sync: 500 Hz tone", 1, 500.0, -1000, -30);
+    check("sync: 600 Hz tone", 1, 600.0, -1000, -20);
+    check("sync: 1000 Hz tick", 1, 1000.0, -1.0, 0.5);
+    check("sync: 100 Hz BCD", 1, 100.0, -1000, -60);
+    check("sync: carrier at DC", 1, 0.0, -1000, -60);
+
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;
 }
