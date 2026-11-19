@@ -168,8 +168,15 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                     }
                 }
 
-                td->state = STATE_COOLDOWN;
-                td->cooldown_frames = MS_TO_FRAMES(BCD_TIME_COOLDOWN_MS);
+                if (duration_ms < BCD_TIME_PULSE_MIN_MS) {
+                    /* Too short to be a pulse: no dead time after it. The tick at the
+                     * second leaks a segment like this just before the 100 Hz pulse
+                     * rises (+30 ms), and a cooldown here would hide that rise. */
+                    td->state = STATE_IDLE;
+                } else {
+                    td->state = STATE_COOLDOWN;
+                    td->cooldown_frames = MS_TO_FRAMES(BCD_TIME_COOLDOWN_MS);
+                }
             }
             break;
 
