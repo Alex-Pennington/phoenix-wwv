@@ -39,7 +39,7 @@ static void on_tick_marker(const tick_marker_event_t *e, void *u) {
 }
 static void on_marker(const marker_event_t *e, void *u) {
     (void)u; n_mark++;
-    sync_detector_marker_event(g_sync, e->timestamp_ms, e->accumulated_energy, e->duration_ms);
+    sync_detector_marker_event(g_sync, e->start_timestamp_ms, e->accumulated_energy, e->duration_ms);
 }
 static void on_bt(const bcd_time_event_t *e, void *u) {
     n_btime++;

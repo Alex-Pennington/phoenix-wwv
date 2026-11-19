@@ -72,7 +72,7 @@ static void on_tick_marker(const tick_marker_event_t *e, void *u) { (void)u;
 }
 static void on_marker(const marker_event_t *e, void *u) { (void)u;
     printf("MARK n=%d t=%.1f dur=%.1f lead=%.1f\n", e->marker_number, e->timestamp_ms, e->duration_ms, e->start_timestamp_ms);
-    sync_detector_marker_event(g_sync, e->timestamp_ms, e->accumulated_energy, e->duration_ms);
+    sync_detector_marker_event(g_sync, e->start_timestamp_ms, e->accumulated_energy, e->duration_ms);
 }
 /* WTRACE: which window each BCD event landed in, and what each window held when it
  * closed (read from the correlator's accumulators inside the symbol callback, before
