@@ -23,3 +23,7 @@ add_test(NAME marker COMMAND test_marker)
 add_executable(test_bcd_correlator test_bcd_correlator.c)
 target_link_libraries(test_bcd_correlator PRIVATE phoenix_wwv)
 add_test(NAME bcd_correlator COMMAND test_bcd_correlator)
+
+add_executable(test_wwv_time_decoder test_wwv_time_decoder.c)
+target_link_libraries(test_wwv_time_decoder PRIVATE phoenix_wwv)
+add_test(NAME wwv_time_decoder COMMAND test_wwv_time_decoder)
