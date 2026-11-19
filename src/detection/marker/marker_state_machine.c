@@ -75,6 +75,44 @@ static void marker_estimate_pulse(const marker_detector_t *md, uint64_t end_fram
 }
 
 /*============================================================================
+ * Tone purity
+ *============================================================================*/
+
+/* Track the centre-bin and flank-bin backgrounds at the given rate. Called
+ * wherever baseline_energy adapts, so both freeze while a run is measured. */
+static void track_purity_background(marker_detector_t *md, float rate) {
+    int slot = (int)(md->frame_count % MARKER_PURITY_RING);
+    md->bg_centre += rate * (md->centre_ring[slot] - md->bg_centre);
+    md->bg_flank += rate * (md->flank_ring[slot] - md->bg_flank);
+}
+
+/**
+ * Flank-to-centre ratio of the run's excess over background, measured over the
+ * estimated 800 ms pulse. About 0.04 for a pure 1000 Hz tone at any SNR (Hann
+ * leakage two bins out), about 1.0 for broadband audio such as voice.
+ */
+static float marker_flank_ratio(const marker_detector_t *md, uint64_t end_frame, float pulse_start_ms) {
+    long n = (long)(MARKER_PULSE_MS / FRAME_DURATION_MS + 0.5f);
+    long first = (long)(pulse_start_ms / FRAME_DURATION_MS + 0.5f);
+    long oldest = (long)end_frame - MARKER_PURITY_RING + 1;
+    if (first < oldest) first = oldest;
+    if (first < 0) first = 0;
+    if (first + n > (long)end_frame + 1) n = (long)end_frame + 1 - first;
+    if (n <= 0) return INFINITY;
+
+    double centre = 0.0, flank = 0.0;
+    for (long f = first; f < first + n; f++) {
+        int slot = (int)(f % MARKER_PURITY_RING);
+        centre += md->centre_ring[slot];
+        flank += md->flank_ring[slot];
+    }
+    float centre_excess = (float)(centre / n) - md->bg_centre;
+    float flank_excess = (float)(flank / n) - md->bg_flank;
+    if (centre_excess <= 0.0f) return INFINITY;
+    return flank_excess / centre_excess;
+}
+
+/*============================================================================
  * State Machine
  *============================================================================*/
 
@@ -105,6 +143,7 @@ void marker_state_machine_run(marker_detector_t *md) {
     if (!md->warmup_complete) {
         md->baseline_energy += MARKER_WARMUP_ADAPT_RATE * (md->accumulated_energy - md->baseline_energy);
         md->threshold = md->baseline_energy * md->threshold_multiplier;
+        track_purity_background(md, MARKER_WARMUP_ADAPT_RATE);
 
         if (frame >= md->start_frame + MARKER_WARMUP_FRAMES) {
             md->warmup_complete = true;
@@ -119,6 +158,7 @@ void marker_state_machine_run(marker_detector_t *md) {
     if (timestamp_ms < MARKER_MIN_STARTUP_MS) {
         md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
         md->threshold = md->baseline_energy * md->threshold_multiplier;
+        track_purity_background(md, md->noise_adapt_rate);
         return;
     }
 
@@ -127,6 +167,7 @@ void marker_state_machine_run(marker_detector_t *md) {
         md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
         if (md->baseline_energy < 0.001f) md->baseline_energy = 0.001f;
         md->threshold = md->baseline_energy * md->threshold_multiplier;
+        track_purity_background(md, md->noise_adapt_rate);
     }
 
     /* State machine */
@@ -153,8 +194,23 @@ void marker_state_machine_run(marker_detector_t *md) {
             if (md->accumulated_energy < md->threshold || timed_out) {
                 float pulse_start_ms, pulse_ms;
                 marker_estimate_pulse(md, frame, &pulse_start_ms, &pulse_ms);
+                bool long_enough = (duration_ms >= md->min_duration_ms && duration_ms < MARKER_MAX_DURATION_MS);
+                md->last_flank_ratio = long_enough ?
+                    marker_flank_ratio(md, frame, pulse_start_ms) : 0.0f;
 
-                if (duration_ms >= md->min_duration_ms && duration_ms < MARKER_MAX_DURATION_MS) {
+                if (long_enough && !(md->last_flank_ratio <= MARKER_MAX_FLANK_RATIO)) {
+                    /* Not a tone: broadband audio (the :52.5 voice announcement)
+                     * in the 1000 Hz bucket. No cooldown, so the real marker that
+                     * follows within seconds is still seen. */
+                    printf("[%7.1fs] MARKER rejected: not a tone, flank/centre excess %.2f > %.2f "
+                           "(window run %.0fms, start=%.1fms)\n",
+                           frame * FRAME_DURATION_MS / 1000.0f, md->last_flank_ratio,
+                           MARKER_MAX_FLANK_RATIO, duration_ms, pulse_start_ms);
+                    md->state = STATE_IDLE;
+                    break;
+                }
+
+                if (long_enough) {
                     /* Valid marker! */
                     md->markers_detected++;
                     md->flash_frames_remaining = MARKER_FLASH_FRAMES;
@@ -163,9 +219,10 @@ void marker_state_machine_run(marker_detector_t *md) {
                     float since_last = (md->last_marker_frame > 0) ?
                         (md->marker_start_frame - md->last_marker_frame) * FRAME_DURATION_MS / 1000.0f : 0.0f;
 
-                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms (window run %.0fms)  start=%.1fms  since=%.1fs  accum=%.2f\n",
+                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms (window run %.0fms)  start=%.1fms  since=%.1fs  accum=%.2f  flank=%.2f\n",
                            timestamp_ms / 1000.0f, md->markers_detected,
-                           pulse_ms, duration_ms, pulse_start_ms, since_last, md->marker_peak_energy);
+                           pulse_ms, duration_ms, pulse_start_ms, since_last, md->marker_peak_energy,
+                           md->last_flank_ratio);
 
                     /* CSV logging and telemetry */
                     char time_str[16];

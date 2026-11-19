@@ -10,6 +10,10 @@
  *   - Self-tracking baseline adapts slowly during IDLE state
  *   - Do NOT inject external baselines - incompatible scaling between FFT paths
  *   - Proven reliable in v133 testing
+ *   - A run is accepted only if its excess over background is a pure tone: the
+ *     bins two either side of 1000 Hz must hold under 0.2 of the centre bin's
+ *     excess. This rejects the :52.5 voice announcement, which is broadband.
+ *     A rejected run returns to IDLE without the 30 s cooldown.
  */
 
 #ifndef MARKER_DETECTOR_H

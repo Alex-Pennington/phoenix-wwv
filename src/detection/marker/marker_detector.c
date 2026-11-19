@@ -28,6 +28,21 @@ static float calculate_bucket_energy(marker_detector_t *md) {
     return fft_processor_get_bucket_energy(md->fft, MARKER_TARGET_FREQ_HZ, MARKER_BANDWIDTH_HZ);
 }
 
+/* One bin's level, positive and negative frequency, scaled as the bucket is. */
+static float bin_level(const marker_detector_t *md, int b) {
+    return (md->mag_buffer[b] + md->mag_buffer[MARKER_FFT_SIZE - b]) / MARKER_FFT_SIZE;
+}
+
+/* Record this frame's centre-bin and flank-bin levels for the purity test. */
+static void record_purity_bins(marker_detector_t *md) {
+    const int c = (int)(MARKER_TARGET_FREQ_HZ / HZ_PER_BIN + 0.5f);
+    const int k = MARKER_FLANK_OFFSET_BINS;
+    fft_processor_get_magnitudes(md->fft, md->mag_buffer);
+    int slot = (int)(md->frame_count % MARKER_PURITY_RING);
+    md->centre_ring[slot] = bin_level(md, c);
+    md->flank_ring[slot] = bin_level(md, c - k) + bin_level(md, c + k);
+}
+
 void marker_get_wall_time_str(marker_detector_t *md, float timestamp_ms, char *buf, size_t buflen) {
     time_t event_time = md->start_time + (time_t)(timestamp_ms / 1000.0f);
     struct tm *tm_info = localtime(&event_time);
@@ -51,8 +66,12 @@ marker_detector_t *marker_detector_create(const char *csv_path) {
     md->i_buffer = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
     md->q_buffer = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
     md->energy_history = (float *)malloc(MARKER_WINDOW_FRAMES * sizeof(float));
+    md->mag_buffer = (float *)malloc(MARKER_FFT_SIZE * sizeof(float));
+    md->centre_ring = (float *)calloc(MARKER_PURITY_RING, sizeof(float));
+    md->flank_ring = (float *)calloc(MARKER_PURITY_RING, sizeof(float));
 
-    if (!md->i_buffer || !md->q_buffer || !md->energy_history) {
+    if (!md->i_buffer || !md->q_buffer || !md->energy_history ||
+        !md->mag_buffer || !md->centre_ring || !md->flank_ring) {
         marker_detector_destroy(md);
         return NULL;
     }
@@ -135,6 +154,9 @@ void marker_detector_destroy(marker_detector_t *md) {
     free(md->i_buffer);
     free(md->q_buffer);
     free(md->energy_history);
+    free(md->mag_buffer);
+    free(md->centre_ring);
+    free(md->flank_ring);
     free(md);
 }
 
@@ -159,6 +181,7 @@ bool marker_detector_process_sample(marker_detector_t *md, float i_sample, float
 
     fft_processor_process(md->fft, md->i_buffer, md->q_buffer);
     md->current_energy = calculate_bucket_energy(md);
+    record_purity_bins(md);
     marker_state_machine_run(md);
     md->frame_count++;
 
