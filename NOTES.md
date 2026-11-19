@@ -62,18 +62,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Sync and correlator
 
-- **`src/manager/detector_routing.c` does not wire sync the way the harness does.** It passes
-  the tick-path marker's `timestamp_ms` (trailing edge, +0.8 s) to
-  `sync_detector_tick_marker()` and never feeds marker-detector events to sync. The sync header
-  now says both entry points take the leading edge. waterfall.c (outside this repo) must pass
-  `marker_event_t.start_timestamp_ms` to `sync_detector_marker_event()`, as the harness now does.
-  Neither the manager nor waterfall.c calls `bcd_correlator_periodic_check()` or creates a
-  `wwv_time_decoder`; without the periodic call there are no NONE erasures. The harness is the
-  only host that runs the decoder.
 - `sync_detector_full_reset()` does not clear `last_confirmed_ms`, so a stale anchor survives a
   reset. The re-anchor rule mitigates it.
-- The sync detector gets no per-tick events in the waterfall.c wiring, so tick-hole evidence never
-  arrives.
+- The sync detector gets no per-tick events (`sync_detector_tick_event()`): neither the manager
+  nor the harness ever fed them, so tick-hole evidence never arrives. Kept that way so the scored
+  chain did not change.
 - The BCD correlator averages BFREQ's duration with BTIME's when a window holds both. BFREQ fires
   mostly on P-marker clusters, and its durations (164-983 ms over the four runs) do not cluster
   at 200/500/800 ms. No air window is wrong because of it today (freq-avg 0 on all runs). BFREQ-only windows
@@ -142,6 +135,38 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   when the next minute's anchor replaces the current one during it.
 - New module `wwv_time_decoder` (`include/wwv_time_decoder.h`) and telemetry lines `BCDS,FRAME`
   and `BCDS,UTC`.
+- `wwv_detector_manager_process_detector_sample()` now takes 50 kHz baseband before the channel
+  filters (it owns the filters, the optional AGC, the BCD detectors, correlator and decoder).
+  `wwv_detector_config_t` gained `enable_bcd`, `enable_time_decoder`, `enable_agc`, `verbose`;
+  `output_dir` NULL writes no CSVs. New: observer struct, component getters, `wwv_chain_log`,
+  `iq_frontend`, `telem_set_tap()`, telemetry line `CONS,ANCHOR`.
+
+## Live host (`apps/wwv_live.c`, `scripts/wwv_rsp2_live.sh`)
+
+- **`sdrplay_apiService` 3.15.2 segfaulted while systemd stopped it** (2026-11-19 17:44:59 UTC,
+  Result core-dump), after the stream was closed. The unit was stopped but `failed`. An earlier
+  stop that day (12:31) was clean. The wrapper now reports it and runs `systemctl reset-failed`.
+  The cause is in the vendor binary and is not investigated.
+- **At 17:42 UTC the whip saw no usable WWV on 5 MHz**: carrier C/N0 11-14 dB-Hz, against 54-62
+  dB-Hz in the 12:09 UTC capture with the same settings. The 165 s smoke test found 0 markers and
+  never left ACQUIRING. A live run needs a time of day with propagation (the scored capture was at
+  dawn).
+- **A raw recording of a 90-minute run does not fit on saga's root filesystem**: 2 MS/s CS16 is
+  8 MB/s, 43 GB for 90 minutes, and 39 GB was free. `--record` refuses when `--secs` is given and
+  the space is short; without `--secs` it only warns.
+- **The live clock has no rate correction.** Detector time counts samples at the nominal rate; the
+  RSP2's TCXO read 1.09 ppm slow, 5.9 ms over 90 minutes. The anchor is the least-delayed block in
+  the first 10 s, so it is late by the minimum USB/API latency, which nothing measures.
+- **The fine carrier correction (5.45 Hz) is a constant measured on one day.** The replay scores
+  moved no more with 0 Hz than between AGC wirings, so it is not critical; tracking the carrier
+  would remove it.
+- **A raw 2 MS/s replay does not reproduce the harness scores exactly**: wwv_live decimates in one
+  pass, the converted 50 kHz streams went through a 12 kHz int16 round trip and a GPS-fit
+  resampler. Saga plain: ticks 262 vs 255, symbols 244/331 vs 257/336; agc: ticks 351 vs 358,
+  symbols 245/286 vs 178/215 (07ffb51 detectors). False confirms 0 in both.
+- The tone trackers send no telemetry; wwv_live runs them only for the manager's display path.
+- `marker_correlator` and `tick_correlator` are disabled in both hosts; the tick correlator is
+  created by the manager when enabled but never fed (it needs tick-detector internals).
 
 ## Documentation
 
