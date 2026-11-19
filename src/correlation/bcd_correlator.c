@@ -140,7 +140,8 @@ static void close_window(bcd_correlator_t *corr) {
                 .timestamp_ms = symbol_timestamp_ms,
                 .duration_ms = duration_ms,
                 .confidence = confidence,
-                .source = source
+                .source = source,
+                .second = corr->current_second
             };
             corr->callback(&event, corr->callback_user_data);
         }

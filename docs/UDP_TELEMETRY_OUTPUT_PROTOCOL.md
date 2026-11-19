@@ -333,6 +333,40 @@ BCDS,FREQ,14:32:16,86320.0,128,0.042123,503.2,0.001234,19.2
 
 ---
 
+#### BCDS SYMBOL - BCD Symbol Per Second
+
+Broadcast once per correlator window: a window opens on a BCD pulse event while sync is
+LOCKED and closes when events move to another second. This is the per-second BCD output.
+
+**Format:** `BCDS,SYMBOL,symbol_count,timestamp_ms,symbol,duration_ms,time_events,freq_events,source,confidence,second`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `symbol_count` | int | Windows closed since start |
+| `timestamp_ms` | float | Window centre, milliseconds since start |
+| `symbol` | char | `0`, `1`, `P` (position marker), or `.` when none could be classified |
+| `duration_ms` | float | Estimated pulse duration (ms) |
+| `time_events` | int | Events from the time-domain detector in this window |
+| `freq_events` | int | Events from the frequency-domain detector in this window |
+| `source` | string | `TIME`, `FREQ`, `BOTH`, or `NONE` |
+| `confidence` | float | 0.0-1.0 |
+| `second` | int | WWV second in the minute (0-59), counted from the sync detector's minute anchor |
+
+**Example:**
+```
+BCDS,SYMBOL,2,213078.9,1,788,2,0,TIME,0.60,1
+```
+
+`second` is the last field, so parsers of the earlier 9-field `SYMBOL` line keep working.
+It is only as good as the sync anchor: it is exact when sync anchored on a real minute
+marker's leading edge.
+
+**Not emitted per second:** `CORR` and `SYM` below were the per-second output before the
+correlator split (9a8e6ec). Since then they are written only for the final window, from
+`bcd_correlator_destroy()`. Use `SYMBOL`.
+
+---
+
 #### BCDS CORR - BCD Correlation Statistics
 
 Broadcast for each symbol correlation event, providing detailed statistics from both detection paths.

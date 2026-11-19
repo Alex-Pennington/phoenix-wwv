@@ -21,7 +21,8 @@ for c in kiwi saga; do
     ( "$H" "${flag[@]}" "${CAP[$c]}/air_50k.f32" > "$OUT/${c}_${w}.txt" 2>&1
       python3 -I "$ROOT/score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" "$c/$w" > "$OUT/score_${c}_${w}.txt"
       python3 -I "$ROOT/bcd_pulse_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
-      python3 -I "$(dirname "$0")/marker_lead_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt" ) &
+      python3 -I "$(dirname "$0")/marker_lead_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
+      python3 -I "$(dirname "$0")/symbol_second_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt" ) &
     pids+=($!)
   done
 done

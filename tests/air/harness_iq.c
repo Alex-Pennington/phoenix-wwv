@@ -80,7 +80,7 @@ static void on_bf(const bcd_freq_event_t *e, void *u) {
     printf("BFREQ t=%.1f dur=%.1f\n", e->timestamp_ms, e->duration_ms);
     bcd_correlator_freq_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->accumulated_energy); }
 static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
-    printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source); }
+    printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second); }
 static void on_state(sync_state_t o, sync_state_t n, float c, void *u) { (void)u;
     printf("SYNC %s->%s conf=%.2f\n", sync_state_name(o), sync_state_name(n), c); }
 

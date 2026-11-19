@@ -144,10 +144,11 @@ void bcd_window_close(bcd_correlator_t *corr) {
     }
 
     /* UDP telemetry */
-    telem_sendf(TELEM_BCDS, "SYMBOL,%d,%.1f,%c,%.0f,%d,%d,%s,%.2f",
+    telem_sendf(TELEM_BCDS, "SYMBOL,%d,%.1f,%c,%.0f,%d,%d,%s,%.2f,%d",
                 corr->symbol_count, symbol_timestamp_ms,
                 bcd_corr_symbol_char(symbol), duration_ms,
-                corr->time_event_count, corr->freq_event_count, source, confidence);
+                corr->time_event_count, corr->freq_event_count, source, confidence,
+                corr->current_second);
 
     /* Callback */
     if (corr->callback) {
@@ -156,7 +157,8 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .timestamp_ms = symbol_timestamp_ms,
             .duration_ms = duration_ms,
             .confidence = confidence,
-            .source = source
+            .source = source,
+            .second = corr->current_second
         };
         corr->callback(&event, corr->callback_user_data);
     }

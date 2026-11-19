@@ -65,6 +65,7 @@ typedef struct {
     float duration_ms;
     float confidence;           /* 0-1, higher if both detectors contributed */
     const char *source;         /* "BOTH", "TIME", "FREQ", or "NONE" */
+    int second;                 /* WWV second in the minute (0-59), from the sync anchor */
 } bcd_symbol_event_t;
 
 typedef void (*bcd_corr_symbol_callback_fn)(const bcd_symbol_event_t *event, void *user_data);
