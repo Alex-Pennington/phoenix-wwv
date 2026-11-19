@@ -6,6 +6,9 @@
  *    to it, and the next real marker must be accepted.
  * 3. Two anchors interleaved (real every 60 s, false every 60 s, offset 25 s):
  *    the anchor must stay on the real chain and never flip.
+ * 4. A lone marker with only the 50 ms periodic check after it (a minute where
+ *    one detector fires): it must anchor within PENDING_TIMEOUT_MS (3 s), not
+ *    wait for the next marker event a minute later.
  */
 #include <stdio.h>
 #include <math.h>
@@ -70,6 +73,18 @@ int main(void) {
            sync_detector_get_last_marker_ms(sd), 300400.0f);   /* real m=5 */
     printf("%-4s interleaved: anchor never on the false chain (%d flips)\n", flips ? "FAIL" : "ok", flips);
     if (flips) fails++;
+    sync_detector_destroy(sd);
+
+    /* 4. Real lock at 0.4 + 60k s, then a lone marker at 180.4 s and periodic
+     *    checks only, as the harness and waterfall.c call them. */
+    sd = sync_detector_create(NULL);
+    marker(sd, 400.0f);
+    marker(sd, 60400.0f);
+    marker(sd, 120400.0f);
+    sync_detector_tick_marker(sd, 180400.0f, 810.0f, 100.0f);
+    for (float t = 180450.0f; t <= 183600.0f; t += 50.0f) sync_detector_periodic_check(sd, t);
+    expect("lone marker: anchored by the periodic check within 3.2 s",
+           sync_detector_get_last_marker_ms(sd), 180400.0f);
     sync_detector_destroy(sd);
 
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);

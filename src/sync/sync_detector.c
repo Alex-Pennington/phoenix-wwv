@@ -693,6 +693,10 @@ void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
 void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
     if (!sd) return;
 
+    /* A lone pending marker is confirmed PENDING_TIMEOUT_MS after it, not when
+     * the next marker event happens to arrive a minute later. */
+    check_timeout(sd, current_ms);
+
     /* Confidence decay */
     float decay_rate = (sd->state == SYNC_RECOVERING) ?
                        sd->confidence_decay_recovering : sd->confidence_decay_normal;
