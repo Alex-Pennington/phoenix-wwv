@@ -103,7 +103,9 @@ typedef struct {
     wwv_detector_observer_t log_obs;
 
     bool anchored;
+    bool refining;              /* anchor still taking the lower envelope */
     double anchor_unix;         /* UTC of input sample 0 */
+    double lag_min_ms, lag_max_ms;  /* arrival lag behind the anchor, this status interval */
     double utc0;                /* UTC of detector time 0 */
     uint64_t in_samples;
     double next_status_ms;
@@ -260,11 +262,12 @@ static void print_status(double stream_ms) {
     } else {
         printf(" | UTC not decoded");
     }
-    if (!A.opt.have_t0) {
-        /* stream time behind the system clock: grows if samples are lost upstream */
-        double lag = (now_unix() - A.anchor_unix) * 1000.0 - (double)A.in_samples / A.opt.rate * 1000.0;
-        printf(" | lag %+.0f ms", lag);
+    if (!A.opt.have_t0 && A.lag_max_ms >= A.lag_min_ms) {
+        /* blocks arrive this long after their last sample's time on the anchored
+         * counter; a minimum that grows means samples lost upstream or clock drift */
+        printf(" | lag %+.0f..%+.0f ms", A.lag_min_ms, A.lag_max_ms);
     }
+    A.lag_min_ms = 1e30; A.lag_max_ms = -1e30;
     printf("\n");
     fflush(stdout);
 }
@@ -288,21 +291,18 @@ static void disp_sample(float i, float q, void *u) {
     wwv_detector_manager_process_display_sample(A.mgr, i, q);
 }
 
-static void anchor(size_t first_block_samples) {
-    double arrival = now_unix();
-    A.anchor_unix = A.opt.have_t0 ? A.opt.t0 : arrival - first_block_samples / A.opt.rate;
+#define ANCHOR_REFINE_S 10.0
+
+/* Set the anchor (UTC of input sample 0), log it, send it, write --timebase */
+static void set_anchor(double sample0_unix, const char *how) {
     double gd = iq_frontend_group_delay_s(A.fe);
+    A.anchor_unix = sample0_unix;
     A.utc0 = A.anchor_unix - gd;
     A.anchored = true;
-    char a[40], b[40], c[40];
+    char a[40], c[40];
     fmt_utc(A.anchor_unix, a, sizeof a, 6);
-    fmt_utc(arrival, b, sizeof b, 6);
     fmt_utc(A.utc0, c, sizeof c, 6);
-    if (A.opt.have_t0)
-        printf("ANCHOR   input sample 0 = %s (--t0 %.6f)\n", a, A.opt.t0);
-    else
-        printf("ANCHOR   input sample 0 = %s: system clock at the first block (%s) minus its %zu samples\n",
-               a, b, first_block_samples);
+    printf("ANCHOR   input sample 0 = %s: %s\n", a, how);
     printf("ANCHOR   detector time 0 = %s (front-end group delay %.3f ms)\n", c, gd * 1000.0);
     printf("ANCHOR   UTC(t) = %.6f + t_ms/1000; sample counter at %.0f Hz, no clock-rate correction\n",
            A.utc0, A.opt.rate);
@@ -312,7 +312,7 @@ static void anchor(size_t first_block_samples) {
         if (f) {
             fprintf(f, "{\n \"source\": \"wwv_live\",\n \"anchor\": \"%s\",\n \"in_sample0_unix\": %.6f,\n"
                        " \"frontend_group_delay_ms\": %.6f,\n \"out_utc0_unix\": %.6f,\n \"out_utc0_iso\": \"%s\"\n}\n",
-                    A.opt.have_t0 ? "t0" : "system clock at first block", A.anchor_unix, gd * 1000.0, A.utc0, c);
+                    how, A.anchor_unix, gd * 1000.0, A.utc0, c);
             fclose(f);
         } else {
             fprintf(stderr, "wwv_live: %s: %s\n", A.opt.timebase_path, strerror(errno));
@@ -321,8 +321,42 @@ static void anchor(size_t first_block_samples) {
     fflush(stdout);
 }
 
+/* A block of n samples arrived at `arrival` (system clock). Its last sample was
+ * taken no later than that, so arrival - (samples so far)/rate is the time of
+ * sample 0 plus a latency >= 0. The first block anchors; for ANCHOR_REFINE_S of
+ * stream the anchor follows the lowest such value (least-delayed block), then it
+ * is fixed and logged again. */
+static void time_block(size_t n, double arrival) {
+    double d = arrival - (double)(A.in_samples + n) / A.opt.rate;
+    if (!A.anchored) {
+        if (A.opt.have_t0) {
+            char how[64];
+            snprintf(how, sizeof how, "--t0 %.6f", A.opt.t0);
+            set_anchor(A.opt.t0, how);
+            return;
+        }
+        set_anchor(d, "system clock at the first block minus its duration (refining)");
+        A.refining = true;
+        A.lag_min_ms = 1e30; A.lag_max_ms = -1e30;
+    }
+    if (A.opt.have_t0) return;
+    if (A.refining) {
+        if (d < A.anchor_unix) { A.anchor_unix = d; A.utc0 = d - iq_frontend_group_delay_s(A.fe); }
+        if ((double)A.in_samples / A.opt.rate >= ANCHOR_REFINE_S) {
+            A.refining = false;
+            char how[128];
+            snprintf(how, sizeof how, "least-delayed block over the first %.0f s (arrival minus stream time)",
+                     ANCHOR_REFINE_S);
+            set_anchor(A.anchor_unix, how);
+        }
+    }
+    double lag = (d - A.anchor_unix) * 1000.0;
+    if (lag < A.lag_min_ms) A.lag_min_ms = lag;
+    if (lag > A.lag_max_ms) A.lag_max_ms = lag;
+}
+
 /* Convert n samples of the given format into floats and push them */
-static void push_raw(const void *buf, size_t n, int format) {
+static void push_raw(const void *buf, size_t n, int format, double arrival) {
     static float *f = NULL;
     static size_t cap = 0;
     if (n > cap) { free(f); cap = n; f = malloc(sizeof(float) * 2 * cap); }
@@ -335,7 +369,7 @@ static void push_raw(const void *buf, size_t n, int format) {
     } else {
         memcpy(f, buf, sizeof(float) * 2 * n);
     }
-    if (!A.anchored) anchor(n);
+    time_block(n, arrival);
     A.in_samples += n;
     iq_frontend_push(A.fe, f, n, det_sample, A.opt.tones ? disp_sample : NULL, NULL);
 }
@@ -382,6 +416,7 @@ static void run_stdin(void) {
     size_t have = 0;
     while (!g_stop) {
         ssize_t r = read(0, buf + have, block * bps - have);
+        double arrival = now_unix();
         if (r == 0) break;
         if (r < 0) {
             if (errno == EINTR) continue;
@@ -391,7 +426,7 @@ static void run_stdin(void) {
         have += (size_t)r;
         size_t n = have / bps;
         if (n == 0) continue;
-        push_raw(buf, n, A.opt.format);
+        push_raw(buf, n, A.opt.format, arrival);
         size_t used = n * bps;
         memmove(buf, buf + used, have - used);
         have -= used;
@@ -474,7 +509,7 @@ static void run_tcp(const char *spec) {
         size_t bytes = (size_t)fr.num_samples * bytes_per_sample(format);
         if (bytes > cap) { free(buf); cap = bytes; buf = malloc(cap); }
         if (!read_exact(fd, buf, bytes)) break;
-        push_raw(buf, fr.num_samples, format);
+        push_raw(buf, fr.num_samples, format, now_unix());
     }
     free(buf);
     close(fd);
