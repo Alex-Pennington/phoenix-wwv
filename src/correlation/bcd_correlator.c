@@ -223,6 +223,7 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
     /* Accumulate into current window */
     if (corr->time_event_count == 0) {
         corr->time_first_ms = timestamp_ms;
+        corr->time_first_dur_ms = duration_ms;
     }
     corr->time_last_ms = timestamp_ms;
     corr->time_energy_sum += peak_energy;
@@ -245,6 +246,7 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
     /* Accumulate into current window */
     if (corr->freq_event_count == 0) {
         corr->freq_first_ms = timestamp_ms;
+        corr->freq_first_dur_ms = duration_ms;
     }
     corr->freq_last_ms = timestamp_ms;
     corr->freq_energy_sum += accum_energy;

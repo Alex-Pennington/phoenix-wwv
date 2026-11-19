@@ -63,12 +63,14 @@ void bcd_window_open(bcd_correlator_t *corr, int second, float anchor_ms) {
     corr->time_duration_sum = 0.0f;
     corr->time_event_count = 0;
     corr->time_first_ms = 0.0f;
+    corr->time_first_dur_ms = 0.0f;
     corr->time_last_ms = 0.0f;
 
     corr->freq_energy_sum = 0.0f;
     corr->freq_duration_sum = 0.0f;
     corr->freq_event_count = 0;
     corr->freq_first_ms = 0.0f;
+    corr->freq_first_dur_ms = 0.0f;
     corr->freq_last_ms = 0.0f;
 }
 

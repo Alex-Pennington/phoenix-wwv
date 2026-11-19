@@ -54,12 +54,14 @@ struct bcd_correlator {
     float time_duration_sum;
     int time_event_count;
     float time_first_ms;
+    float time_first_dur_ms;        /* reported width of the window's first event */
     float time_last_ms;
 
     float freq_energy_sum;
     float freq_duration_sum;
     int freq_event_count;
     float freq_first_ms;
+    float freq_first_dur_ms;
     float freq_last_ms;
 
     /* Symbol tracking */

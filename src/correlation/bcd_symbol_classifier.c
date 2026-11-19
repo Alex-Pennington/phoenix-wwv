@@ -50,20 +50,19 @@ bcd_corr_symbol_t bcd_symbol_classify_duration(float duration_ms, int second) {
 }
 
 float bcd_window_estimate_pulse_duration(bcd_correlator_t *corr) {
+    /* Each event carries its own measured pulse width. With several events in
+     * one window, the first is the one nearest the second's start, where the
+     * BCD pulse begins; later ones are mid-second detections. The distance
+     * between two event starts is not a pulse width. */
     float time_span = 0.0f;
     float freq_span = 0.0f;
 
-    if (corr->time_event_count >= 2) {
-        time_span = corr->time_last_ms - corr->time_first_ms;
-    } else if (corr->time_event_count == 1) {
-        /* Single event - use reported duration */
-        time_span = corr->time_duration_sum;
+    if (corr->time_event_count >= 1) {
+        time_span = corr->time_first_dur_ms;
     }
 
-    if (corr->freq_event_count >= 2) {
-        freq_span = corr->freq_last_ms - corr->freq_first_ms;
-    } else if (corr->freq_event_count == 1) {
-        freq_span = corr->freq_duration_sum;
+    if (corr->freq_event_count >= 1) {
+        freq_span = corr->freq_first_dur_ms;
     }
 
     /* If we have both, average them; otherwise use whichever we have */

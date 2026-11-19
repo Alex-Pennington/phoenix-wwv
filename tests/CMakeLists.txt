@@ -19,3 +19,7 @@ add_test(NAME sync_reanchor COMMAND test_sync_reanchor)
 add_executable(test_marker test_marker.c)
 target_link_libraries(test_marker PRIVATE phoenix_wwv)
 add_test(NAME marker COMMAND test_marker)
+
+add_executable(test_bcd_correlator test_bcd_correlator.c)
+target_link_libraries(test_bcd_correlator PRIVATE phoenix_wwv)
+add_test(NAME bcd_correlator COMMAND test_bcd_correlator)
