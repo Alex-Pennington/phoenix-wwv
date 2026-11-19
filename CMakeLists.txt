@@ -40,6 +40,7 @@ set(PHOENIX_WWV_SOURCES
     src/signal/channel_filters.c
     src/signal/tick_comb_filter.c
     src/sync/sync_detector.c
+    src/decode/wwv_time_decoder.c
 )
 
 add_library(phoenix_wwv STATIC ${PHOENIX_WWV_SOURCES})

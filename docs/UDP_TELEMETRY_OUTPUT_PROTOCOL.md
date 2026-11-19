@@ -378,6 +378,78 @@ correlator split (9a8e6ec). Since then they are written only for the final windo
 
 ---
 
+#### BCDS FRAME - One Minute's Time Code Frame
+
+Sent by the time decoder (`wwv_time_decoder`) once per minute, when the minute's frame closes:
+on second 59, on the first symbol of a later minute, or 62 s after the minute's start. The
+frame layout is NIST SP 432 Table 3.13 (see `include/wwv_time_decoder.h`).
+
+**Format:** `BCDS,FRAME,frame_start_ms,chain_minute,frame,markers,markers_contradicted,reserved_ones,reserved_zeros,bcd_violations,p01,admitted,decodable`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frame_start_ms` | float | Start of the minute on the detector clock (the sync anchor plus whole minutes) |
+| `chain_minute` | int | Minutes since the first frame of this chain. Frames whose starts are a whole number of minutes apart (within 1 s) form a chain |
+| `frame` | string | 60 characters, one per second: `0` `1` `P` a symbol whose pulse starts at the second; `~` a 0 or 1 from a mid-second detection only (not used); `.` erasure (locked, no BCD event); `_` no symbol (not locked) |
+| `markers` | int | `P` at seconds 9, 19, 29, 39, 49, 59 |
+| `markers_contradicted` | int | `0` at those seconds, plus `P` anywhere else |
+| `reserved_ones` | int | `1` at a reserved second (1, 8, 14, 18, 24, 27, 28, 34, 42-48), which is always sent as 0 |
+| `reserved_zeros` | int | `0` at a reserved second |
+| `bcd_violations` | int | Fields whose observed 1s already make an impossible value (a digit above 9, minute tens above 5, hour above 23, day above 366). Those 1s are not used |
+| `p01` | float | This frame's estimated rate of a sent 0 read as 1, from its reserved seconds |
+| `admitted` | int | 1 if the frame is used as evidence: no more contradicted markers than markers, and no marker at second 0 (WWV sends no pulse there; WWVB does) |
+| `decodable` | int | 1 if the frame decodes on its own: every bit observed, reserved bits 0, digits and ranges valid, all six markers. Reported only; the decoder does not use it |
+
+**Example:**
+```
+BCDS,FRAME,569950.3,7,..~1.1.11P110~.1.00P010011010.~1.10~10~P1110~0000P001~10..__,4,0,4,8,3,0.31,1,0
+```
+
+---
+
+#### BCDS UTC - Decoded UTC Time and Date
+
+Sent right after each `FRAME`. It gives the UTC minute that began at `frame_start_ms`. The
+UTC at a later detector time T is that minute plus (T - `frame_start_ms`).
+
+The decoder keeps up to 60 minutes of the chain and scores every UTC minute from 2000-001
+00:00 to 2099-365 23:59 against all of them at once, under a two-rate error model (a sent 0
+read as 1, a sent 1 read as 0). A margin is the log-likelihood ratio, in nats, between the best
+value and the best value that differs in that part. Each part has its own state:
+
+| State | Meaning |
+|-------|---------|
+| `NONE` | No value leads by ln 10 (2.3 nats), or only one frame has evidence. The value field is dashes |
+| `DECODED` | Leads by ln 10: the best reading, **not verified** |
+| `CONFIRMED` | Leads by ln 10^4 (9.2 nats) under both the nominal model and a pessimistic one (a sent 1 read as 0 three times as often), with the same value. The previous minute of the chain was `DECODED` or better with the value this one steps from. The history holds two P markers. For the date and the status bits, the time of day is reported this minute |
+| `PREDICTED` | Not `CONFIRMED` now: the last `CONFIRMED` value of this chain, carried forward by the elapsed minutes, with no `DECODED` reading against it. The date and status bits are carried only while it is known whether 00:00 UTC was crossed |
+
+A `DECODED` reading that disagrees with a carried `CONFIRMED` value is a conflict. It is counted,
+the carried value is dropped, and the new reading is reported as `DECODED`.
+
+**Format:** `BCDS,UTC,frame_start_ms,tod_state,HH:MM,tod_margin,date_state,YYYY-MM-DD,DDD,date_margin,dut1_state,dut1_s,dut1_margin,dst_state,dst,dst_margin,lsw_state,lsw,lsw_margin,frames,observations,conflicts`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frame_start_ms` | float | As in `FRAME` |
+| `tod_state`, `HH:MM`, `tod_margin` | | UTC time of day |
+| `date_state`, `YYYY-MM-DD`, `DDD`, `date_margin` | | UTC date and day of year |
+| `dut1_state`, `dut1_s`, `dut1_margin` | | UT1 - UTC, signed, in 0.1 s steps (seconds 50, 56-58) |
+| `dst_state`, `dst`, `dst_margin` | | Two digits: second 55, then second 2. `00` standard time, `11` daylight time, `10` DST begins today, `01` standard time begins today |
+| `lsw_state`, `lsw`, `lsw_margin` | | Leap second warning (second 3): 1 if a leap second is added at the end of this month |
+| `frames` | int | Frames in the decoder's history |
+| `observations` | int | 0/1 symbols used as evidence in the history |
+| `conflicts` | int | Conflicts since the decoder started |
+
+**Example:**
+```
+BCDS,UTC,569950.3,DECODED,12:19,2.9,NONE,----------,---,0.6,NONE,--,1.0,DECODED,00,10.1,NONE,-,2.0,8,216,0
+```
+
+`BCDS,TIME` is the time-domain pulse detector's line (above); the decoded time is `UTC`.
+
+---
+
 #### BCDS CORR - BCD Correlation Statistics
 
 Broadcast for each symbol correlation event, providing detailed statistics from both detection paths.
