@@ -7,8 +7,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Canonical sources only. The top-level src/*_detector.c and src/tone_tracker.c
-# are stale duplicates of src/detection/** and are not part of the build.
 set(PHOENIX_WWV_SOURCES
     src/core/fft_processor.c
     src/core/telemetry.c
