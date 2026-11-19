@@ -78,17 +78,30 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
         td->threshold_low = td->threshold_high * BCD_TIME_HYSTERESIS_RATIO;
     }
 
+    /* Drop a pulse level that no valid pulse has refreshed (see BCD_TIME_LEVEL_HOLD_MS) */
+    if (td->pulse_level > 0.0f &&
+        (frame - td->last_valid_frame) * FRAME_DURATION_MS > BCD_TIME_LEVEL_HOLD_MS) {
+        td->pulse_level = 0.0f;
+    }
+
     /* State machine */
     switch (td->state) {
-        case STATE_IDLE:
-            if (energy > td->threshold_high) {
+        case STATE_IDLE: {
+            float start_threshold = td->threshold_high;
+            if (BCD_TIME_EDGE_FRACTION * td->pulse_level > start_threshold) {
+                start_threshold = BCD_TIME_EDGE_FRACTION * td->pulse_level;
+            }
+            if (energy > start_threshold) {
                 td->state = STATE_IN_PULSE;
                 td->pulse_start_frame = frame;
                 td->pulse_peak_energy = energy;
                 td->pulse_duration_frames = 1;
                 td->consecutive_low_frames = 0;
+                td->pulse_energy_sum = energy;
+                td->pulse_energy_frames = 1;
             }
             break;
+        }
 
         case STATE_IN_PULSE:
             td->pulse_duration_frames++;
@@ -96,11 +109,18 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 td->pulse_peak_energy = energy;
             }
 
-            /* Phase 9: Require consecutive low frames before ending pulse */
-            if (energy < td->threshold_low) {
+            /* The pulse ends at half its own amplitude (BCD_TIME_EDGE_FRACTION of the
+             * mean of its frames so far), or at threshold_low if that is higher.
+             * Require consecutive low frames before ending it. */
+            float end_threshold = BCD_TIME_EDGE_FRACTION *
+                                  (td->pulse_energy_sum / td->pulse_energy_frames);
+            if (end_threshold < td->threshold_low) end_threshold = td->threshold_low;
+            if (energy < end_threshold) {
                 td->consecutive_low_frames++;
             } else {
                 td->consecutive_low_frames = 0;  /* Reset if signal returns */
+                td->pulse_energy_sum += energy;
+                td->pulse_energy_frames++;
             }
 
             if (td->consecutive_low_frames >= MIN_LOW_FRAMES) {
@@ -137,6 +157,13 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
 
                     td->last_pulse_frame = td->pulse_start_frame;
 
+                    /* Track the pulse level for the next start threshold */
+                    float level = td->pulse_energy_sum / td->pulse_energy_frames;
+                    td->pulse_level = (td->pulse_level > 0.0f)
+                        ? td->pulse_level + BCD_TIME_LEVEL_ALPHA * (level - td->pulse_level)
+                        : level;
+                    td->last_valid_frame = frame;
+
                     /* Callback */
                     if (td->callback) {
                         bcd_time_event_t event = {
@@ -159,8 +186,15 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                     }
                 }
 
-                td->state = STATE_COOLDOWN;
-                td->cooldown_frames = MS_TO_FRAMES(BCD_TIME_COOLDOWN_MS);
+                if (duration_ms < BCD_TIME_PULSE_MIN_MS) {
+                    /* Too short to be a pulse: no dead time after it. The tick at the
+                     * second leaks a segment like this just before the 100 Hz pulse
+                     * rises (+30 ms), and a cooldown here would hide that rise. */
+                    td->state = STATE_IDLE;
+                } else {
+                    td->state = STATE_COOLDOWN;
+                    td->cooldown_frames = MS_TO_FRAMES(BCD_TIME_COOLDOWN_MS);
+                }
             }
             break;
 

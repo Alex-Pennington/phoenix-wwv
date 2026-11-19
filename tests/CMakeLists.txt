@@ -27,3 +27,10 @@ add_test(NAME bcd_correlator COMMAND test_bcd_correlator)
 add_executable(test_wwv_time_decoder test_wwv_time_decoder.c)
 target_link_libraries(test_wwv_time_decoder PRIVATE phoenix_wwv)
 add_test(NAME wwv_time_decoder COMMAND test_wwv_time_decoder)
+
+add_executable(btime_frames air/btime_frames.c)
+target_link_libraries(btime_frames PRIVATE phoenix_wwv)
+
+add_executable(test_bcd_time_width test_bcd_time_width.c)
+target_link_libraries(test_bcd_time_width PRIVATE phoenix_wwv m)
+add_test(NAME bcd_time_width COMMAND test_bcd_time_width)
