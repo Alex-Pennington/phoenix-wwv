@@ -10,9 +10,9 @@
  * 3. Corrupted: one frame alone; a burst of bit errors in a clean chain; half the
  *    seconds erased; a frame with an invalid BCD digit; a chain on the wrong second
  *    phase (anchor 1 s late). None may report a wrong value in any state.
- *    Then random chains with symbol errors at and beyond the decoder's error model
- *    (sent 0 read as 1 at 25% and 40%, sent 1 read as 0 at 5% and 15%: the default
- *    and three times it), 45% erasures and 8%
+ *    Then random chains with symbol errors at the worst measured air run and three
+ *    times it (sent 0 read as 1 at 3.3% and 10%, sent 1 read as 0 at 6.8% and 20%,
+ *    sent P read as 1 at 12% and 36%), 45% erasures and 8%
  *    mid-second detections, from random minutes in 2000-2099: no part may be
  *    CONFIRMED wrong. Wrong DECODED parts are counted and printed: DECODED is the
  *    unverified state.
@@ -149,13 +149,14 @@ static int clean_run(const char *name, utc_t t0, int minutes, status_t st) {
 static unsigned rng = 12345u;
 static double urand(void) { rng = rng * 1103515245u + 12345u; return ((rng >> 8) & 0xFFFFFF) / 16777216.0; }
 
-static void corrupt(char *f, double p01, double p10, double erase, double mid) {
+static void corrupt(char *f, double p01, double p10, double pP1, double erase, double mid) {
     for (int s = 1; s < 60; s++) {
         double u = urand();
         if (u < erase) { f[s] = '.'; continue; }
         if (urand() < mid) { f[s] = '~'; continue; }
         if (f[s] == '0' && urand() < p01) f[s] = '1';
         else if (f[s] == '1' && urand() < p10) f[s] = '0';
+        else if (f[s] == 'P' && urand() < pP1) f[s] = '1';
     }
 }
 
@@ -238,7 +239,7 @@ static void test_bad_bcd_flagged(void) {
 }
 
 static void monte_carlo(void) {
-    static const double P01[2] = {0.25, 0.40}, P10[2] = {0.05, 0.15};
+    static const double P01[2] = {0.033, 0.10}, P10[2] = {0.068, 0.20}, PP1[2] = {0.12, 0.36};
     int chains = 0, conf_wrong = 0, dec_wrong = 0, conf_tod = 0, results = 0;
     g_quiet = 1;
     for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++) for (int c = 0; c < 40; c++) {
@@ -259,7 +260,7 @@ static void monte_carlo(void) {
             if (g_truth.year > 2099) break;
             wwv_td_encode(g_truth.year, g_truth.doy, g_truth.hour, g_truth.minute, g_status.dut1,
                           g_status.dst55, g_status.dst2, g_status.lsw, f);
-            corrupt(f, P01[a], P10[b], 0.45, 0.08);
+            corrupt(f, P01[a], P10[b], PP1[b], 0.45, 0.08);
             feed(td, 5000.0f + 60000.0f * k, f);
         }
         chains++;
@@ -273,7 +274,7 @@ static void monte_carlo(void) {
     int pass = conf_wrong == 0;
     printf("%-4s %-58s %d chains, %d minutes: CONFIRMED wrong %d, DECODED wrong %d, "
            "time of day CONFIRMED at the end %d/%d\n", pass ? "ok" : "FAIL",
-           "random errors beyond the model never CONFIRMED wrong", chains, results, conf_wrong,
+           "random errors to 3x the worst air run never CONFIRMED wrong", chains, results, conf_wrong,
            dec_wrong, conf_tod, chains);
     if (!pass) fails++;
 }
@@ -338,7 +339,7 @@ int main(void) {
     test_encoder();
     status_t nov = {-1, 0, 0, 0};
     clean_run("2026-323 12:10 on, as on air", (utc_t){2026, 323, 12, 10}, 10, nov);
-    clean_run("day-of-year rollover 323 -> 324", (utc_t){2026, 323, 23, 55}, 12, nov);
+    clean_run("day-of-year rollover 323 -> 324", (utc_t){2026, 323, 23, 55}, 16, nov);
     clean_run("year boundary 2026-365 -> 2027-001", (utc_t){2026, 365, 23, 56}, 12, nov);
     clean_run("leap year end 2028-366 -> 2029-001", (utc_t){2028, 366, 23, 57}, 12, nov);
     clean_run("DST change day (55 = 1, 2 = 0), 2026-067", (utc_t){2026, 67, 15, 0}, 10,

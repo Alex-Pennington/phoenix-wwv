@@ -16,8 +16,9 @@
  * The search splits into time of day (1440 values, all frames) and date (100 years x
  * 365/366 days), joined where the history crosses 00:00 UTC. Status bits (DUT1,
  * DST, leap second warning) are summed per bit over the frames of the newest
- * frame's UTC day. The search runs twice: with p10, and with p10_pessimistic,
- * under which a 0 is trusted less; CONFIRMED needs both to agree.
+ * frame's UTC day. The search runs twice: under the nominal model, and under the
+ * pessimistic one (p01_pessimistic, p10_pessimistic), which trusts both a 1 and a
+ * 0 less; CONFIRMED needs both to agree.
  */
 
 #include "wwv_time_decoder.h"
@@ -33,7 +34,6 @@
 #define FRAME_CLOSE_MS      62000.0f    /* window 59 closes by start + 61 s (correlator) */
 #define MIN_PER_DAY         1440
 #define NYEARS              100
-#define P01_PRIOR_WEIGHT    4.0f        /* pseudo-observations behind cfg.p01 */
 #define CHAIN_MARKERS_MIN   2           /* P markers in the history for CONFIRMED */
 
 enum { SYM_MISSING = -2, SYM_ERASED = -1, SYM_ZERO = 0, SYM_ONE = 1, SYM_P = 2 };
@@ -63,8 +63,8 @@ typedef struct {
     signed char sym[60];
     bool boundary[60];
     float w[2][60];             /* LLR(bit = 1 : bit = 0) from this second's symbol,
-                                   under the nominal [0] and pessimistic [1] p10 */
-    float p01;
+                                   under the nominal [0] and pessimistic [1] model */
+    float p01[2];
     int markers_seen, markers_contradicted, reserved_ones, reserved_zeros, bcd_violations;
     bool admitted, hard_valid;
 } frame_t;
@@ -74,6 +74,8 @@ typedef struct {               /* a CONFIRMED value carried forward in the chain
     int index;                  /* chain minute it was confirmed at */
     long value;
     int tod;                    /* time of day then, -1 if not CONFIRMED then */
+    int looks;                  /* consecutive minutes this part has met the CONFIRMED
+                                   margin under both models, each stepping from the last */
 } carried_t;
 
 typedef struct {               /* top two date hypotheses (distinct days) */
@@ -163,7 +165,10 @@ bool wwv_td_encode(int year, int doy, int hour, int minute, int dut1_tenths,
 void wwv_td_default_config(wwv_td_config_t *cfg) {
     cfg->p01 = WWV_TD_DEFAULT_P01;
     cfg->p10 = WWV_TD_DEFAULT_P10;
+    cfg->p01_pessimistic = WWV_TD_DEFAULT_P01_PESSIMISTIC;
     cfg->p10_pessimistic = WWV_TD_DEFAULT_P10_PESSIMISTIC;
+    cfg->p01_prior_weight = WWV_TD_DEFAULT_P01_PRIOR_WEIGHT;
+    cfg->confirm_looks = WWV_TD_DEFAULT_CONFIRM_LOOKS;
     cfg->decoded_nats = WWV_TD_DEFAULT_DECODED;
     cfg->confirmed_nats = WWV_TD_DEFAULT_CONFIRMED;
     cfg->boundary_ms = WWV_TD_DEFAULT_BOUNDARY_MS;
@@ -176,6 +181,8 @@ wwv_time_decoder_t *wwv_time_decoder_create(const wwv_td_config_t *cfg) {
     if (cfg) td->cfg = *cfg;
     else wwv_td_default_config(&td->cfg);
     if (td->cfg.max_frames < 2) td->cfg.max_frames = 2;
+    if (!(td->cfg.p01_prior_weight >= 1.0f)) td->cfg.p01_prior_weight = 1.0f;
+    if (td->cfg.confirm_looks < 1) td->cfg.confirm_looks = 1;
     if (td->cfg.max_frames > WWV_TD_MAX_FRAMES) td->cfg.max_frames = WWV_TD_MAX_FRAMES;
     return td;
 }
@@ -258,15 +265,23 @@ static void frame_finish(const wwv_time_decoder_t *td, frame_t *f) {
 
     /* This frame's 0 -> 1 rate, from its reserved bits: they are all sent as 0,
      * so they sample the rate without bias. (An impossible field is chosen for
-     * holding an error, so it does not.) */
-    float a = P01_PRIOR_WEIGHT * td->cfg.p01, b = P01_PRIOR_WEIGHT * (1.0f - td->cfg.p01);
-    f->p01 = ((float)f->reserved_ones + a) / ((float)(f->reserved_ones + f->reserved_zeros) + a + b);
-    if (f->p01 < 0.001f) f->p01 = 0.001f;
-    if (f->p01 > 0.9f) f->p01 = 0.9f;
+     * holding an error, so it does not.) The posterior mean under a Beta prior of
+     * the model's p01 and weight p01_prior_weight. 15 clean reserved bits cannot
+     * show a rate below a few percent, so the pessimistic model keeps at least its
+     * prior mean; a frame whose reserved bits read 1 raises both. */
+    float nres = (float)(f->reserved_ones + f->reserved_zeros), W = td->cfg.p01_prior_weight;
+    for (int model = 0; model < 2; model++) {
+        float m = model ? td->cfg.p01_pessimistic : td->cfg.p01;
+        float p01 = ((float)f->reserved_ones + W * m) / (nres + W);
+        if (model && p01 < m) p01 = m;
+        if (p01 < 0.001f) p01 = 0.001f;
+        if (p01 > 0.9f) p01 = 0.9f;
+        f->p01[model] = p01;
+    }
     for (int model = 0; model < 2; model++) {
         float p10 = model ? td->cfg.p10_pessimistic : td->cfg.p10;
-        float w1 = logf((1.0f - p10) / f->p01);
-        float w0 = logf(p10 / (1.0f - f->p01));
+        float w1 = logf((1.0f - p10) / f->p01[model]);
+        float w0 = logf(p10 / (1.0f - f->p01[model]));
         for (int s = 0; s < 60; s++) {
             f->w[model][s] = 0.0f;
             if (!f->admitted || !f->boundary[s] || is_p_second(s)) continue;
@@ -468,13 +483,17 @@ static wwv_td_state_t part_state(wwv_time_decoder_t *td, float margin, long deco
      * from two frames of the chain. */
     bool decoded_ok = margin >= td->cfg.decoded_nats && td->evidence_frames >= 2;
     bool strong = decoded_ok && margin >= td->cfg.confirmed_nats;
+    /* The margin is looked at every minute, and over many looks a wrong value can
+     * lead once by chance; it must lead on confirm_looks consecutive minutes. */
+    bool qualifies = strong && markers_ok;
+    carried->looks = qualifies ? ((prev_ok && carried->looks > 0) ? carried->looks + 1 : 1) : 0;
     if (decoded_ok && carried->valid && have_prediction && decoded != predicted) {
         td->conflicts++;
         carried->valid = false;
         *value = decoded;
         return WWV_TD_DECODED;
     }
-    if (strong && prev_ok && markers_ok) {
+    if (qualifies && prev_ok && carried->looks >= td->cfg.confirm_looks) {
         carried->valid = true;
         carried->index = index;
         carried->value = decoded;
@@ -521,9 +540,9 @@ static wwv_td_state_t status_part(wwv_time_decoder_t *td, carried_t *c, long val
                       index, tod_now_confirmed);
 }
 
-/* r: nominal model. rp: pessimistic p10. A part may be CONFIRMED only if the
+/* r: nominal model. rp: pessimistic model. A part may be CONFIRMED only if the
  * pessimistic model gives the same value with the same margin requirement, so
- * the result does not rest on how far a 0 is trusted. */
+ * the result does not rest on how far a 0 or a 1 is trusted. */
 static void decide(wwv_time_decoder_t *td, const search_t *r, const search_t *rp,
                    wwv_td_result_t *out) {
     float conf = td->cfg.confirmed_nats;
@@ -619,6 +638,7 @@ static void decide(wwv_time_decoder_t *td, const search_t *r, const search_t *rp
 static void reset_chain(wwv_time_decoder_t *td) {
     td->nhist = 0;
     td->c_tod.valid = td->c_date.valid = td->c_dut1.valid = td->c_dst.valid = td->c_lsw.valid = false;
+    td->c_tod.looks = td->c_date.looks = td->c_dut1.looks = td->c_dst.looks = td->c_lsw.looks = 0;
     td->have_last = false;
 }
 
@@ -701,7 +721,7 @@ static void close_frame(wwv_time_decoder_t *td) {
     out.reserved_ones = f->reserved_ones;
     out.reserved_zeros = f->reserved_zeros;
     out.bcd_violations = f->bcd_violations;
-    out.p01 = f->p01;
+    out.p01 = f->p01[0];
     out.admitted = f->admitted;
     out.hard_valid = f->hard_valid;
     decide(td, &r, &rp, &out);
