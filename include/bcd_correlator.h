@@ -68,6 +68,11 @@ typedef struct {
     int second;                 /* WWV second in the minute (0-59), from the sync anchor */
     float minute_start_ms;      /* start of the minute this second belongs to: the
                                    sync anchor plus whole minutes */
+    float pulse_offset_ms;      /* start of the window's first event from the start of
+                                   its second (-100..+900 ms); NAN when it held none.
+                                   A BCD pulse starts at the second, so a window whose
+                                   first event starts well after it holds no pulse
+                                   from that second */
 } bcd_symbol_event_t;
 
 typedef void (*bcd_corr_symbol_callback_fn)(const bcd_symbol_event_t *event, void *user_data);

@@ -347,7 +347,7 @@ with no `SYMBOL` line at all was not locked. Erasures are sent only when the hos
 `bcd_correlator_periodic_check()`; the window in which lock began is sent only if it held an
 event.
 
-**Format:** `BCDS,SYMBOL,symbol_count,timestamp_ms,symbol,duration_ms,time_events,freq_events,source,confidence,second`
+**Format:** `BCDS,SYMBOL,symbol_count,timestamp_ms,symbol,duration_ms,time_events,freq_events,source,confidence,second,pulse_offset_ms`
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -360,13 +360,15 @@ event.
 | `source` | string | `TIME`, `FREQ`, `BOTH`, or `NONE` |
 | `confidence` | float | 0.0-1.0 |
 | `second` | int | WWV second in the minute (0-59), counted from the sync detector's minute anchor |
+| `pulse_offset_ms` | float | Start of the window's first event, in ms from the start of `second` (-100 to +900); `nan` when the window held no event. A BCD pulse starts at the second, so an offset well past 0 means the window holds a mid-second detection, not that second's pulse |
 
 **Example:**
 ```
-BCDS,SYMBOL,2,213078.9,1,788,2,0,TIME,0.60,1
+BCDS,SYMBOL,2,213078.9,1,788,2,0,TIME,0.60,1,18
 ```
 
-`second` is the last field, so parsers of the earlier 9-field `SYMBOL` line keep working.
+`second` and `pulse_offset_ms` are trailing fields, so parsers of the earlier 9-field `SYMBOL`
+line keep working.
 It is only as good as the sync anchor: it is exact when sync anchored on a real minute
 marker's leading edge.
 

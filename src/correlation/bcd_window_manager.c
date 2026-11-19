@@ -124,6 +124,16 @@ void bcd_window_close(bcd_correlator_t *corr) {
     /* Calculate timestamp for this symbol (center of window) */
     float symbol_timestamp_ms = corr->window_start_ms + (WINDOW_DURATION_MS / 2.0f);
 
+    /* Where the window's first event starts, from the start of its second. A
+     * BCD pulse starts at the second; an event that starts mid-second is not
+     * that second's pulse. NAN when the window holds no event. */
+    float pulse_offset_ms = NAN;
+    if (corr->time_event_count > 0) pulse_offset_ms = corr->time_first_ms;
+    if (corr->freq_event_count > 0 &&
+        (isnan(pulse_offset_ms) || corr->freq_first_ms < pulse_offset_ms))
+        pulse_offset_ms = corr->freq_first_ms;
+    pulse_offset_ms -= corr->window_start_ms + WINDOW_LEAD_MS;
+
     /* Track intervals */
     float interval_ms = 0.0f;
     if (corr->last_symbol_ms > 0) {
@@ -157,11 +167,11 @@ void bcd_window_close(bcd_correlator_t *corr) {
     }
 
     /* UDP telemetry */
-    telem_sendf(TELEM_BCDS, "SYMBOL,%d,%.1f,%c,%.0f,%d,%d,%s,%.2f,%d",
+    telem_sendf(TELEM_BCDS, "SYMBOL,%d,%.1f,%c,%.0f,%d,%d,%s,%.2f,%d,%.0f",
                 corr->symbol_count, symbol_timestamp_ms,
                 bcd_corr_symbol_char(symbol), duration_ms,
                 corr->time_event_count, corr->freq_event_count, source, confidence,
-                corr->current_second);
+                corr->current_second, pulse_offset_ms);
 
     /* Callback */
     if (corr->callback) {
@@ -173,7 +183,8 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .source = source,
             .second = corr->current_second,
             .minute_start_ms = corr->window_anchor_ms +
-                               60000.0f * (float)((corr->window_index - corr->current_second) / 60)
+                               60000.0f * (float)((corr->window_index - corr->current_second) / 60),
+            .pulse_offset_ms = pulse_offset_ms
         };
         corr->callback(&event, corr->callback_user_data);
     }

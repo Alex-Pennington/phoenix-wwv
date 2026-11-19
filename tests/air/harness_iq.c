@@ -99,7 +99,7 @@ static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
            g_bcd->freq_event_count, g_bcd->freq_first_ms, g_bcd->freq_last_ms, g_bcd->freq_duration_sum,
            e->duration_ms);
     printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second);
-    printf("SYMMIN sec=%d minute_start=%.1f\n", e->second, e->minute_start_ms); }
+    printf("SYMMIN sec=%d minute_start=%.1f pulse_offset=%.1f\n", e->second, e->minute_start_ms, e->pulse_offset_ms); }
 static void on_state(sync_state_t o, sync_state_t n, float c, void *u) { (void)u;
     printf("SYNC %s->%s conf=%.2f\n", sync_state_name(o), sync_state_name(n), c); }
 
