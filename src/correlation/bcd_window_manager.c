@@ -16,6 +16,7 @@
 #include "telemetry.h"
 #include "version.h"
 #include <string.h>
+#include <math.h>
 #include <stdio.h>
 
 /*============================================================================
@@ -28,34 +29,35 @@ float bcd_window_get_minute_anchor(bcd_correlator_t *corr) {
     return sync_detector_get_last_marker_ms(corr->sync_source);
 }
 
-int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_ms, float anchor_ms) {
-    if (anchor_ms < 0) return -1;
-
-    float offset_ms = timestamp_ms - anchor_ms + WINDOW_LEAD_MS;
-
-    /* Handle wrap-around for new minute */
-    while (offset_ms < 0) offset_ms += 60000.0f;
-    while (offset_ms >= 60000.0f) offset_ms -= 60000.0f;
-
-    int second = (int)(offset_ms / WINDOW_DURATION_MS);
-    if (second < 0) second = 0;
-    if (second > 59) second = 59;
-
-    return second;
+int bcd_window_get_index(float timestamp_ms, float anchor_ms) {
+    /* Whole seconds since the anchor's minute, not wrapped: when the anchor is
+     * not refreshed for a minute, a window 60 s on is a different window, and
+     * its start (and symbol timestamp) must be 60 s on too. */
+    return (int)floorf((timestamp_ms - anchor_ms + WINDOW_LEAD_MS) / WINDOW_DURATION_MS);
 }
 
-float bcd_window_get_start(float anchor_ms, int second) {
-    return anchor_ms + (second * WINDOW_DURATION_MS) - WINDOW_LEAD_MS;
+int bcd_window_second_of_index(int index) {
+    return ((index % 60) + 60) % 60;
+}
+
+int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_ms, float anchor_ms) {
+    if (anchor_ms < 0) return -1;
+    return bcd_window_second_of_index(bcd_window_get_index(timestamp_ms, anchor_ms));
+}
+
+float bcd_window_get_start(float anchor_ms, int index) {
+    return anchor_ms + (index * WINDOW_DURATION_MS) - WINDOW_LEAD_MS;
 }
 
 /*============================================================================
  * Window Management Functions
  *============================================================================*/
 
-void bcd_window_open(bcd_correlator_t *corr, int second, float anchor_ms) {
+void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->window_open = true;
-    corr->current_second = second;
-    corr->window_start_ms = bcd_window_get_start(anchor_ms, second);
+    corr->window_index = index;
+    corr->current_second = bcd_window_second_of_index(index);
+    corr->window_start_ms = bcd_window_get_start(anchor_ms, index);
     corr->window_anchor_ms = anchor_ms;
 
     /* Reset accumulators */
@@ -183,13 +185,12 @@ void bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
         return;
     }
 
-    /* Determine which second this event belongs to */
-    int event_second = bcd_window_get_second_for_timestamp(corr, timestamp_ms, anchor_ms);
-    if (event_second < 0) return;  /* Cannot determine - skip */
+    /* Determine which window this event belongs to */
+    int event_index = bcd_window_get_index(timestamp_ms, anchor_ms);
 
     /* If window is not open, open it */
     if (!corr->window_open) {
-        bcd_window_open(corr, event_second, anchor_ms);
+        bcd_window_open(corr, event_index, anchor_ms);
         return;
     }
 
@@ -197,15 +198,15 @@ void bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
     if (anchor_ms != corr->window_anchor_ms) {
         /* Minute wrapped - close old window, open new one */
         bcd_window_close(corr);
-        bcd_window_open(corr, event_second, anchor_ms);
+        bcd_window_open(corr, event_index, anchor_ms);
         return;
     }
 
     /* Check if we moved to a different second */
-    if (event_second != corr->current_second) {
+    if (event_index != corr->window_index) {
         /* Close current window, open new one */
         bcd_window_close(corr);
-        bcd_window_open(corr, event_second, anchor_ms);
+        bcd_window_open(corr, event_index, anchor_ms);
         return;
     }
 

@@ -8,6 +8,9 @@
  *    later event in the window does not change it.
  * 3. Clean minute, every pulse detected 40 ms BEFORE its anchor second (a late anchor
  *    or early start jitter). Each pulse must still land in its own second's window.
+ * 4. Clean minute sent one minute after the last marker, with no new marker (a stale
+ *    anchor). Symbols must be right and timestamped in that minute, not 60 s early.
+ * Every case also checks each symbol's timestamp lies inside its own second.
  */
 #include <stdio.h>
 #include <string.h>
@@ -16,10 +19,14 @@
 
 static int fails;
 static char got[60];
+static float stamp[60];
 
 static void on_sym(const bcd_symbol_event_t *e, void *u) {
     (void)u;
-    if (e->second >= 0 && e->second < 60) got[e->second] = (char)('0' + e->symbol);
+    if (e->second >= 0 && e->second < 60) {
+        got[e->second] = (char)('0' + e->symbol);
+        stamp[e->second] = e->timestamp_ms;
+    }
 }
 
 static char truth(int s) {
@@ -32,7 +39,7 @@ static float width(char t, int s) {
     return (t == '2' ? 800.0f : t == '1' ? 500.0f : 200.0f) + jitter;
 }
 
-static void run(const char *name, int blips, float start_ms) {
+static void run(const char *name, int blips, float start_ms, int minute) {
     sync_detector_t *sd = sync_detector_create(NULL);
     for (int m = 0; m < 4; m++) {
         sync_detector_tick_marker(sd, 400.0f + 60000.0f * m, 810.0f, 100.0f);
@@ -49,8 +56,9 @@ static void run(const char *name, int blips, float start_ms) {
     bcd_correlator_set_sync_source(c, sd);
     bcd_correlator_set_callback(c, on_sym, NULL);
     memset(got, 0, sizeof got);
+    memset(stamp, 0, sizeof stamp);
     for (int s = 1; s <= 59; s++) {
-        float t0 = a + 1000.0f * s + start_ms;
+        float t0 = a + 60000.0f * minute + 1000.0f * s + start_ms;
         bcd_correlator_time_event(c, t0, width(truth(s), s), 1.0f);
         if (blips && s % 3 == 1)
             bcd_correlator_time_event(c, t0 + 530.0f, 120.0f, 1.0f);
@@ -58,8 +66,10 @@ static void run(const char *name, int blips, float start_ms) {
     int ok = 0, n = 0;
     for (int s = 1; s <= 58; s++) {       /* window 59 is still open */
         n++;
-        if (got[s] == truth(s)) ok++;
-        else printf("     %s: second %d got %c want %c\n", name, s, got[s] ? got[s] : '-', truth(s));
+        float into = stamp[s] - (a + 60000.0f * minute + 1000.0f * s);
+        if (got[s] == truth(s) && into >= 0.0f && into < 1000.0f) ok++;
+        else printf("     %s: second %d got %c want %c, stamp %+.0f ms into the second\n",
+                    name, s, got[s] ? got[s] : '-', truth(s), into);
     }
     int pass = ok == n;
     printf("%-4s %-50s %d/%d symbols right\n", pass ? "ok" : "FAIL", name, ok, n);
@@ -69,9 +79,10 @@ static void run(const char *name, int blips, float start_ms) {
 }
 
 int main(void) {
-    run("clean minute", 0, 20.0f);
-    run("mid-second detection in every third second", 1, 20.0f);
-    run("pulses start 40 ms before the anchor second", 0, -40.0f);
+    run("clean minute", 0, 20.0f, 0);
+    run("mid-second detection in every third second", 1, 20.0f, 0);
+    run("pulses start 40 ms before the anchor second", 0, -40.0f, 0);
+    run("minute after the last marker (stale anchor)", 0, 20.0f, 1);
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;
 }

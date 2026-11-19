@@ -52,6 +52,7 @@ struct bcd_correlator {
     /* Current window state */
     bool window_open;
     int current_second;             /* Which second (0-59) */
+    int window_index;               /* Whole seconds from the anchor, unwrapped */
     float window_start_ms;
     float window_anchor_ms;
 
@@ -112,15 +113,26 @@ static inline void bcd_corr_get_wall_time_str(time_t start_time, float timestamp
 float bcd_window_get_minute_anchor(bcd_correlator_t *corr);
 
 /**
+ * Window index of a timestamp: whole seconds from the anchor (after the window
+ * lead), not wrapped at 60, so a stale anchor still gives the right window start
+ */
+int bcd_window_get_index(float timestamp_ms, float anchor_ms);
+
+/**
+ * Second in the minute (0-59) of a window index
+ */
+int bcd_window_second_of_index(int index);
+
+/**
  * Calculate which second (0-59) a timestamp falls into
  * Returns -1 if cannot determine
  */
 int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_ms, float anchor_ms);
 
 /**
- * Calculate window start time for a given second
+ * Calculate window start time for a window index
  */
-float bcd_window_get_start(float anchor_ms, int second);
+float bcd_window_get_start(float anchor_ms, int index);
 
 /**
  * Estimate pulse duration from accumulated events
@@ -130,7 +142,7 @@ float bcd_window_estimate_pulse_duration(bcd_correlator_t *corr);
 /**
  * Open a new integration window
  */
-void bcd_window_open(bcd_correlator_t *corr, int second, float anchor_ms);
+void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms);
 
 /**
  * Close current window and emit symbol
