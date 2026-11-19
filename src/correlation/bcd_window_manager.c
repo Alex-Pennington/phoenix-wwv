@@ -59,6 +59,7 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->current_second = bcd_window_second_of_index(index);
     corr->window_start_ms = bcd_window_get_start(anchor_ms, index);
     corr->window_anchor_ms = anchor_ms;
+    corr->window_partial = false;
 
     /* Reset accumulators */
     corr->time_energy_sum = 0.0f;
@@ -78,6 +79,14 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
 
 void bcd_window_close(bcd_correlator_t *corr) {
     if (!corr->window_open) return;
+
+    /* A window with no event that sync did not cover from its start says
+     * nothing about its second: it is not emitted. */
+    if (corr->window_partial && corr->time_event_count + corr->freq_event_count == 0) {
+        corr->window_open = false;
+        return;
+    }
+    if (corr->time_event_count + corr->freq_event_count == 0) corr->silent_windows++;
 
     int total_events = corr->time_event_count + corr->freq_event_count;
     float total_energy = corr->time_energy_sum + corr->freq_energy_sum;
@@ -162,7 +171,9 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .duration_ms = duration_ms,
             .confidence = confidence,
             .source = source,
-            .second = corr->current_second
+            .second = corr->current_second,
+            .minute_start_ms = corr->window_anchor_ms +
+                               60000.0f * (float)((corr->window_index - corr->current_second) / 60)
         };
         corr->callback(&event, corr->callback_user_data);
     }
@@ -171,55 +182,99 @@ void bcd_window_close(bcd_correlator_t *corr) {
     corr->window_open = false;
 }
 
-void bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
-    if (!corr) return;
+/* Follow the sync anchor. When it moved by a whole number of minutes (within
+ * half a window), the open window is the same second under both anchors:
+ * re-index it and keep its events. The next minute's marker usually confirms
+ * during second 1-2, while that second's window is open under the old anchor
+ * (index 61); closing it and opening another would emit that second twice.
+ * An anchor at a different phase changes the second numbering, so the open
+ * window is closed. */
+static void follow_anchor(bcd_correlator_t *corr, float anchor_ms) {
+    if (!corr->window_open || anchor_ms == corr->window_anchor_ms) return;
+    float delta = anchor_ms - corr->window_anchor_ms;
+    float minutes = roundf(delta / 60000.0f);
+    if (fabsf(delta - minutes * 60000.0f) < WINDOW_DURATION_MS / 2.0f) {
+        corr->window_index -= 60 * (int)minutes;
+        corr->window_anchor_ms = anchor_ms;
+    } else {
+        bcd_window_close(corr);
+    }
+}
+
+bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
+    if (!corr) return false;
 
     /* Get current sync state */
     float anchor_ms = bcd_window_get_minute_anchor(corr);
 
-    /* If sync not locked, close any open window */
+    /* If sync not locked, close any open window. Lock did not cover it to its
+     * end, so it is sent only if it holds an event. */
     if (anchor_ms < 0) {
         if (corr->window_open) {
+            corr->window_partial = true;
             bcd_window_close(corr);
         }
-        return;
+        return false;
     }
+
+    follow_anchor(corr, anchor_ms);
 
     /* Determine which window this event belongs to */
     int event_index = bcd_window_get_index(timestamp_ms, anchor_ms);
 
-    /* If window is not open, open it */
+    /* No window open: lock (or a new phase) began during this one */
     if (!corr->window_open) {
         bcd_window_open(corr, event_index, anchor_ms);
-        return;
+        corr->window_partial = true;
+        return true;
     }
 
-    /* Anchor changed. The next minute's marker usually confirms during second
-     * 1-2, while that second's window is open under the old anchor (index 61).
-     * When the new anchor is a whole number of minutes from the old one, the
-     * open window is the same second under both: re-index it and keep its
-     * events. Closing it and opening another would emit that second twice. */
-    if (anchor_ms != corr->window_anchor_ms) {
-        float delta = anchor_ms - corr->window_anchor_ms;
-        float minutes = roundf(delta / 60000.0f);
-        if (fabsf(delta - minutes * 60000.0f) < WINDOW_DURATION_MS / 2.0f) {
-            corr->window_index -= 60 * (int)minutes;
-            corr->window_anchor_ms = anchor_ms;
-        } else {
-            /* Re-anchored to a different phase: second numbering changed */
-            bcd_window_close(corr);
+    if (event_index == corr->window_index) return true;
+
+    if (event_index < corr->window_index) {
+        /* An event for a window already passed. If the open window is the
+         * partial first one and still empty, lock began before this event's
+         * window: start there instead. Otherwise that second is already
+         * emitted, and the event is dropped. */
+        if (corr->window_partial && corr->time_event_count + corr->freq_event_count == 0) {
             bcd_window_open(corr, event_index, anchor_ms);
-            return;
+            corr->window_partial = true;
+            return true;
         }
+        corr->late_events++;
+        return false;
     }
 
-    /* Check if we moved to a different second */
-    if (event_index != corr->window_index) {
-        /* Close current window, open new one */
-        bcd_window_close(corr);
-        bcd_window_open(corr, event_index, anchor_ms);
+    /* A later second: close the current window, open the event's */
+    bcd_window_close(corr);
+    bcd_window_open(corr, event_index, anchor_ms);
+    return true;
+}
+
+void bcd_window_periodic(bcd_correlator_t *corr, float now_ms) {
+    if (!corr) return;
+    float anchor_ms = bcd_window_get_minute_anchor(corr);
+    if (anchor_ms < 0) {
+        if (corr->window_open) {
+            corr->window_partial = true;   /* lock ended inside it */
+            bcd_window_close(corr);
+        }
         return;
     }
-
-    /* Still in same window - no action needed */
+    follow_anchor(corr, anchor_ms);
+    if (!corr->window_open) {
+        /* Lock (or a new phase) began during this window: it is partial */
+        bcd_window_open(corr, bcd_window_get_index(now_ms, anchor_ms), anchor_ms);
+        corr->window_partial = true;
+        return;
+    }
+    /* Every event for a window arrives by its end + 1000 ms (BTIME and BFREQ
+     * report at pulse end and cap a pulse at 1000 ms). Past that, the window is
+     * complete: close it, and open the next second's. A window that ends with
+     * no event while sync was LOCKED throughout is emitted as NONE. */
+    while (now_ms >= corr->window_start_ms + WINDOW_DURATION_MS + WINDOW_CLOSE_LATENCY_MS) {
+        int next = corr->window_index + 1;
+        bcd_window_close(corr);
+        bcd_window_open(corr, next, anchor_ms);
+    }
 }

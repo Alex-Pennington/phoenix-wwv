@@ -66,6 +66,8 @@ typedef struct {
     float confidence;           /* 0-1, higher if both detectors contributed */
     const char *source;         /* "BOTH", "TIME", "FREQ", or "NONE" */
     int second;                 /* WWV second in the minute (0-59), from the sync anchor */
+    float minute_start_ms;      /* start of the minute this second belongs to: the
+                                   sync anchor plus whole minutes */
 } bcd_symbol_event_t;
 
 typedef void (*bcd_corr_symbol_callback_fn)(const bcd_symbol_event_t *event, void *user_data);
@@ -129,6 +131,17 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
                                float timestamp_ms,
                                float duration_ms,
                                float accum_energy);
+
+/**
+ * Advance windows by stream time. Call it from the same loop as
+ * sync_detector_periodic_check(), after it, with the same clock.
+ * A window is closed once every event for it has arrived (its end + 1100 ms).
+ * A second that sync covered as LOCKED from its window's start and that held
+ * no BCD event is then emitted as BCD_CORR_SYM_NONE, source "NONE": an erasure.
+ * A second with no symbol at all was not locked. Without this call, windows
+ * close only when a later event arrives, and silent seconds are not emitted.
+ */
+void bcd_correlator_periodic_check(bcd_correlator_t *corr, float now_ms);
 
 /**
  * Get current state

@@ -214,11 +214,9 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
                                float peak_energy) {
     if (!corr) return;
 
-    /* Check for window transition first */
-    bcd_window_check_transition(corr, timestamp_ms);
-
-    /* If no window open (sync not locked), ignore event */
-    if (!corr->window_open) return;
+    /* Check for window transition first; ignore the event when sync is not
+     * locked or its window was already emitted */
+    if (!bcd_window_check_transition(corr, timestamp_ms)) return;
 
     /* Accumulate into current window */
     if (corr->time_event_count == 0) {
@@ -237,11 +235,9 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
                                float accum_energy) {
     if (!corr) return;
 
-    /* Check for window transition first */
-    bcd_window_check_transition(corr, timestamp_ms);
-
-    /* If no window open (sync not locked), ignore event */
-    if (!corr->window_open) return;
+    /* Check for window transition first; ignore the event when sync is not
+     * locked or its window was already emitted */
+    if (!bcd_window_check_transition(corr, timestamp_ms)) return;
 
     /* Accumulate into current window */
     if (corr->freq_event_count == 0) {
@@ -252,6 +248,10 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
     corr->freq_energy_sum += accum_energy;
     corr->freq_duration_sum += duration_ms;
     corr->freq_event_count++;
+}
+
+void bcd_correlator_periodic_check(bcd_correlator_t *corr, float now_ms) {
+    bcd_window_periodic(corr, now_ms);
 }
 
 bcd_corr_state_t bcd_correlator_get_state(bcd_correlator_t *corr) {

@@ -98,7 +98,8 @@ static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
            g_bcd->time_event_count, g_bcd->time_first_ms, g_bcd->time_last_ms, g_bcd->time_duration_sum,
            g_bcd->freq_event_count, g_bcd->freq_first_ms, g_bcd->freq_last_ms, g_bcd->freq_duration_sum,
            e->duration_ms);
-    printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second); }
+    printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second);
+    printf("SYMMIN sec=%d minute_start=%.1f\n", e->second, e->minute_start_ms); }
 static void on_state(sync_state_t o, sync_state_t n, float c, void *u) { (void)u;
     printf("SYNC %s->%s conf=%.2f\n", sync_state_name(o), sync_state_name(n), c); }
 
@@ -137,7 +138,10 @@ int main(int argc, char **argv) {
             marker_detector_process_sample(g_mark, s_i, s_q);
             bcd_time_detector_process_sample(bt, d_i, d_q);
             bcd_freq_detector_process_sample(bf, d_i, d_q);
-            if (n % 2500 == 0) sync_detector_periodic_check(g_sync, (float)(n / FS * 1000.0));
+            if (n % 2500 == 0) {
+                sync_detector_periodic_check(g_sync, (float)(n / FS * 1000.0));
+                bcd_correlator_periodic_check(g_bcd, (float)(n / FS * 1000.0));
+            }
         }
     }
     fclose(fp);
@@ -145,6 +149,7 @@ int main(int argc, char **argv) {
     printf("END samples=%ld sync=%s conf=%.2f sec=%d ticks=%d markers=%d bcdsyms=%d\n", n, sync_state_name(sync_detector_get_state(g_sync)),
            sync_detector_get_confidence(g_sync), ft.current_second, tick_detector_get_tick_count(g_tick),
            marker_detector_get_marker_count(g_mark), bcd_correlator_get_symbol_count(g_bcd));
+    printf("BCDWIN silent=%d late_events=%d\n", g_bcd->silent_windows, g_bcd->late_events);
     PRINT_TELEM = 1;
     bcd_correlator_destroy(g_bcd);
     return 0;

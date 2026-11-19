@@ -335,8 +335,17 @@ BCDS,FREQ,14:32:16,86320.0,128,0.042123,503.2,0.001234,19.2
 
 #### BCDS SYMBOL - BCD Symbol Per Second
 
-Broadcast once per correlator window: a window opens on a BCD pulse event while sync is
-LOCKED and closes when events move to another second. This is the per-second BCD output.
+Broadcast once per correlator window while sync is LOCKED. This is the per-second BCD output.
+A window closes when an event arrives for a later second, or, when the host calls
+`bcd_correlator_periodic_check()`, 1100 ms after the window ends (every BCD event arrives by
+then). Each second is sent at most once, including when the next minute's anchor replaces the
+current one during the second.
+
+A window that sync covered as LOCKED from its start and that held no BCD event is sent with
+`symbol` `.`, `source` `NONE` and `duration_ms` 0: an erasure, "locked, no pulse". A second
+with no `SYMBOL` line at all was not locked. Erasures are sent only when the host calls
+`bcd_correlator_periodic_check()`; the window in which lock began is sent only if it held an
+event.
 
 **Format:** `BCDS,SYMBOL,symbol_count,timestamp_ms,symbol,duration_ms,time_events,freq_events,source,confidence,second`
 

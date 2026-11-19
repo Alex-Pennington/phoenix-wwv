@@ -33,6 +33,10 @@ extern "C" {
  * that gap: a pulse detected up to 100 ms before its anchor second (anchor
  * late, start jitter) still lands in its own window. */
 #define WINDOW_LEAD_MS          100.0f
+/* BTIME and BFREQ report a pulse at its end and cap it at 1000 ms, so every
+ * event for a window arrives by the window's end + 1000 ms. The periodic check
+ * closes a window this long after its end. */
+#define WINDOW_CLOSE_LATENCY_MS 1100.0f
 
 /* Phase 8: Valid P-marker positions (WWV BCD time code format) */
 extern const int VALID_P_POSITIONS[];
@@ -55,6 +59,9 @@ struct bcd_correlator {
     int window_index;               /* Whole seconds from the anchor, unwrapped */
     float window_start_ms;
     float window_anchor_ms;
+    bool window_partial;            /* opened after its start (lock began in it) */
+    int late_events;                /* events for a window already emitted */
+    int silent_windows;             /* windows emitted as NONE: locked, no event */
 
     /* Energy accumulation for current window */
     float time_energy_sum;
@@ -151,9 +158,15 @@ void bcd_window_close(bcd_correlator_t *corr);
 
 /**
  * Check if window transition is needed and handle it
- * Called on every event
+ * Called on every event. Returns false when the event is not to be accumulated
+ * (sync not locked, or its window was already emitted).
  */
-void bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms);
+bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms);
+
+/**
+ * Close windows whose events have all arrived, by stream time
+ */
+void bcd_window_periodic(bcd_correlator_t *corr, float now_ms);
 
 /*============================================================================
  * Symbol Classification Functions (bcd_symbol_classifier.c)
