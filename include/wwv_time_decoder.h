@@ -37,15 +37,18 @@
  * apart on the sync anchor) and scores every UTC minute from 2000 to 2099 against
  * all of them at once, under a two-rate error model: a sent 0 is read as 1 with
  * probability p01, a sent 1 as 0 with probability p10. A frame's p01 is estimated
- * from its own reserved bits, which are always 0. Erasures and mid-second
- * detections carry no evidence. The margin of a result is the log-likelihood ratio
+ * from its own reserved bits, which are always 0, against a prior. Erasures and
+ * mid-second detections carry no evidence. There are two models: nominal (the
+ * measured rates) and pessimistic (rates the worst measured run stays well inside);
+ * the pessimistic p01 never goes below its prior mean. The margin of a result is the log-likelihood ratio
  * (nats) between the best hypothesis and the best one that differs in that part.
  *
  * Time of day, date, DUT1, DST bits and the leap second warning each get a state:
  *   NONE       no hypothesis leads by decoded_nats, or only one frame has evidence
  *   DECODED    leads by decoded_nats: the best reading, not verified
- *   CONFIRMED  leads by confirmed_nats under both p10 and p10_pessimistic with
- *              the same value; the previous minute of the same chain was DECODED
+ *   CONFIRMED  leads by confirmed_nats under both the nominal and the pessimistic
+ *              model with the same value, on confirm_looks consecutive minutes of
+ *              the chain, each stepping from the one before; the previous minute of the same chain was DECODED
  *              or better with the value this one steps from; the history holds
  *              two P markers; for the date and status bits, the time of day is
  *              reported this minute
@@ -69,23 +72,45 @@ extern "C" {
  * Configuration
  *============================================================================*/
 
-/* Error model defaults, measured on the four air runs (KiwiSDR and RSP2, 5 MHz):
- * a symbol whose pulse starts at its second reads a sent 0 as 1 in 125 of 493 and
- * a sent 1 as 0 in 3 of 184 (tests/air/decode_score.py prints the counts). */
-#define WWV_TD_DEFAULT_P01          0.25f
-#define WWV_TD_DEFAULT_P10          0.05f       /* above the 95% bound of 3/184 */
+/* Error model, from the symbols whose pulse starts within 250 ms of the second on the
+ * four air runs (KiwiSDR and RSP2, 5 MHz, plain and AGC; tests/air/decode_score.py
+ * prints the counts):
+ *   sent 0 read as 1  8/1028 pooled (0.78%); worst run 6/183 (3.3%, 95% upper 6.4%)
+ *   sent 1 read as 0  8/383 pooled (2.1%); worst run 7/103 (6.8%, 95% upper 12.4%)
+ *   sent P read as 1  10/157 pooled (6.4%); worst run 5/42 (11.9%): a long pulse
+ *                     read one class short, the mechanism behind a 1 read as 0
+ * Nominal: the pooled rates (p01 0.78% -> 0.01; p10 = 1 -> 0 and P -> 1 pooled,
+ * 18/540 = 3.3% -> 0.03). Pessimistic: at least twice the worst run and above its
+ * 95% upper bound (p01 0.07 >= 2 x 3.3%; p10 0.15 >= 2 x 6.8%, above P -> 1 11.9%).
+ * Prior weight: the 0 -> 1 rate varies between runs as a Beta prior of weight 66
+ * would; 50 leaves room for more variation between frames than between runs. */
+#define WWV_TD_DEFAULT_P01          0.01f
+#define WWV_TD_DEFAULT_P10          0.03f
+#define WWV_TD_DEFAULT_P01_PESSIMISTIC 0.07f
 #define WWV_TD_DEFAULT_P10_PESSIMISTIC 0.15f
+#define WWV_TD_DEFAULT_P01_PRIOR_WEIGHT 50.0f
 #define WWV_TD_DEFAULT_DECODED      2.302585f   /* ln 10 */
-#define WWV_TD_DEFAULT_CONFIRMED    9.210340f   /* ln 10^4 */
+/* CONFIRMED: the margin is checked every minute, so over a chain a wrong value can
+ * lead once by chance. Even with an exact model, a single-bit alternative ever leads
+ * by L nats with probability about e^-L, and a chain has about 38 of them. In
+ * tests/sim_wwv_time_decoder.c (5000 chains of 30 minutes at three times the worst
+ * run's rates), ln 10^4 confirmed wrong in 11 chains, ln 10^5 in 1, ln 10^6 in none
+ * (three seeds). Requiring the margin on 2 or 3 consecutive minutes left 7 and 4 at
+ * ln 10^4 and 1 at ln 10^5, at about the same cost in time, so confirm_looks is 1. */
+#define WWV_TD_DEFAULT_CONFIRMED    13.815511f  /* ln 10^6 */
+#define WWV_TD_DEFAULT_CONFIRM_LOOKS 1
 #define WWV_TD_DEFAULT_BOUNDARY_MS  250.0f
 #define WWV_TD_MAX_FRAMES           60
 
 typedef struct {
-    float p01;              /* prior rate of a sent 0 read as 1 */
+    float p01;              /* prior mean rate of a sent 0 read as 1 */
     float p10;              /* rate of a sent 1 read as 0 */
-    float p10_pessimistic;  /* CONFIRMED must also hold with this p10 */
+    float p01_pessimistic;  /* pessimistic model: prior mean and floor of p01 */
+    float p10_pessimistic;  /* pessimistic model: p10. CONFIRMED must hold under both */
+    float p01_prior_weight; /* pseudo-observations behind each p01 prior */
     float decoded_nats;     /* margin for DECODED */
     float confirmed_nats;   /* margin for CONFIRMED */
+    int confirm_looks;      /* consecutive minutes the CONFIRMED margin must hold */
     float boundary_ms;      /* a symbol whose pulse starts later than this after its
                                second is a mid-second detection: not evidence */
     int max_frames;         /* minutes of history, 2..WWV_TD_MAX_FRAMES */
@@ -121,7 +146,7 @@ typedef struct {
     int bcd_violations;         /* fields whose observed 1s make an impossible value
                                    (digit > 9, minute > 59, hour > 23, day > 366):
                                    those 1s are not used */
-    float p01;                  /* this frame's estimated 0 -> 1 rate */
+    float p01;                  /* this frame's estimated 0 -> 1 rate, nominal model */
     bool admitted;              /* used as evidence: no more 0s at the P seconds (or Ps
                                    elsewhere) than Ps, and no marker at second 0 */
     bool hard_valid;            /* every bit observed, reserved bits 0, digits and

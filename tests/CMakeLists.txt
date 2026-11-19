@@ -34,3 +34,16 @@ target_link_libraries(btime_frames PRIVATE phoenix_wwv)
 add_executable(test_bcd_time_width test_bcd_time_width.c)
 target_link_libraries(test_bcd_time_width PRIVATE phoenix_wwv m)
 add_test(NAME bcd_time_width COMMAND test_bcd_time_width)
+
+# Time decoder simulation: time to CONFIRMED and false confirms over thousands of
+# random chains at given symbol error rates. Too slow for CTest; run by hand.
+add_executable(sim_wwv_time_decoder sim_wwv_time_decoder.c)
+target_link_libraries(sim_wwv_time_decoder PRIVATE phoenix_wwv m)
+# The CONFIRMED gate at two and three times the worst air run's error rates:
+# 5000 chains each, no part may be CONFIRMED wrong. About 5 minutes each, so not in
+# the default run: ctest -C Slow (or -L slow).
+add_test(NAME wwv_time_decoder_sim_x2 CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=21 p01=0.066 p10=0.136 pP1=0.24 erase=0.25 mid=0.12 label=x2)
+add_test(NAME wwv_time_decoder_sim_x3 CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=31 p01=0.10 p10=0.20 pP1=0.36 erase=0.25 mid=0.12 label=x3)
+set_tests_properties(wwv_time_decoder_sim_x2 wwv_time_decoder_sim_x3 PROPERTIES LABELS slow TIMEOUT 3000)

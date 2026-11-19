@@ -6,12 +6,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Detection
 
-- **BCD symbol accuracy after the BTIME half-amplitude edges.** Symbols are 437/445, 446/450,
-  426/463 and 297/324 correct on kiwi plain / kiwi agc / saga plain / saga agc. Of symbols whose
-  pulse starts within 250 ms of the second, a sent 0 reads 1 in 0/292, 0/293, 2/262, 6/183 and a
-  sent 1 reads 0 in 1/105, 0/108, 7/103, 0/67. `tests/air/trace_all.sh <out-dir>` gives every
-  wrong symbol a cause: spurious 3/3/21/18, width 1/0/13/8, freq-avg 4/1/2/0, misaligned
-  0/0/1/1. `tests/air/btime_frames` and `tests/air/btime_width_forensics.py` give the per-pulse
+- **BCD symbol accuracy after the BTIME half-amplitude edges, with BTIME's width taking
+  precedence over BFREQ's.** Symbols are 441/445, 447/450, 428/463 and 297/324 correct on kiwi
+  plain / kiwi agc / saga plain / saga agc. Of symbols whose pulse starts within 250 ms of the
+  second, a sent 0 reads 1 in 0/292, 0/293, 2/262, 6/183 and a sent 1 reads 0 in 0/105, 0/108,
+  6/103, 0/67; a sent P reads 1 in 1/44, 0/45, 4/42, 0/26 (decoder frames).
+  `tests/air/trace_all.sh <out-dir>` gives every wrong symbol a cause: spurious 3/3/21/18, width
+  1/0/13/8, misaligned 0/0/1/1. `tests/air/btime_frames` and `tests/air/btime_width_forensics.py` give the per-pulse
   view.
   - **Saga still starts events on the low-level subcarrier.** On saga plain, 8 of the 14 sent 1s
     and Ps read short, and all 4 on saga agc, follow a cooldown after an event that started before
@@ -75,11 +76,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - The sync detector gets no per-tick events (`sync_detector_tick_event()`): neither the manager
   nor the harness ever fed them, so tick-hole evidence never arrives. Kept that way so the scored
   chain did not change.
-- The BCD correlator averages BFREQ's duration with BTIME's when a window holds both. BFREQ fires
-  mostly on P-marker clusters, and its durations (164-983 ms over the four runs) do not cluster
-  at 200/500/800 ms. With the BTIME widths now right, the average makes 4/1/2/0 wrong symbols on
-  the four runs (freq-avg in `tests/air/trace_all.sh`). BFREQ-only windows give 7 wrong symbols
-  at b2ede79.
+- **BFREQ still sets the width of a window with no BTIME event, and can set its pulse offset.**
+  Its durations (164-983 ms over the four runs) do not cluster at 200/500/800 ms; BFREQ-only
+  windows gave 7 wrong symbols at b2ede79 (not re-measured). When a window holds both, the
+  pulse offset is the earlier of the two first events (`src/correlation/bcd_correlator.c`), so
+  a BFREQ event can mark a window as a boundary detection. Not changed.
 - **The correlator's P positions include second 0** (`VALID_P_POSITIONS`,
   `src/correlation/bcd_symbol_classifier.c:20`): the WWVB frame reference. WWV sends no pulse at
   second 0, so a long event there is labelled P instead of 1. Neither is a WWV symbol; the time
@@ -95,18 +96,30 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Time decoder (`src/decode/wwv_time_decoder.c`)
 
-- **The time of day now CONFIRMS on three of the four ten-minute runs, and the date on two.**
-  First CONFIRMED right, in seconds after capture start: time of day 467 (kiwi plain), 587 (kiwi
-  agc), 630 (saga plain), never (saga agc); date 587, 527, never, never. No false confirm. One
-  frame per run decodes alone on kiwi plain, kiwi agc and saga plain, none on saga agc. Saga plain
-  DECODES a wrong date once (2024-11-18, 2.5 nats) and saga agc wrong DST bits once (2.5 nats): the
-  unverified state.
-- **The decoder's p01 prior now overstates the error rate.** Each frame's p01 is
-  (reserved ones + 1) / (reserved seconds + 4): a Beta prior of mean `WWV_TD_DEFAULT_P01` 0.25 and
-  weight 4 (`src/decode/wwv_time_decoder.c:262-263`), chosen when a sent 0 read 1 in 125/493. It
-  now reads 1 in 8/1030, but a frame with 15 clean reserved seconds still gets p01 = 0.05, so an
-  observed 1 counts ln(0.95/0.05) = 2.9 nats where the measured rate supports about 4.8. Not
-  changed.
+- **CONFIRMED now needs 10-12 minutes on a measured-rate signal, and the ten-minute captures
+  no longer CONFIRM the time of day or date.** The error model is the measured one (nominal
+  p01 0.01, p10 0.03; pessimistic 0.07 / 0.15; prior weight 50) and the CONFIRMED margin is
+  ln 10^6 (`include/wwv_time_decoder.h`). In `tests/sim_wwv_time_decoder.c` the old gate (ln
+  10^4) confirmed wrong in 7 of 5000 chains at three times the worst run's rates, and in 1 of
+  5000 at twice; the ctest Monte Carlo's 160 chains never showed it. ln 10^6 gives 0 in 15000
+  chains at 3x, and at the measured rates time of day CONFIRMS at median 11 / p90 13 minutes
+  (old: 8 / 10). On air (7-9 frames per run) only the leap second warning CONFIRMS (kiwi, 630
+  s); the time of day reaches 24.5 nats nominal on kiwi plain but not ln 10^6 under the
+  pessimistic model. A longer live run is the measurement that matters.
+- **Wrong DECODED values on air, both from one look**: saga plain DECODES 2024-11-18 at 12:15
+  (second 5, year units bit 2, sent 1 read 0 in its only boundary look) and saga agc DST bits
+  10 at 12:13 (second 55 sent 0 read 1, its only look), at 3.5 nats (2.5 before the model
+  change). DECODED is the unverified state; on air, kiwi plain DUT1 -0.3 at 2.8 nats was
+  another such case before the BTIME fix. In the random-chain test, DECODED wrong is 609 of 7200
+  minutes at the worst run's rates and three times them.
+- **The pessimistic p01 does not adapt down.** A frame's p01 is the posterior mean of its
+  reserved bits under a Beta prior (weight 50), and the pessimistic model never goes below its
+  prior mean 0.07. On air the reserved bits read 1 once in 37 frames, so the estimate barely
+  moves; a fade that raises the 0 -> 1 rate only in data seconds is not seen by it.
+- **`confirm_looks` (the margin on K consecutive minutes) is kept at 1.** K = 2 and 3 cut the
+  3x false confirms at ln 10^4 from 11 to 7 and 4, at ln 10^5 to 1, for about a minute each. The
+  remaining cases are one bit read wrong in most of its looks (a 1 read 0 in 9 of 11 at a 20%
+  rate), which persists over minutes, so consecutive looks do not remove them.
 - **The history is 60 minutes** (`WWV_TD_MAX_FRAMES`). Date bits change once a day, so a longer
   history would confirm the date sooner at the cost of memory and search time. Each minute
   searches 1440 times of day, and the 36,525 dates once plus once per minute of history (for the
@@ -115,13 +128,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **DECODED is wrong sometimes, as designed**: on air, kiwi plain DUT1 -0.3 at 2.8 nats (second 57
   read 1 in both of its two looks). In the random-chain test, DECODED wrong is 981 of 7200
   minutes at and beyond the model's rates. Only CONFIRMED is a verified value.
-- **The error model's p10 (sent 1 read as 0) was set on 3 events in 184**, to 0.05 (above the
-  95% bound) with CONFIRMED also checked at 0.15. After the BTIME edge fix it is 8 in 383 (2.1%),
-  7 of them on saga plain (6.8% there). A live run should re-measure it:
-  `tests/air/decode_score.py` prints the confusion.
+- **The error model rests on four ten-minute captures.** 0 -> 1 is 8/1028 pooled and 6/183
+  on saga agc; 1 -> 0 is 8/383 pooled and 7/103 on saga plain; P -> 1 is 10/157 pooled and 5/42
+  on saga plain. A live run should re-measure them: `tests/air/decode_score.py` prints the 0/1
+  confusion (not P -> 1). The slow ctest (`ctest -C Slow`) holds the gate at 2x and 3x the
+  worst run.
 - **A frame opens at stream time 0.0 when a run ends.** On saga plain the last symbol carries
   `minute_start_ms` 0 and the decoder emits a `BCDS,FRAME` and `BCDS,UTC` line for a frame starting
   at 0.0, which `decode_score.py` scores as 12:10 (all NONE). Not traced.
+- **The pessimistic margin is not reported.** `BCDS,UTC` carries the nominal margin only, so a
+  part at 24 nats nominal that does not CONFIRM gives no reason on the line.
 - `tests/test_chain_synth.c` does not run the decoder: its 125 s signal holds two frames, fewer
   than CONFIRMED needs.
 - The commit "Tests: WWV time decoder on clean, corrupted and WWVB-layout frames" gives two
@@ -157,6 +173,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   `wwv_detector_config_t` gained `enable_bcd`, `enable_time_decoder`, `enable_agc`, `verbose`;
   `output_dir` NULL writes no CSVs. New: observer struct, component getters, `wwv_chain_log`,
   `iq_frontend`, `telem_set_tap()`, telemetry line `CONS,ANCHOR`.
+- `wwv_td_config_t` gained `p01_pessimistic`, `p01_prior_weight` and `confirm_looks`. A caller
+  that fills the struct by hand must set them; `wwv_td_default_config()` does. `BCDS,FRAME`'s
+  p01 is the nominal model's.
 - `struct bcd_time_detector` (`include/detection/bcd_internal.h`) gained `pulse_energy_sum`,
   `pulse_energy_frames`, `pulse_level` and `last_valid_frame`. BTIME events now start and end at
   half the pulse amplitude (`BCD_TIME_EDGE_FRACTION`, `BCD_TIME_LEVEL_ALPHA`,
@@ -202,3 +221,6 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - "Tests: BCD time detector pulse width on a synthetic WWV time code" says that at 07ffb51 the
   steady case's 0s end 72-132 ms after the sent end and its 1s start at +227..+229 ms. It is 9 of
   the 11 sent 0s (the other 2 within 60 ms), and 25 of the 27 late 1s start at +226..+230 ms.
+- "Time decoder: measured error model, CONFIRMED at ln 10^6" says the status bits "need 8
+  frames at ln 10^6". Not measured: the rollover run (from 23:55) leaves its status bits DECODED
+  after 12 minutes, 7 frames past 00:00, and CONFIRMS them all by 16 minutes.

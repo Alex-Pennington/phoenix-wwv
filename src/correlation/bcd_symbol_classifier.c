@@ -65,10 +65,10 @@ float bcd_window_estimate_pulse_duration(bcd_correlator_t *corr) {
         freq_span = corr->freq_first_dur_ms;
     }
 
-    /* If we have both, average them; otherwise use whichever we have */
-    if (time_span > 0 && freq_span > 0) {
-        return (time_span + freq_span) / 2.0f;
-    } else if (time_span > 0) {
+    /* BTIME measures the pulse width. BFREQ thresholds a 1 s sliding sum of the
+     * subcarrier and fires mostly on the P-marker clusters; its durations do not
+     * cluster at 200/500/800 ms, so it is used only when BTIME has no event. */
+    if (time_span > 0) {
         return time_span;
     } else if (freq_span > 0) {
         return freq_span;
