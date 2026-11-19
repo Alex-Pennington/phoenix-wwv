@@ -131,6 +131,9 @@ int main(int argc, char **argv) {
     /* 125 s holds about 120 tick seconds; demand most of them. */
     if (n_tick < 90) { printf("FAIL: ticks %d < 90\n", n_tick); fail = 1; }
     if (n_mark + n_tmark < 2) { printf("FAIL: no minute markers\n"); fail = 1; }
+    /* BCD with the carrier present: about 123 pulse seconds; the carrier must not
+     * swamp the BCD time detector. */
+    if (n_btime < 90) { printf("FAIL: BCD time pulses %d < 90 (carrier at DC)\n", n_btime); fail = 1; }
     printf(fail ? "FAILED\n" : "PASSED\n");
     return fail;
 }

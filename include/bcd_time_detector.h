@@ -34,6 +34,11 @@ extern "C" {
 #define BCD_TIME_SAMPLE_RATE        50000   /* Input sample rate (2MHz/40) */
 #define BCD_TIME_TARGET_FREQ_HZ     100     /* BCD subcarrier frequency */
 #define BCD_TIME_BANDWIDTH_HZ       50      /* Wider bucket for coarse resolution */
+/* At 195 Hz/bin this bucket is bins 0-2 (0-390 Hz, DC included): a 5.12 ms frame
+ * cannot resolve 100 Hz, so this detector measures in-band energy only. Its 100 Hz
+ * selectivity and carrier rejection come from the data channel's 50-150 Hz
+ * bandpass (channel_filters.c), which nulls DC. Feed it data_channel_process()
+ * output, never raw baseband. */
 
 /* Detection parameters */
 #define BCD_TIME_THRESHOLD_MULT     2.0f    /* Energy must be 2x noise floor */

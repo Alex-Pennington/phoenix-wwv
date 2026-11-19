@@ -20,12 +20,23 @@ static const float sync_lp_sos[2][6] = {
     {0.00766530f, 0.01533060f, 0.00766530f, 1.0f, -1.73487628f, 0.76553747f}
 };
 
-// Data channel: 150 Hz Lowpass (4th order = 2 cascaded 2nd-order sections)
+// Data channel: 50-150 Hz bandpass for the 100 Hz BCD subcarrier.
+// The SDR delivers the WWV carrier at DC (zero-IF); it sits 20-30 dB above the
+// 100 Hz sidebands, so it must be removed before any BCD energy measurement.
+// 4th-order Butterworth highpass at 50 Hz (scipy.signal.butter(4, 50, 'highpass',
+// fs=50000, output='sos')), each section scaled to unit gain at Nyquist.
+// DC: -inf, 20 Hz: -31.8 dB, 100 Hz: -0.0 dB.
+static const float data_hp_sos[2][6] = {
+    {9.9421882130e-01f, -1.9884376426e+00f, 9.9421882130e-01f, 1.0f, -1.9884180174e+00f, 9.8845726782e-01f},
+    {9.9759146654e-01f, -1.9951829331e+00f, 9.9759146654e-01f, 1.0f, -1.9951632413e+00f, 9.9520262488e-01f}
+};
+
+// 4th-order Butterworth lowpass at 150 Hz (scipy.signal.butter(4, 150, fs=50000,
+// output='sos')), each section scaled to unit DC gain.
+// Combined with the highpass: 100 Hz -0.2 dB, 500 Hz -41.8 dB, 1000 Hz -66.0 dB.
 static const float data_lp_sos[2][6] = {
-    // Section 1
-    {0.0000352f, 0.0000704f, 0.0000352f, 1.0f, -1.98223f, 0.98230f},
-    // Section 2
-    {0.0000352f, 0.0000704f, 0.0000352f, 1.0f, -1.98223f, 0.98230f}
+    {8.7303533137e-05f, 1.7460706627e-04f, 8.7303533137e-05f, 1.0f, -1.9654195034e+00f, 9.6576871752e-01f},
+    {8.8187712892e-05f, 1.7637542578e-04f, 8.8187712892e-05f, 1.0f, -1.9853245871e+00f, 9.8567733795e-01f}
 };
 
 // Process one sample through a biquad section
@@ -44,7 +55,7 @@ void sync_channel_init(sync_channel_t *ch) {
     memset(ch, 0, sizeof(*ch));
 }
 
-// Initialize data channel (0-150 Hz lowpass)
+// Initialize data channel (50-150 Hz bandpass)
 void data_channel_init(data_channel_t *ch) {
     memset(ch, 0, sizeof(*ch));
 }
@@ -64,9 +75,13 @@ float sync_channel_process(sync_channel_t *ch, float x) {
     return y;
 }
 
-// Process sample through data channel (0-150 Hz lowpass)
+// Process sample through data channel (50-150 Hz bandpass)
 float data_channel_process(data_channel_t *ch, float x) {
     float y = x;
+
+    // Highpass cascade (50 Hz): removes the carrier at DC
+    y = biquad_process(&ch->hp[0], y, data_hp_sos[0]);
+    y = biquad_process(&ch->hp[1], y, data_hp_sos[1]);
 
     // Lowpass cascade (150 Hz)
     y = biquad_process(&ch->lp[0], y, data_lp_sos[0]);

@@ -7,3 +7,7 @@ add_test(NAME chain_synth COMMAND test_chain_synth)
 # tests/air/run_air.sh drives it against the recordings.
 add_executable(harness_iq air/harness_iq.c)
 target_link_libraries(harness_iq PRIVATE phoenix_wwv)
+
+add_executable(test_channel_filters test_channel_filters.c)
+target_link_libraries(test_channel_filters PRIVATE phoenix_wwv)
+add_test(NAME channel_filters COMMAND test_channel_filters)
