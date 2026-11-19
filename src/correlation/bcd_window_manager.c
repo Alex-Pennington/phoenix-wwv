@@ -194,12 +194,23 @@ void bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
         return;
     }
 
-    /* Check if anchor changed (new minute started) */
+    /* Anchor changed. The next minute's marker usually confirms during second
+     * 1-2, while that second's window is open under the old anchor (index 61).
+     * When the new anchor is a whole number of minutes from the old one, the
+     * open window is the same second under both: re-index it and keep its
+     * events. Closing it and opening another would emit that second twice. */
     if (anchor_ms != corr->window_anchor_ms) {
-        /* Minute wrapped - close old window, open new one */
-        bcd_window_close(corr);
-        bcd_window_open(corr, event_index, anchor_ms);
-        return;
+        float delta = anchor_ms - corr->window_anchor_ms;
+        float minutes = roundf(delta / 60000.0f);
+        if (fabsf(delta - minutes * 60000.0f) < WINDOW_DURATION_MS / 2.0f) {
+            corr->window_index -= 60 * (int)minutes;
+            corr->window_anchor_ms = anchor_ms;
+        } else {
+            /* Re-anchored to a different phase: second numbering changed */
+            bcd_window_close(corr);
+            bcd_window_open(corr, event_index, anchor_ms);
+            return;
+        }
     }
 
     /* Check if we moved to a different second */
