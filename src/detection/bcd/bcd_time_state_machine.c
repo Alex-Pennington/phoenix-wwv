@@ -78,10 +78,20 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
         td->threshold_low = td->threshold_high * BCD_TIME_HYSTERESIS_RATIO;
     }
 
+    /* Drop a pulse level that no valid pulse has refreshed (see BCD_TIME_LEVEL_HOLD_MS) */
+    if (td->pulse_level > 0.0f &&
+        (frame - td->last_valid_frame) * FRAME_DURATION_MS > BCD_TIME_LEVEL_HOLD_MS) {
+        td->pulse_level = 0.0f;
+    }
+
     /* State machine */
     switch (td->state) {
-        case STATE_IDLE:
-            if (energy > td->threshold_high) {
+        case STATE_IDLE: {
+            float start_threshold = td->threshold_high;
+            if (BCD_TIME_EDGE_FRACTION * td->pulse_level > start_threshold) {
+                start_threshold = BCD_TIME_EDGE_FRACTION * td->pulse_level;
+            }
+            if (energy > start_threshold) {
                 td->state = STATE_IN_PULSE;
                 td->pulse_start_frame = frame;
                 td->pulse_peak_energy = energy;
@@ -91,6 +101,7 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 td->pulse_energy_frames = 1;
             }
             break;
+        }
 
         case STATE_IN_PULSE:
             td->pulse_duration_frames++;
@@ -145,6 +156,13 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                                 td->noise_floor, snr_db);
 
                     td->last_pulse_frame = td->pulse_start_frame;
+
+                    /* Track the pulse level for the next start threshold */
+                    float level = td->pulse_energy_sum / td->pulse_energy_frames;
+                    td->pulse_level = (td->pulse_level > 0.0f)
+                        ? td->pulse_level + BCD_TIME_LEVEL_ALPHA * (level - td->pulse_level)
+                        : level;
+                    td->last_valid_frame = frame;
 
                     /* Callback */
                     if (td->callback) {

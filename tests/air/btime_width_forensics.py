@@ -63,7 +63,7 @@ for e in np.nonzero(pulse > 0)[0]:
     low_e = np.median(en[at(sec_ms + NOM[truth] + 130):at(sec_ms + 980)]) if truth != 'P' else float('nan')
     low_thr = low_e / tl[s0] if truth != 'P' else float('nan')
     # frames between ref_end and the detector end: share of frames with energy below thr_lo
-    a, b = at(sec_ms + ref_end), e
+    a, b = (e, e) if math.isnan(ref_end) else (at(sec_ms + ref_end), e)
     gap = en[a:b] < tl[a:b] if b > a else np.array([])
     rows.append(dict(sec=s, truth=truth, off=off, dur=dur, ref_end=ref_end, det_end=det_end,
                      tail=det_end - ref_end, low_thr=low_thr, hi_lo_db=20 * math.log10(hi / lo) if lo > 0 else float('nan'),

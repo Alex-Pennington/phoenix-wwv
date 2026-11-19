@@ -48,6 +48,15 @@ extern "C" {
  * subcarrier on at a low level (15 dB under the pulse) between pulses, and the floor
  * settles under that low level, so threshold_low alone does not see a pulse end. */
 #define BCD_TIME_EDGE_FRACTION      0.5f
+/* A pulse also starts at half amplitude: the start threshold is BCD_TIME_EDGE_FRACTION
+ * of the running mean level of recent valid pulses (each pulse's mean, averaged with
+ * weight BCD_TIME_LEVEL_ALPHA), or threshold_high if higher. threshold_high alone sits
+ * on the low-level subcarrier and starts events between pulses, whose cooldown hides
+ * the next rise. WWV sends a pulse every second except :00, so after
+ * BCD_TIME_LEVEL_HOLD_MS with no valid pulse the level is stale (a fade) and is
+ * dropped until the next valid pulse. */
+#define BCD_TIME_LEVEL_ALPHA        0.25f
+#define BCD_TIME_LEVEL_HOLD_MS      2000.0f
 
 /* Pulse classification thresholds (same as existing bcd_decoder) */
 #define BCD_TIME_PULSE_MIN_MS       100.0f  /* Ignore pulses shorter than this */
