@@ -343,9 +343,9 @@ LOCKED and closes when events move to another second. This is the per-second BCD
 | Field | Type | Description |
 |-------|------|-------------|
 | `symbol_count` | int | Windows closed since start |
-| `timestamp_ms` | float | Window centre, milliseconds since start |
+| `timestamp_ms` | float | Window centre, milliseconds since start. Window `second` spans anchor + `second` s - 100 ms to + 900 ms, so the centre is 400 ms into the second |
 | `symbol` | char | `0`, `1`, `P` (position marker), or `.` when none could be classified |
-| `duration_ms` | float | Estimated pulse duration (ms) |
+| `duration_ms` | float | Estimated pulse duration (ms): the width of the window's first time-detector event (averaged with the first frequency-detector event when both are present) |
 | `time_events` | int | Events from the time-domain detector in this window |
 | `freq_events` | int | Events from the frequency-domain detector in this window |
 | `source` | string | `TIME`, `FREQ`, `BOTH`, or `NONE` |

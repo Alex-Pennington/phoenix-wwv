@@ -27,6 +27,12 @@ extern "C" {
 /* Window timing */
 #define WINDOW_DURATION_MS      1000.0f
 #define WINDOW_TOLERANCE_MS     50.0f
+/* Window k opens WINDOW_LEAD_MS before second k of the anchor. A BCD pulse
+ * starts at the second; the longest (P, 800 ms) ends by +800 ms, so no real
+ * pulse starts in the last 200 ms of a second. The edge sits in the middle of
+ * that gap: a pulse detected up to 100 ms before its anchor second (anchor
+ * late, start jitter) still lands in its own window. */
+#define WINDOW_LEAD_MS          100.0f
 
 /* Phase 8: Valid P-marker positions (WWV BCD time code format) */
 extern const int VALID_P_POSITIONS[];

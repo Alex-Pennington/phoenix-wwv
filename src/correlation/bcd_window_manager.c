@@ -31,7 +31,7 @@ float bcd_window_get_minute_anchor(bcd_correlator_t *corr) {
 int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_ms, float anchor_ms) {
     if (anchor_ms < 0) return -1;
 
-    float offset_ms = timestamp_ms - anchor_ms;
+    float offset_ms = timestamp_ms - anchor_ms + WINDOW_LEAD_MS;
 
     /* Handle wrap-around for new minute */
     while (offset_ms < 0) offset_ms += 60000.0f;
@@ -45,7 +45,7 @@ int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_
 }
 
 float bcd_window_get_start(float anchor_ms, int second) {
-    return anchor_ms + (second * WINDOW_DURATION_MS);
+    return anchor_ms + (second * WINDOW_DURATION_MS) - WINDOW_LEAD_MS;
 }
 
 /*============================================================================

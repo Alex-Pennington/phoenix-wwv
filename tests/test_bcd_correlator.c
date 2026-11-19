@@ -6,6 +6,8 @@
  *    third second (s % 3 == 1, which holds 0s and P markers), as the air captures
  *    show. A window's symbol is the width of the pulse at the second's start; a
  *    later event in the window does not change it.
+ * 3. Clean minute, every pulse detected 40 ms BEFORE its anchor second (a late anchor
+ *    or early start jitter). Each pulse must still land in its own second's window.
  */
 #include <stdio.h>
 #include <string.h>
@@ -30,7 +32,7 @@ static float width(char t, int s) {
     return (t == '2' ? 800.0f : t == '1' ? 500.0f : 200.0f) + jitter;
 }
 
-static void run(const char *name, int blips) {
+static void run(const char *name, int blips, float start_ms) {
     sync_detector_t *sd = sync_detector_create(NULL);
     for (int m = 0; m < 4; m++) {
         sync_detector_tick_marker(sd, 400.0f + 60000.0f * m, 810.0f, 100.0f);
@@ -48,7 +50,7 @@ static void run(const char *name, int blips) {
     bcd_correlator_set_callback(c, on_sym, NULL);
     memset(got, 0, sizeof got);
     for (int s = 1; s <= 59; s++) {
-        float t0 = a + 1000.0f * s + 20.0f;
+        float t0 = a + 1000.0f * s + start_ms;
         bcd_correlator_time_event(c, t0, width(truth(s), s), 1.0f);
         if (blips && s % 3 == 1)
             bcd_correlator_time_event(c, t0 + 530.0f, 120.0f, 1.0f);
@@ -67,8 +69,9 @@ static void run(const char *name, int blips) {
 }
 
 int main(void) {
-    run("clean minute", 0);
-    run("mid-second detection in every third second", 1);
+    run("clean minute", 0, 20.0f);
+    run("mid-second detection in every third second", 1, 20.0f);
+    run("pulses start 40 ms before the anchor second", 0, -40.0f);
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;
 }
