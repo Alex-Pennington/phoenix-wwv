@@ -8,7 +8,9 @@
 > - Pulse classification now done via bcd_correlator.c with window-based integration
 > - Output sample rate and decimation factors have changed
 >
-> **Still valuable:** WWV BCD pulse encoding (200/500/800ms), frame structure, time code format
+> **Still valuable:** WWV BCD pulse encoding (200/500/800ms), frame structure, time code format.
+> The frame structure, frame map and decode (Stages 6 and 7) were corrected to the WWV layout of
+> NIST SP 432 Table 3.13; they had shown the WWVB layout.
 
 ## Overview
 
@@ -267,40 +269,65 @@ def classify_pulse(width_samples):
 
 ### WWV Frame Structure (60 seconds)
 
+The WWV and WWVH 100 Hz time code, NIST SP 432 Table 3.13 [1]. BCD fields are sent least
+significant bit first. The frame describes the minute in which it is sent. Reserved seconds are
+always 0.
+
 ```
-Second 0:  P0 (reference marker - start of minute)
-Sec 1-8:   Minutes BCD (40, 20, 10, 0, 8, 4, 2, 1)
-Second 9:  P1
-
-Sec 10-18: Hours BCD (0, 0, 20, 10, 0, 8, 4, 2, 1)
-Second 19: P2
-
-Sec 20-28: Day of year hundreds/tens (200, 100, 0, 80, 40, 20, 10, 0)
-Second 29: P3
-
-Sec 30-38: Day units + DUT1 sign (8, 4, 2, 1, 0, +, +, -)
-Second 39: P4
-
-Sec 40-48: DUT1 magnitude + misc
-Second 49: P5
-
-Sec 50-58: Year + leap second/DST warnings
-Second 59: P0 (may be omitted on leap second insertion)
+Second 0:      no pulse (frame reference: the "hole")
+Second 1:      reserved
+Second 2:      DST indicator (changes 24 h after second 55)
+Second 3:      leap second warning (a leap second at the end of this month)
+Sec 4-7:       year units (1, 2, 4, 8)
+Second 8:      reserved
+Second 9:      P1
+Sec 10-13:     minute units (1, 2, 4, 8)
+Second 14:     reserved
+Sec 15-17:     minute tens (10, 20, 40)
+Second 18:     reserved
+Second 19:     P2
+Sec 20-23:     hour units (1, 2, 4, 8)
+Second 24:     reserved
+Sec 25-26:     hour tens (10, 20)
+Sec 27-28:     reserved
+Second 29:     P3
+Sec 30-33:     day of year units (1, 2, 4, 8)
+Second 34:     reserved
+Sec 35-38:     day of year tens (10, 20, 40, 80)
+Second 39:     P4
+Sec 40-41:     day of year hundreds (100, 200)
+Sec 42-48:     reserved
+Second 49:     P5
+Second 50:     UT1 sign (1 = positive)
+Sec 51-54:     year tens (10, 20, 40, 80)
+Second 55:     DST indicator (changes at 00:00 UTC on the day of a change)
+Sec 56-58:     UT1 correction magnitude (0.1, 0.2, 0.4 s)
+Second 59:     P0
 ```
+
+On the day standard time changes to daylight time, second 55 changes from 0 to 1 at 00:00 UTC
+and second 2 follows 24 h later; the change back runs the same way [1]. Both are 0 in standard
+time and 1 in daylight time.
+
+This is not the WWVB layout (SP 432 Table 2.3 [1]), which sends minutes at seconds 1-8 most
+significant bit first and a marker at second 0. A decoder written from the WWVB table decodes a
+WWV frame to a confident wrong time.
 
 ### Position Marker Pattern
 
-Position markers (P) occur at seconds: **0, 9, 19, 29, 39, 49, 59**
-
-This creates a unique pattern that can be used for frame synchronization.
+Position markers (P) occur at seconds **9, 19, 29, 39, 49, 59**. Second 0 carries no pulse, so
+the minute starts with P0 at second 59 followed by a silent second. The minute itself is marked
+by the 800 ms 1000 Hz (WWV) or 1200 Hz (WWVH) tone at second 0, which this repo's sync detector
+uses as the anchor. The decoder in `src/decode/wwv_time_decoder.c` takes its frame start from
+that anchor and uses the P markers to check the second phase.
 
 ```python
 # Frame sync state machine
 symbol_buffer = RingBuffer(60)
 sync_state = SEARCHING
 
-# Expected position marker locations
-P_POSITIONS = [0, 9, 19, 29, 39, 49, 59]
+# Expected position marker locations (second 0 has no pulse)
+P_POSITIONS = [9, 19, 29, 39, 49, 59]
 
 def process_symbol(symbol, second_tick):
     """
@@ -351,122 +378,103 @@ def detect_frame_pattern(buffer):
 
 ## Stage 7: BCD Decode
 
+WWV has no parity. A single frame decodes as below, but one wrong symbol gives a valid-looking
+wrong time. `src/decode/wwv_time_decoder.c` therefore scores every UTC minute against the
+symbols of up to 60 consecutive minutes and reports a time as CONFIRMED only when it leads by a
+wide margin, and the previous minute agrees (see `include/wwv_time_decoder.h`).
+
 ```python
+def bcd(symbols, seconds, weights):
+    """Sum of weights at seconds whose symbol is 1 (LSB first)."""
+    return sum(w for s, w in zip(seconds, weights) if symbols[s] == 1)
+
 def decode_frame(symbols):
     """
-    Decode complete 60-symbol frame into UTC time.
+    Decode one 60-symbol WWV frame (NIST SP 432 Table 3.13).
 
     Args:
-        symbols: Array of 60 symbols (0, 1, or P)
+        symbols: Array of 60 symbols (0, 1, or P); symbols[0] is the silent second
 
     Returns:
-        UTC_Time object with hours, minutes, day of year
+        UTC_Time for the minute in which the frame was sent
     """
-    # Minutes: seconds 1-8
-    # Bit weights: 40, 20, 10, (unused), 8, 4, 2, 1
-    minutes = (symbols[1] * 40 +
-               symbols[2] * 20 +
-               symbols[3] * 10 +
-               # symbols[4] unused (always 0)
-               symbols[5] * 8 +
-               symbols[6] * 4 +
-               symbols[7] * 2 +
-               symbols[8] * 1)
-
-    # Hours: seconds 12-18
-    # Bit weights: (unused), (unused), 20, 10, (unused), 8, 4, 2, 1
-    hours = (symbols[12] * 20 +
-             symbols[13] * 10 +
-             # symbols[14] unused
-             symbols[15] * 8 +
-             symbols[16] * 4 +
-             symbols[17] * 2 +
-             symbols[18] * 1)
-
-    # Day of year: seconds 22-33
-    # Hundreds and tens: 200, 100, (unused), 80, 40, 20, 10, (unused)
-    # Units: 8, 4, 2, 1
-    doy = (symbols[22] * 200 +
-           symbols[23] * 100 +
-           # symbols[24] unused
-           symbols[25] * 80 +
-           symbols[26] * 40 +
-           symbols[27] * 20 +
-           symbols[28] * 10 +
-           # symbols[29] is P3
-           symbols[30] * 8 +
-           symbols[31] * 4 +
-           symbols[32] * 2 +
-           symbols[33] * 1)
-
-    return UTC_Time(hours=hours, minutes=minutes, day_of_year=doy)
+    minute = bcd(symbols, [10, 11, 12, 13], [1, 2, 4, 8]) + bcd(symbols, [15, 16, 17], [10, 20, 40])
+    hour = bcd(symbols, [20, 21, 22, 23], [1, 2, 4, 8]) + bcd(symbols, [25, 26], [10, 20])
+    doy = (bcd(symbols, [30, 31, 32, 33], [1, 2, 4, 8]) +
+           bcd(symbols, [35, 36, 37, 38], [10, 20, 40, 80]) +
+           bcd(symbols, [40, 41], [100, 200]))
+    year = 2000 + bcd(symbols, [4, 5, 6, 7], [1, 2, 4, 8]) + bcd(symbols, [51, 52, 53, 54], [10, 20, 40, 80])
+    dut1 = bcd(symbols, [56, 57, 58], [0.1, 0.2, 0.4]) * (1 if symbols[50] == 1 else -1)
+    return UTC_Time(year=year, day_of_year=doy, hours=hour, minutes=minute, dut1=dut1,
+                    dst=(symbols[55], symbols[2]), leap_second_warning=symbols[3])
 ```
 
 ### BCD Frame Map
 
 ```
-Sec  | Bit Weight | Field
------|------------|------------------
-  0  | P          | Position Marker 0 (minute reference)
-  1  | 40         | Minutes (tens)
-  2  | 20         | Minutes (tens)
-  3  | 10         | Minutes (tens)
-  4  | 0          | (unused)
-  5  | 8          | Minutes (units)
-  6  | 4          | Minutes (units)
-  7  | 2          | Minutes (units)
-  8  | 1          | Minutes (units)
-  9  | P          | Position Marker 1
- 10  | 0          | (unused)
- 11  | 0          | (unused)
- 12  | 20         | Hours (tens)
- 13  | 10         | Hours (tens)
- 14  | 0          | (unused)
- 15  | 8          | Hours (units)
- 16  | 4          | Hours (units)
- 17  | 2          | Hours (units)
- 18  | 1          | Hours (units)
- 19  | P          | Position Marker 2
- 20  | 0          | (unused)
- 21  | 0          | (unused)
- 22  | 200        | Day of year (hundreds)
- 23  | 100        | Day of year (hundreds)
- 24  | 0          | (unused)
- 25  | 80         | Day of year (tens)
- 26  | 40         | Day of year (tens)
- 27  | 20         | Day of year (tens)
- 28  | 10         | Day of year (tens)
- 29  | P          | Position Marker 3
- 30  | 8          | Day of year (units)
- 31  | 4          | Day of year (units)
- 32  | 2          | Day of year (units)
- 33  | 1          | Day of year (units)
- 34  | 0          | (unused)
- 35  | +          | DUT1 sign (+)
- 36  | +          | DUT1 sign (+)
- 37  | -          | DUT1 sign (-)
- 38  | 0          | (unused)
- 39  | P          | Position Marker 4
- 40  | 0.8        | DUT1 magnitude
- 41  | 0.4        | DUT1 magnitude
- 42  | 0.2        | DUT1 magnitude
- 43  | 0.1        | DUT1 magnitude
- 44  | 0          | (reserved)
- 45  | 0          | (reserved)
- 46  | 0          | (reserved)
- 47  | 0          | (reserved)
- 48  | 0          | (reserved)
- 49  | P          | Position Marker 5
- 50  | 0          | (unused)
- 51  | 80         | Year (tens)
- 52  | 40         | Year (tens)
- 53  | 20         | Year (tens)
- 54  | 10         | Year (tens)
- 55  | 8          | Year (units)
- 56  | 4          | Year (units)
- 57  | 2          | Year (units)
- 58  | 1          | Year (units)
- 59  | P          | Position Marker 0 (next minute)
+Sec  | Weight | Field
+-----|--------|------------------------------
+  0  | -      | No pulse (frame reference)
+  1  | 0      | Reserved
+  2  | -      | DST indicator (changes 24 h after second 55)
+  3  | -      | Leap second warning
+  4  | 1      | Year units
+  5  | 2      | Year units
+  6  | 4      | Year units
+  7  | 8      | Year units
+  8  | 0      | Reserved
+  9  | P      | Position Marker 1
+ 10  | 1      | Minute units
+ 11  | 2      | Minute units
+ 12  | 4      | Minute units
+ 13  | 8      | Minute units
+ 14  | 0      | Reserved
+ 15  | 10     | Minute tens
+ 16  | 20     | Minute tens
+ 17  | 40     | Minute tens
+ 18  | 0      | Reserved
+ 19  | P      | Position Marker 2
+ 20  | 1      | Hour units
+ 21  | 2      | Hour units
+ 22  | 4      | Hour units
+ 23  | 8      | Hour units
+ 24  | 0      | Reserved
+ 25  | 10     | Hour tens
+ 26  | 20     | Hour tens
+ 27  | 0      | Reserved
+ 28  | 0      | Reserved
+ 29  | P      | Position Marker 3
+ 30  | 1      | Day of year units
+ 31  | 2      | Day of year units
+ 32  | 4      | Day of year units
+ 33  | 8      | Day of year units
+ 34  | 0      | Reserved
+ 35  | 10     | Day of year tens
+ 36  | 20     | Day of year tens
+ 37  | 40     | Day of year tens
+ 38  | 80     | Day of year tens
+ 39  | P      | Position Marker 4
+ 40  | 100    | Day of year hundreds
+ 41  | 200    | Day of year hundreds
+42-48| 0      | Reserved
+ 49  | P      | Position Marker 5
+ 50  | -      | UT1 sign (1 = positive)
+ 51  | 10     | Year tens
+ 52  | 20     | Year tens
+ 53  | 40     | Year tens
+ 54  | 80     | Year tens
+ 55  | -      | DST indicator (changes at 00:00 UTC)
+ 56  | 0.1    | UT1 correction (s)
+ 57  | 0.2    | UT1 correction (s)
+ 58  | 0.4    | UT1 correction (s)
+ 59  | P      | Position Marker 0
+```
+
+Example from SP 432 [1]: a frame decoding to year 2001, day 173, 21:10 UTC, UT1 +0.3 s is,
+seconds 0-59 (`.` for the silent second 0, DST and leap second bits 0):
+
+```
+.00010000P000001000P100000100P110001110P100000000P100000110P
 ```
 
 ---
@@ -540,14 +548,19 @@ def estimate_noise_floor(envelope_buffer, percentile=10):
 ### Error Handling
 
 1. **Lost sync:** If 3 consecutive P markers are missed, return to SEARCHING state
-2. **Invalid BCD:** If decoded value exceeds valid range (e.g., minutes > 59), discard frame
+2. **Invalid BCD:** If decoded value exceeds valid range (e.g., minutes > 59), the frame holds an
+   error. `wwv_time_decoder` does not use the 1s of such a field
 3. **Noise burst:** Ignore pulses shorter than 100 ms or longer than 1000 ms
 
 ---
 
 ## References
 
-- NIST Special Publication 432: NIST Time and Frequency Services
+[1] M. A. Lombardi, "NIST Time and Frequency Services," National Institute of Standards and
+Technology, Gaithersburg, MD, USA, NIST Special Publication 432, 2002 ed. (minor text revisions
+April 2003), Table 2.3 "WWVB Time Code Bits" and Table 3.13 "WWV and WWVH Time Code Bits".
+[Online]. Available: https://tf.nist.gov/general/pdf/1383.pdf
+
 - WWV/WWVH broadcast format documentation
 - SDRuno User Manual v1.42
 - SDRplay API documentation
