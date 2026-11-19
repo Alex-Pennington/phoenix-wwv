@@ -165,9 +165,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Live host (`apps/wwv_live.c`, `scripts/wwv_rsp2_live.sh`)
 
-- **`sdrplay_apiService` 3.15.2 segfaulted while systemd stopped it** (2026-11-19 17:44:59 UTC,
-  Result core-dump), after the stream was closed. The unit was stopped but `failed`. An earlier
-  stop that day (12:31) was clean. The wrapper now reports it and runs `systemctl reset-failed`.
+- **`sdrplay_apiService` 3.15.2 segfaults while systemd stops it**: both live-host stops on
+  2026-11-19 (17:44:59 and 17:54:25 UTC) ended SEGV, Result core-dump, after the stream was
+  closed. The unit was stopped but `failed`. The capture session's stop at 12:31 was clean. The wrapper now reports it and runs `systemctl reset-failed`.
   The cause is in the vendor binary and is not investigated.
 - **At 17:42 UTC the whip saw no usable WWV on 5 MHz**: carrier C/N0 11-14 dB-Hz, against 54-62
   dB-Hz in the 12:09 UTC capture with the same settings. The 165 s smoke test found 0 markers and
