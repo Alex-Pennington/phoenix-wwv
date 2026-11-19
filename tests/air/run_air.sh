@@ -6,6 +6,7 @@
 # capture-root defaults to ~/wwv-capture. It must hold the converted 50 kHz
 # streams (conv/air_50k.f32 for the KiwiSDR capture, saga/conv/air_50k.f32 for the
 # RSP2 capture), their air.json timebases, and score.py / bcd_pulse_score.py.
+# decode_score.py scores the time decoder's BCDS,UTC lines; FALSE CONFIRM must be 0.
 # Each capture runs in two wirings: carrier at DC with no AGC, and with the
 # waterfall.c slow AGC (-n). Outputs: <out-dir>/<capture>_<wiring>.txt and
 # score_<capture>_<wiring>.txt.
@@ -22,7 +23,8 @@ for c in kiwi saga; do
       python3 -I "$ROOT/score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" "$c/$w" > "$OUT/score_${c}_${w}.txt"
       python3 -I "$ROOT/bcd_pulse_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
       python3 -I "$(dirname "$0")/marker_lead_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
-      python3 -I "$(dirname "$0")/symbol_second_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt" ) &
+      python3 -I "$(dirname "$0")/symbol_second_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" >> "$OUT/score_${c}_${w}.txt"
+      python3 -I "$(dirname "$0")/decode_score.py" "$OUT/${c}_${w}.txt" "${CAP[$c]}/air.json" "$c/$w" >> "$OUT/score_${c}_${w}.txt" ) &
     pids+=($!)
   done
 done
@@ -39,6 +41,9 @@ for c in kiwi saga; do for w in plain agc; do
   grep -o 'decoded(0/1/P)=[0-9]* correct=[0-9]*' "$f" | tr '\n' ' '
   grep -o '^BTIME: events=[0-9]*' "$f" | tr '\n' ' '
   grep -o '^BFREQ: events=[0-9]*' "$f" | tr '\n' ' '
+  printf 'UTC tod %s date %s ' "$(grep -oE '^  tod .*wrong=[0-9]+' "$f" | sed -E 's/^  tod +right\/reported by state: //')" \
+    "$(grep -oE '^  date .*wrong=[0-9]+' "$f" | sed -E 's/^  date +right\/reported by state: //')"
+  grep -oE 'FALSE CONFIRM: [0-9]+' "$f" | tr '\n' ' '
   echo
 done; done
 exit $rc

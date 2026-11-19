@@ -27,6 +27,7 @@
 #include "bcd_correlator.h"
 #include "sync_detector.h"
 #include "telemetry.h"
+#include "wwv_time_decoder.h"
 #include "bcd_correlator_internal.h"  /* WTRACE: window accumulators */
 
 #define FS 50000.0
@@ -62,6 +63,7 @@ static float normalize(normalizer_t *n, float i, float q) {
 }
 static tick_detector_t *g_tick; static marker_detector_t *g_mark;
 static sync_detector_t *g_sync; static bcd_correlator_t *g_bcd;
+static wwv_time_decoder_t *g_td;
 
 static void on_tick(const tick_event_t *e, void *u) { (void)u;
     printf("TICK n=%d t=%.1f dur=%.1f int=%.1f\n", e->tick_number, e->timestamp_ms, e->duration_ms, e->interval_ms); }
@@ -99,7 +101,10 @@ static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
            g_bcd->freq_event_count, g_bcd->freq_first_ms, g_bcd->freq_last_ms, g_bcd->freq_duration_sum,
            e->duration_ms);
     printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second);
-    printf("SYMMIN sec=%d minute_start=%.1f pulse_offset=%.1f\n", e->second, e->minute_start_ms, e->pulse_offset_ms); }
+    printf("SYMMIN sec=%d minute_start=%.1f pulse_offset=%.1f\n", e->second, e->minute_start_ms, e->pulse_offset_ms);
+    wwv_time_decoder_bcd_callback(e, g_td); }
+static void on_time(const wwv_td_result_t *r, void *u) { (void)u;
+    printf("TDRES start=%.1f at=%.1f\n", r->frame_start_ms, g_now_ms); }
 static void on_state(sync_state_t o, sync_state_t n, float c, void *u) { (void)u;
     printf("SYNC %s->%s conf=%.2f\n", sync_state_name(o), sync_state_name(n), c); }
 
@@ -111,6 +116,8 @@ int main(int argc, char **argv) {
     if (!fp) { perror(argv[1]); return 2; }
     g_tick = tick_detector_create(NULL); g_mark = marker_detector_create(NULL);
     g_sync = sync_detector_create(NULL); g_bcd = bcd_correlator_create(NULL);
+    g_td = wwv_time_decoder_create(NULL);
+    wwv_time_decoder_set_callback(g_td, on_time, NULL);
     bcd_time_detector_t *bt = bcd_time_detector_create(NULL);
     bcd_freq_detector_t *bf = bcd_freq_detector_create(NULL);
     tick_detector_set_callback(g_tick, on_tick, NULL);
@@ -141,6 +148,7 @@ int main(int argc, char **argv) {
             if (n % 2500 == 0) {
                 sync_detector_periodic_check(g_sync, (float)(n / FS * 1000.0));
                 bcd_correlator_periodic_check(g_bcd, (float)(n / FS * 1000.0));
+                wwv_time_decoder_periodic(g_td, (float)(n / FS * 1000.0));
             }
         }
     }
@@ -152,5 +160,6 @@ int main(int argc, char **argv) {
     printf("BCDWIN silent=%d late_events=%d\n", g_bcd->silent_windows, g_bcd->late_events);
     PRINT_TELEM = 1;
     bcd_correlator_destroy(g_bcd);
+    wwv_time_decoder_destroy(g_td);
     return 0;
 }
