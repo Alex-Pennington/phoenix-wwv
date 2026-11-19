@@ -27,6 +27,7 @@
 #include "bcd_correlator.h"
 #include "sync_detector.h"
 #include "telemetry.h"
+#include "bcd_correlator_internal.h"  /* WTRACE: window accumulators */
 
 #define FS 50000.0
 static int PRINT_TELEM = 1;
@@ -73,13 +74,29 @@ static void on_marker(const marker_event_t *e, void *u) { (void)u;
     printf("MARK n=%d t=%.1f dur=%.1f lead=%.1f\n", e->marker_number, e->timestamp_ms, e->duration_ms, e->start_timestamp_ms);
     sync_detector_marker_event(g_sync, e->timestamp_ms, e->accumulated_energy, e->duration_ms);
 }
+/* WTRACE: which window each BCD event landed in, and what each window held when it
+ * closed (read from the correlator's accumulators inside the symbol callback, before
+ * they are reset). Scored by tests/air/bcd_window_trace.py. */
+static void trace_event(char src, float t, float dur, bcd_correlator_t *c) {
+    if (c->window_open)
+        printf("WEV src=%c t=%.1f dur=%.1f win_sec=%d win_start=%.1f anchor=%.1f\n",
+               src, t, dur, c->current_second, c->window_start_ms, c->window_anchor_ms);
+    else printf("WEV src=%c t=%.1f dur=%.1f win_sec=-1\n", src, t, dur);
+}
 static void on_bt(const bcd_time_event_t *e, void *u) {
     printf("BTIME t=%.1f dur=%.1f\n", e->timestamp_ms, e->duration_ms);
-    bcd_correlator_time_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->peak_energy); }
+    bcd_correlator_time_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->peak_energy);
+    trace_event('T', e->timestamp_ms, e->duration_ms, (bcd_correlator_t *)u); }
 static void on_bf(const bcd_freq_event_t *e, void *u) {
     printf("BFREQ t=%.1f dur=%.1f\n", e->timestamp_ms, e->duration_ms);
-    bcd_correlator_freq_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->accumulated_energy); }
+    bcd_correlator_freq_event((bcd_correlator_t *)u, e->timestamp_ms, e->duration_ms, e->accumulated_energy);
+    trace_event('F', e->timestamp_ms, e->duration_ms, (bcd_correlator_t *)u); }
 static void on_sym(const bcd_symbol_event_t *e, void *u) { (void)u;
+    printf("WCLOSE sec=%d win_start=%.1f anchor=%.1f tn=%d tfirst=%.1f tlast=%.1f tdur=%.1f fn=%d ffirst=%.1f flast=%.1f fdur=%.1f est=%.1f\n",
+           g_bcd->current_second, g_bcd->window_start_ms, g_bcd->window_anchor_ms,
+           g_bcd->time_event_count, g_bcd->time_first_ms, g_bcd->time_last_ms, g_bcd->time_duration_sum,
+           g_bcd->freq_event_count, g_bcd->freq_first_ms, g_bcd->freq_last_ms, g_bcd->freq_duration_sum,
+           e->duration_ms);
     printf("SYMCB sym=%c t=%.1f dur=%.1f conf=%.2f src=%s sec=%d\n", bcd_corr_symbol_char(e->symbol), e->timestamp_ms, e->duration_ms, e->confidence, e->source, e->second); }
 static void on_state(sync_state_t o, sync_state_t n, float c, void *u) { (void)u;
     printf("SYNC %s->%s conf=%.2f\n", sync_state_name(o), sync_state_name(n), c); }
