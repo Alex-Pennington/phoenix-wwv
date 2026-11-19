@@ -52,6 +52,16 @@ extern "C" {
 #define MARKER_MAX_DURATION_MS_CHECK 1500.0f  /* Marker should be under 1500ms */
 #define MARKER_MIN_INTERVAL_MS  55000.0f /* Markers must be 55+ seconds apart */
 
+/* Leading edge of a marker run. A clean 800 ms marker reads as 800 ms plus about
+ * two frames (804-833 ms on air). The run starts on threshold_high but ends on
+ * threshold_low (0.7x), so on a weak or noisy marker the start is the fragile
+ * edge: a run shorter or longer than clean started late or early, and its end is
+ * still right (air: runs of 614-763 and 983 ms ended +814..+828 ms after :00,
+ * as clean runs do). Off by more than the tolerance, the leading edge is taken
+ * from the trailing edge. */
+#define MARKER_CLEAN_RUN_MS         (MARKER_ACTUAL_DURATION_MS + 2.0f * FRAME_DURATION_MS)
+#define MARKER_RUN_TOLERANCE_MS     40.0f
+
 /* Warmup and display */
 #define TICK_WARMUP_FRAMES      50
 #define TICK_FLASH_FRAMES       5

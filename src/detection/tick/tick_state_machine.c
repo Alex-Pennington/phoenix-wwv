@@ -174,6 +174,10 @@ void tick_state_machine_run(tick_detector_t *td) {
                      * timestamp_ms is when energy dropped below threshold (trailing edge).
                      * The actual WWV marker START is the on-time reference. */
                     float leading_edge_ms = timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS;
+                    if (fabsf(duration_ms - MARKER_CLEAN_RUN_MS) > MARKER_RUN_TOLERANCE_MS) {
+                        /* Run started late or early: anchor on its end (tick_internal.h) */
+                        leading_edge_ms = timestamp_ms - MARKER_CLEAN_RUN_MS - TICK_FILTER_DELAY_MS;
+                    }
 
                     printf("[%7.1fs] *** MINUTE MARKER #%-3d ***  dur=%.0fms  corr=%.1f  since=%.1fs  start=%.1fms\n",
                            timestamp_ms / 1000.0f, td->markers_detected,
