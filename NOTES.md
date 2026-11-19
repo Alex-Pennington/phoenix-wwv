@@ -6,10 +6,26 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Detection
 
-- **BCD correlator accuracy is the BCD bottleneck.** BTIME pulses that start within -50..+200 ms
-  of a UTC second are width-classified correctly 85% of the time (kiwi plain 102/121, saga plain
-  306/360). Correlator symbols are 47-59% correct, whichever source anchored sync, with no peak at
-  a +-1 s shift. The window logic in `src/correlation/` loses the accuracy. It is not traced.
+- **BCD symbol accuracy is now limited by the BTIME detector and the sync anchor, not the
+  correlator's window logic.** Symbols are 67-82% correct (54/70, 69/101, 109/163, 153/187).
+  `tests/air/trace_all.sh <out-dir>` gives every wrong symbol a cause. What remains, on kiwi
+  plain / kiwi agc / saga plain / saga agc:
+  - width 6/18/28/12: the window holds the pulse at the second, and the detector measured its
+    width wrong. The class medians are right (0: 220-250 ms, 1: 497-532 ms, P: 788-876 ms) and
+    the 350/650 ms cuts sit between them, but each class has a wide tail (0 p90 425-502 ms).
+    That is detector width noise, not a threshold error.
+  - spurious 10/8/16/16: no BTIME event starts near the second. The window classifies a
+    mid-second event, which is right about half the time. Of the seconds a window covers, 19-31%
+    have no boundary pulse. Emitting NONE for these windows was measured and not adopted: with a
+    "first event within 350 ms of the window start" gate, correct falls to 43/38/73/116, wrong
+    to 6/20/26/12. It also cuts the real pulses in the marker-anchored minutes (next bullet).
+    Revisit once the anchor is right.
+  - misaligned 0/1/6/6: minutes anchored 150-165 ms late (saga tick-path lead edges). Every
+    pulse lands at the end of the previous window, and the minute decodes one second shifted.
+    A window lead over 100 ms makes kiwi agc worse, because its marker-anchored minutes open
+    about 400 ms early.
+  - sec-index 0/3/3/0 and 2 of 3 multi-span: the marker-anchored minutes, 2 s off (the
+    `start_timestamp_ms` bullet below).
 - **`bcd_freq` cannot detect per-second pulses.** It thresholds a 1 s sliding sum of 100 Hz
   energy at 3x a baseline that tracks that same sum. The subcarrier is present every second, so
   the sum barely moves. It fires only on the P-marker clusters: saga BFREQ events land at UTC
@@ -50,6 +66,19 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   reset. The re-anchor rule mitigates it.
 - The sync detector gets no per-tick events in the waterfall.c wiring, so tick-hole evidence never
   arrives.
+- The BCD correlator averages BFREQ's duration with BTIME's when a window holds both. BFREQ fires
+  mostly on P-marker clusters, and its durations (164-983 ms over the four runs) do not cluster
+  at 200/500/800 ms. No air window is wrong because of it today (freq-avg 0 on all runs). BFREQ-only windows
+  give 7 wrong symbols at b2ede79.
+- The correlator opens a window only when an event arrives. A second with no BCD event produces
+  no callback at all, not a NONE symbol, so a frame decoder cannot tell "no pulse" from "not
+  locked".
+- Minute anchors from tick-path markers are off by up to -158..+165 ms on saga (TMARK lead
+  edges, e.g. 12:16 -158 ms with dur 983, 12:17 +111 ms with dur 645). Every BCD window in the
+  minute inherits that offset.
+- `bcd_window_get_second_for_timestamp()` no longer has a caller inside the correlator
+  (`bcd_window_get_index()` replaced it). It is kept for its declared interface, and its unused
+  `corr` parameter warns.
 - The BCD correlator CSV header lists 14 columns and the rows have 10. `bcd_correlator_destroy()`
   still closes the last window through the old static `close_window()` (`SYM`/`CORR` format). Two
   output formats coexist (audit F2).
