@@ -50,6 +50,9 @@ extern "C" {
 #define MARKER_MAX_FLANK_RATIO      0.2f
 #define MARKER_PURITY_RING          1024    /* frames (5.2 s): covers the longest run */
 
+/* Logging: one "MARKER block peak" line per block */
+#define MARKER_PEAK_LOG_MS          10000.0f
+
 /* Display */
 #define MARKER_FLASH_FRAMES         30      /* UI flash duration */
 
@@ -108,6 +111,12 @@ struct marker_detector {
     float marker_peak_energy;
     int marker_duration_frames;
     int cooldown_frames;
+
+    /* Logging: the largest window sum over baseline in each MARKER_PEAK_LOG_MS
+     * block, so a minute with no run shows how far its marker fell short */
+    float block_peak_ratio;
+    uint64_t block_peak_frame;
+    uint64_t block_start_frame;
 
     /* Statistics */
     int markers_detected;

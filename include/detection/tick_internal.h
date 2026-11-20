@@ -139,6 +139,8 @@ struct tick_detector {
     float tick_energy_sum;      /* Sum of energy over the current above-threshold run */
     int tick_duration_frames;
     int cooldown_frames;
+    uint64_t idle_since_frame;  /* First IDLE frame after the last cooldown (logging) */
+    uint64_t last_run_end_frame; /* End of the last run, any outcome (logging) */
 
     /* Statistics */
     int ticks_detected;

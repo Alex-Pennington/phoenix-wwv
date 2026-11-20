@@ -293,8 +293,17 @@ void tick_state_machine_run(tick_detector_t *td) {
                     /* Rejected - duration in the gap zone (50-600ms) or failed other checks */
                     td->ticks_rejected++;
                     if (duration_ms > TICK_MAX_DURATION_MS && duration_ms < MARKER_MIN_DURATION_MS) {
-                        printf("[%7.1fs] REJECTED: dur=%.0fms (gap zone 50-600ms)\n",
-                               timestamp_ms / 1000.0f, duration_ms);
+                        /* start/end in stream ms. idle= is how long the detector had
+                         * been out of cooldown when the run started: 0 means the
+                         * energy was already above threshold while it was blind, so
+                         * the run's start is not the pulse's. prev_end= is the end
+                         * of the run before (any outcome, logged or not). */
+                        printf("[%7.1fs] REJECTED: dur=%.0fms (gap zone 50-600ms) start=%.1fms end=%.1fms "
+                               "idle=%.0fms prev_end=%.1fms\n",
+                               timestamp_ms / 1000.0f, duration_ms,
+                               td->tick_start_frame * FRAME_DURATION_MS, timestamp_ms,
+                               (td->tick_start_frame - td->idle_since_frame) * FRAME_DURATION_MS,
+                               td->last_run_end_frame * FRAME_DURATION_MS);
                         /* Too long for a tick and too short for a marker: the
                          * background has risen. Re-learn the floor from it. */
                         tick_state_reset_floor(td);
@@ -304,6 +313,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                     }
                 }
 
+                td->last_run_end_frame = frame;
                 td->state = STATE_COOLDOWN;
                 td->cooldown_frames = MS_TO_FRAMES(TICK_COOLDOWN_MS);
 
@@ -313,6 +323,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                 printf("[%7.1fs] REJECTED: pulse >1s, bailing out\n",
                        frame * FRAME_DURATION_MS / 1000.0f);
                 tick_state_reset_floor(td);
+                td->last_run_end_frame = frame;
                 td->state = STATE_COOLDOWN;
                 td->cooldown_frames = MS_TO_FRAMES(TICK_COOLDOWN_MS);
             }
@@ -321,6 +332,7 @@ void tick_state_machine_run(tick_detector_t *td) {
         case STATE_COOLDOWN:
             if (--td->cooldown_frames <= 0) {
                 td->state = STATE_IDLE;
+                td->idle_since_frame = frame + 1;
             }
             break;
     }

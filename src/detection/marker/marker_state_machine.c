@@ -162,6 +162,23 @@ void marker_state_machine_run(marker_detector_t *md) {
         return;
     }
 
+    /* Logging: the block's largest window sum over the baseline it was judged
+     * against, in every state (the threshold is threshold_multiplier times it) */
+    if (md->baseline_energy > 0.0f) {
+        float r = md->accumulated_energy / md->baseline_energy;
+        if (r > md->block_peak_ratio) {
+            md->block_peak_ratio = r;
+            md->block_peak_frame = frame;
+        }
+    }
+    if ((frame - md->block_start_frame) * FRAME_DURATION_MS >= MARKER_PEAK_LOG_MS) {
+        printf("[%7.1fs] MARKER block peak: sum/baseline %.2f at %.1fms (threshold %.2f) state=%d\n",
+               frame * FRAME_DURATION_MS / 1000.0f, md->block_peak_ratio,
+               md->block_peak_frame * FRAME_DURATION_MS, md->threshold_multiplier, (int)md->state);
+        md->block_peak_ratio = 0.0f;
+        md->block_start_frame = frame;
+    }
+
     /* Self-track baseline during IDLE (proven approach from v133) */
     if (md->state == STATE_IDLE) {
         md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
@@ -219,10 +236,10 @@ void marker_state_machine_run(marker_detector_t *md) {
                     float since_last = (md->last_marker_frame > 0) ?
                         (md->marker_start_frame - md->last_marker_frame) * FRAME_DURATION_MS / 1000.0f : 0.0f;
 
-                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms (window run %.0fms)  start=%.1fms  since=%.1fs  accum=%.2f  flank=%.2f\n",
+                    printf("[%7.1fs] *** MINUTE MARKER #%d ***  dur=%.0fms (window run %.0fms)  start=%.1fms  since=%.1fs  accum=%.2f  flank=%.2f  peak/baseline %.2f\n",
                            timestamp_ms / 1000.0f, md->markers_detected,
                            pulse_ms, duration_ms, pulse_start_ms, since_last, md->marker_peak_energy,
-                           md->last_flank_ratio);
+                           md->last_flank_ratio, md->marker_peak_energy / md->baseline_energy);
 
                     /* CSV logging and telemetry */
                     char time_str[16];
@@ -260,7 +277,15 @@ void marker_state_machine_run(marker_detector_t *md) {
                         };
                         md->callback(&event, md->callback_user_data);
                     }
-                } else if (timed_out) {
+                } else if (!timed_out) {
+                    /* Too short. Logged because it takes the cooldown, which
+                     * hides any marker in the next 30 s. */
+                    printf("[%7.1fs] MARKER short run: window run %.0fms < %.0fms, start=%.1fms "
+                           "peak/baseline %.2f, cooldown %.0fs\n",
+                           frame * FRAME_DURATION_MS / 1000.0f, duration_ms, md->min_duration_ms,
+                           pulse_start_ms, md->marker_peak_energy / md->baseline_energy,
+                           MARKER_COOLDOWN_MS / 1000.0f);
+                } else {
                     printf("[%7.1fs] MARKER timed out after %.0fms - resetting baseline\n",
                            frame * FRAME_DURATION_MS / 1000.0f, duration_ms);
                     /* Restored from before 7e7805e: without it, sustained in-band
