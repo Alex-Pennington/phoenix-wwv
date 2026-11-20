@@ -8,6 +8,10 @@ add_test(NAME chain_synth COMMAND test_chain_synth)
 add_executable(harness_iq air/harness_iq.c)
 target_link_libraries(harness_iq PRIVATE phoenix_wwv)
 
+# Event replay: re-runs sync, correlator and decoder on a harness or wwv_live log.
+add_executable(replay_events air/replay_events.c)
+target_link_libraries(replay_events PRIVATE phoenix_wwv)
+
 add_executable(test_channel_filters test_channel_filters.c)
 target_link_libraries(test_channel_filters PRIVATE phoenix_wwv)
 add_test(NAME channel_filters COMMAND test_channel_filters)
