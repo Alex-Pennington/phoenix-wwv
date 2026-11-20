@@ -137,6 +137,8 @@ struct marker_detector {
     /* Callback */
     marker_callback_fn callback;
     void *callback_user_data;
+    marker_callback_fn candidate_callback;
+    void *candidate_callback_user_data;
 
     /* Logging */
     FILE *csv_file;

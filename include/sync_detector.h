@@ -112,6 +112,19 @@ void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
                                  float accum_energy, float duration_ms);
 
 /**
+ * Report a marker candidate: a run a detector rejected as a marker that may be
+ * one (tick_marker_candidate_t, or a marker-detector short run). It confirms the
+ * minute phase already held when either leading-edge reading lands within the
+ * candidate tolerance of a later whole minute from the anchor; the confirmed time
+ * is the held phase. Ignored in ACQUIRING, while a marker event is pending, and in
+ * a minute already confirmed.
+ * @param lead_a_ms, lead_b_ms Two readings of the leading edge (equal if one)
+ * @param source Label for the console and the marker CSV ("CANDT" tick path, "CANDM" marker detector)
+ */
+void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float lead_b_ms,
+                                    const char *source);
+
+/**
  * Get unified frame time - authoritative timing output
  * @param sd Detector handle
  * @return frame_time_t with current second, confidence, evidence

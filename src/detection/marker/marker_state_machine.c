@@ -282,10 +282,24 @@ void marker_state_machine_run(marker_detector_t *md) {
                      * rejection, it must not hide the marker that follows. A
                      * blip 13 s before :00 took the 30 s cooldown and hid the
                      * kiwi agc 11:43 marker. */
+                    float flank = marker_flank_ratio(md, frame, pulse_start_ms);
+                    bool tone = (flank <= MARKER_MAX_FLANK_RATIO);
                     printf("[%7.1fs] MARKER short run: window run %.0fms < %.0fms, start=%.1fms "
-                           "peak/baseline %.2f\n",
+                           "peak/baseline %.2f flank %.2f%s\n",
                            frame * FRAME_DURATION_MS / 1000.0f, duration_ms, md->min_duration_ms,
-                           pulse_start_ms, md->marker_peak_energy / md->baseline_energy);
+                           pulse_start_ms, md->marker_peak_energy / md->baseline_energy, flank,
+                           tone ? " (candidate)" : "");
+                    if (tone && md->candidate_callback) {
+                        marker_event_t event = {
+                            .marker_number = 0,
+                            .timestamp_ms = frame * FRAME_DURATION_MS,
+                            .accumulated_energy = md->accumulated_energy,
+                            .peak_energy = md->marker_peak_energy,
+                            .duration_ms = pulse_ms,
+                            .start_timestamp_ms = pulse_start_ms
+                        };
+                        md->candidate_callback(&event, md->candidate_callback_user_data);
+                    }
                     md->state = STATE_IDLE;
                     break;
                 } else {

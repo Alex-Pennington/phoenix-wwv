@@ -175,6 +175,10 @@ struct tick_detector {
     tick_marker_callback_fn marker_callback;
     void *marker_callback_user_data;
 
+    /* Marker candidate callback */
+    tick_marker_candidate_fn candidate_callback;
+    void *candidate_callback_user_data;
+
     /* Logging */
     FILE *csv_file;
     time_t start_time;          /* Wall clock time when detector started */

@@ -292,6 +292,19 @@ void tick_state_machine_run(tick_detector_t *td) {
                 } else {
                     /* Rejected - duration in the gap zone (50-600ms) or failed other checks */
                     td->ticks_rejected++;
+                    bool candidate = (duration_ms > TICK_MAX_DURATION_MS && duration_ms < MARKER_MIN_DURATION_MS &&
+                                      duration_ms >= TICK_CANDIDATE_MIN_MS) ||
+                                     (is_marker_duration && !valid_marker_interval);
+                    if (candidate && td->candidate_callback) {
+                        /* Leads as the TMARK path takes them (above) */
+                        tick_marker_candidate_t c = {
+                            .start_ms = td->tick_start_frame * FRAME_DURATION_MS,
+                            .end_ms = timestamp_ms,
+                            .lead_from_start_ms = timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS,
+                            .lead_from_end_ms = timestamp_ms - MARKER_CLEAN_RUN_MS - TICK_FILTER_DELAY_MS
+                        };
+                        td->candidate_callback(&c, td->candidate_callback_user_data);
+                    }
                     if (duration_ms > TICK_MAX_DURATION_MS && duration_ms < MARKER_MIN_DURATION_MS) {
                         /* start/end in stream ms. idle= is how long the detector had
                          * been out of cooldown when the run started: 0 means the

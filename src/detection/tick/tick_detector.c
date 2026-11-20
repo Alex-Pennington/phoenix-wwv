@@ -180,6 +180,12 @@ void tick_detector_set_callback(tick_detector_t *td, tick_callback_fn callback, 
     td->callback_user_data = user_data;
 }
 
+void tick_detector_set_candidate_callback(tick_detector_t *td, tick_marker_candidate_fn callback, void *user_data) {
+    if (!td) return;
+    td->candidate_callback = callback;
+    td->candidate_callback_user_data = user_data;
+}
+
 void tick_detector_set_marker_callback(tick_detector_t *td, tick_marker_callback_fn callback, void *user_data) {
     if (!td) return;
     td->marker_callback = callback;

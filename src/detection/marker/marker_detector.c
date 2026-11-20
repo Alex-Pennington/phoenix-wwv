@@ -160,6 +160,12 @@ void marker_detector_destroy(marker_detector_t *md) {
     free(md);
 }
 
+void marker_detector_set_candidate_callback(marker_detector_t *md, marker_callback_fn callback, void *user_data) {
+    if (!md) return;
+    md->candidate_callback = callback;
+    md->candidate_callback_user_data = user_data;
+}
+
 void marker_detector_set_callback(marker_detector_t *md, marker_callback_fn callback, void *user_data) {
     if (!md) return;
     md->callback = callback;

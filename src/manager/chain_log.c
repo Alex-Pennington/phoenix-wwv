@@ -41,6 +41,17 @@ static void on_marker(const marker_event_t *e, void *u) {
     fprintf(log->out, "MARK n=%d t=%.1f dur=%.1f lead=%.1f\n", e->marker_number, e->timestamp_ms, e->duration_ms, e->start_timestamp_ms);
 }
 
+static void on_tick_marker_candidate(const tick_marker_candidate_t *c, void *u) {
+    wwv_chain_log_t *log = u;
+    fprintf(log->out, "CANDT start=%.1f end=%.1f lead_s=%.1f lead_e=%.1f\n",
+            c->start_ms, c->end_ms, c->lead_from_start_ms, c->lead_from_end_ms);
+}
+
+static void on_marker_candidate(const marker_event_t *e, void *u) {
+    wwv_chain_log_t *log = u;
+    fprintf(log->out, "CANDM t=%.1f dur=%.1f lead=%.1f\n", e->timestamp_ms, e->duration_ms, e->start_timestamp_ms);
+}
+
 /* Which window a BCD event landed in */
 static void trace_event(wwv_chain_log_t *log, char src, float t, float dur) {
     bcd_correlator_t *c = wwv_detector_manager_get_bcd_correlator(log->mgr);
@@ -93,6 +104,7 @@ static void on_state(sync_state_t o, sync_state_t n, float c, void *u) {
 wwv_detector_observer_t wwv_chain_log_observer(wwv_chain_log_t *log) {
     wwv_detector_observer_t obs = {
         .on_tick = on_tick, .on_tick_marker = on_tick_marker, .on_marker = on_marker,
+        .on_tick_marker_candidate = on_tick_marker_candidate, .on_marker_candidate = on_marker_candidate,
         .on_bcd_time = on_bt, .on_bcd_time_routed = on_bt_routed,
         .on_bcd_freq = on_bf, .on_bcd_freq_routed = on_bf_routed,
         .on_symbol = on_sym, .on_time = on_time, .on_sync_state = on_state,
