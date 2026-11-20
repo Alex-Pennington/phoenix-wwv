@@ -24,6 +24,10 @@ add_executable(test_sync_holdover test_sync_holdover.c)
 target_link_libraries(test_sync_holdover PRIVATE phoenix_wwv m)
 add_test(NAME sync_holdover COMMAND test_sync_holdover)
 
+add_executable(test_sync_phase_track test_sync_phase_track.c)
+target_link_libraries(test_sync_phase_track PRIVATE phoenix_wwv m)
+add_test(NAME sync_phase_track COMMAND test_sync_phase_track)
+
 add_executable(test_sync_candidate test_sync_candidate.c)
 target_link_libraries(test_sync_candidate PRIVATE phoenix_wwv m)
 add_test(NAME sync_candidate COMMAND test_sync_candidate)
