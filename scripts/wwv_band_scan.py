@@ -17,6 +17,7 @@ Measurements, after wwv-capture check_signal.py and saga/scripts/tick_contrast.p
   within 50 Hz of DC is the carrier (131072-point Hann spectra, averaged). The noise floor is
   the median bin 2000-4500 Hz from the carrier. C/N0 = carrier/noise per bin / bin width, the
   same convention as check_signal.py. The carrier's offset gives the TCXO error it implies.
+  Under 30 dB-Hz there is no carrier (noise alone reads 11-14 dB-Hz): no offset is given.
 - Sidebands: 1000 Hz (WWV) and 1200 Hz (WWVH) levels over the floor, the larger of +/-.
 - Ticks: the 900-1100 Hz energy of the AM envelope, folded by the UTC second in 1 ms bins
   (seconds :00 left out). The fold peak in the first 100 ms is the tick; "fold" is its level
@@ -69,6 +70,7 @@ WWVH_MARGIN_DB = 3.0
 WWVH_VISIBLE_DB = 6.0   # a 1200 Hz tick fold below this is noise, not WWVH
 WWVH_PENALTY_DB = 6.0
 CLIP = 32700
+CARRIER_DBHZ = 30.0     # below this the "carrier" is the strongest of ~500 noise bins (11-14 dB-Hz)
 
 stop = False
 def _stop(sig, frm):
@@ -216,9 +218,13 @@ def measure(khz, n, t0, info):
     fcar = f[ic]
     df = np.abs(f - fcar)
     noise = np.median(P[(df > 2000) & (df < 4500)])
-    info['carrier_offset_hz'] = round(f_mix - a.offset_khz * 1e3 + fcar, 2)
-    info['tcxo_ppm_implied'] = round(info['carrier_offset_hz'] / (khz / 1000.0), 3)
     info['cn0_dbhz'] = round(db(P[ic] / noise / bw), 1)
+    info['carrier_seen'] = bool(info['cn0_dbhz'] >= CARRIER_DBHZ)
+    if info['carrier_seen']:
+        info['carrier_offset_hz'] = round(f_mix - a.offset_khz * 1e3 + fcar, 2)
+        info['tcxo_ppm_implied'] = round(info['carrier_offset_hz'] / (khz / 1000.0), 3)
+    else:               # the strongest noise bin: no offset to report
+        info['carrier_offset_hz'] = info['tcxo_ppm_implied'] = None
     for tone in (1000, 1200):
         lv = []
         for sgn in (+1, -1):
@@ -321,6 +327,8 @@ for i, r in enumerate(ranked, 1):
         notes.append('ADC OVERLOAD')
     if r.get('wwvh_warning'):
         notes.append('WWVH may dominate')
+    if r.get('carrier_seen') is False:
+        notes.append('no carrier')
     if r.get('overflows'):
         notes.append(f'{r["overflows"]} overflows')
     if r.get('score_db', -999) <= -999:
