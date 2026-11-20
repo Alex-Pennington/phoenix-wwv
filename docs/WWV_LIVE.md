@@ -142,3 +142,25 @@ The method is that of wwv-capture `check_signal.py` and `saga/scripts/tick_contr
 - The rest are ranked by median tick contrast, less 6 dB where WWVH may dominate.
 - 6 dB or more is "usable". The 5 MHz capture the chain was scored on had a 17.1 dB median.
 - When no band is usable, the scan warns and `auto` still goes live on the best one.
+- Under 30 dB-Hz a row reads "no carrier" and gives no carrier offset. Noise alone reads
+  11-14 dB-Hz.
+
+Three scans at dawn on 2026-11-20 (09:17, 09:20 and 09:27 UTC) show how fast the best band
+moves:
+
+| UTC   | 5 MHz tick median | 10 MHz tick median | Best    |
+|-------|-------------------|--------------------|---------|
+| 09:17 | 19.7 dB           | 1.0 dB             | 5 MHz   |
+| 09:21 | 7.5 dB            | 8.0 dB             | 10 MHz  |
+| 09:27 | 23.6 dB           | 11.5 dB            | 5 MHz   |
+
+In all three scans:
+- 2.5 MHz had a carrier (46-47 dB-Hz) but no ticks.
+- 15, 20 and 25 MHz had no carrier.
+- No band clipped or overloaded the ADC.
+
+On the 10 MHz choice, a 3-minute live run reached TENTATIVE sync only, with no markers. On the
+5 MHz choice it locked after two markers, and symbols followed.
+
+`auto` chooses once, at the start. To re-check during a run, the streamer has to stop for a
+scan, about 3.5 minutes without input, and `wwv_live` then restarts its sync. Not built.
