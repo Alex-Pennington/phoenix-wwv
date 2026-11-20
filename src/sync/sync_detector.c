@@ -35,12 +35,20 @@
 #define TICK_HOLE_MAX_GAP_MS         2200.0f
 #define TICK_DOUBLE_MAX_GAP_MS       100.0f
 
-/* Marker-based signal health (markers reliable even on weak signals) */
-#define MARKER_GAP_WARNING_MS        75000.0f  /* 1.25 marker intervals */
-#define MARKER_GAP_CRITICAL_MS       90000.0f  /* 1.5 marker intervals = signal lost */
-
-#define SYNC_RETENTION_WINDOW_MS     120000.0f
-#define SYNC_RECOVERY_TIMEOUT_MS     10000.0f
+/* Holdover. Once LOCKED, the minute phase is held on the sample clock through
+ * minutes whose marker is not detected: a missing marker is missing evidence,
+ * not contradicting evidence. On the 90-minute live RSP2 run, 44 of 90 markers
+ * were missed (at most 4 in a row) and the 46 detected were all within -45..+61
+ * ms of :00, while the TCXO drifts about 1 ppm (6 ms in 90 minutes). A marker
+ * off the held phase is handled by confirm_marker()'s re-anchor rule, not by
+ * dropping lock. After SYNC_HOLDOVER_MS with no marker, frames stop (the
+ * signal is taken as gone, so the decoder is not fed noise minutes beyond a
+ * third of its 60-minute history) and sync enters RECOVERING, which keeps the
+ * phase: one marker on it within marker_tolerance_ms re-locks. After
+ * SYNC_RETENTION_WINDOW_MS from the loss, sync starts over. At 10 ppm the held
+ * phase moves 48 ms in the 80 minutes. */
+#define SYNC_HOLDOVER_MS             (20.0f * 60000.0f)
+#define SYNC_RETENTION_WINDOW_MS     (60.0f * 60000.0f)
 
 /* Evidence weights */
 #define WEIGHT_TICK                  0.05f
@@ -269,6 +277,13 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
             transition_state(sd, SYNC_TENTATIVE);
         }
 
+        /* In recovery, a marker on the retained minute phase validates it */
+        if (sd->state == SYNC_RECOVERING && sd->recovery.has_retained_state) {
+            float off = marker_time - sd->recovery.retained_anchor_ms;
+            off -= roundf(off / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS;
+            if (fabsf(off) <= sd->marker_tolerance_ms) sd->recovery.recovery_marker_seen = true;
+        }
+
         /* Flash for UI */
         sd->flash_frames_remaining = SYNC_FLASH_FRAMES;
 
@@ -384,8 +399,7 @@ static void transition_state(sync_detector_t *sd, sync_state_t new_state) {
             /* Confidence already above threshold */
             break;
         case SYNC_RECOVERING:
-            /* Confidence retained, will decay faster */
-            sd->recovery.recovery_start_ms = sd->tick_gap.last_tick_ms;
+            /* Confidence retained; the caller set the recovery times */
             break;
     }
 
@@ -706,7 +720,7 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
     if (sd->state == SYNC_LOCKED) {
         float since_last_marker = current_ms - sd->last_confirmed_ms;
 
-        if (since_last_marker > MARKER_GAP_CRITICAL_MS) {
+        if (since_last_marker > SYNC_HOLDOVER_MS) {
             sd->signal_weak_count++;
             if (sd->signal_weak_count >= SIGNAL_WEAK_DEBOUNCE) {
                 /* Enter recovery */
@@ -730,29 +744,21 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
         float time_since_loss = current_ms - sd->recovery.signal_lost_ms;
         float time_in_recovery = current_ms - sd->recovery.recovery_start_ms;
 
-        /* Check for full reset conditions */
-        if (time_since_loss > SYNC_RETENTION_WINDOW_MS ||
-            sd->confidence < CONFIDENCE_MIN_RETAIN) {
+        /* A marker on the retained phase re-locks (confirm_marker() sets
+         * recovery_marker_seen). Ticks are not required: the chain does not
+         * feed them. The held phase, not the decayed confidence, is what is
+         * retained, so only the retention window ends recovery. */
+        if (sd->recovery.recovery_marker_seen) {
+            printf("[SYNC] Recovery validated after %.0fs - returning to LOCKED\n",
+                   time_in_recovery / 1000.0f);
+            sd->minute_anchor_ms = sd->last_confirmed_ms;
+            if (sd->confidence < sd->confidence_locked_threshold)
+                sd->confidence = sd->confidence_locked_threshold;
+            transition_state(sd, SYNC_LOCKED);
+        } else if (time_since_loss > SYNC_RETENTION_WINDOW_MS) {
             printf("[SYNC] Retention expired (%.0fs) - full reset\n", time_since_loss / 1000.0f);
             sync_detector_full_reset(sd);
             return;
-        }
-
-        /* Check recovery timeout */
-        if (time_in_recovery > SYNC_RECOVERY_TIMEOUT_MS) {
-            if (!sd->recovery.recovery_tick_seen && !sd->recovery.recovery_marker_seen) {
-                printf("[SYNC] Recovery timeout with no validation - full reset\n");
-                sync_detector_full_reset(sd);
-                return;
-            }
-        }
-
-        /* Check for successful recovery */
-        if (sd->recovery.recovery_tick_seen && sd->recovery.recovery_marker_seen) {
-            printf("[SYNC] Recovery validated - returning to LOCKED\n");
-            sd->minute_anchor_ms = sd->recovery.retained_anchor_ms;
-            apply_evidence(sd, EVIDENCE_TICK | EVIDENCE_MARKER, 0.3f);
-            transition_state(sd, SYNC_LOCKED);
         }
     }
 
