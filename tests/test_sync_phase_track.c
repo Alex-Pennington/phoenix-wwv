@@ -27,8 +27,13 @@
  * and 1400 ms, with a candidate in the minutes whose marker is missed; 1400 ms
  * with none (nothing shows the whole second until the minute-18 marker: the
  * limit); a continuous loss of 3 ms/s for 5 minutes (run90g seg2's shape); and
- * with no drop, a 40 s burst of random false ticks and a 30 s burst of false
- * ticks 300 ms late.
+ * with no drop, a 40 s burst of random false ticks, a 30 s burst of false
+ * ticks 300 ms late, and 20 s bursts of 15-20 false ticks 100, 200 and 300 ms
+ * early (where a loss would put the edges), with true ticks as usual and in a
+ * tick fade (10% detected from 30 s before the burst, BCD pulses unchanged).
+ * Without the BCD agreement for a jump, the 200 and 300 ms early bursts in the
+ * fade snapped a right phase: 31 symbols >140 ms off, 1 frame admitted, 19
+ * results from a chain holding it.
  *
  * The same events through the chain before the phase tracker (8b673ef):
  * symbols >140 ms off 321 / 314 / 314 / 321 / 321 for the five drops,
@@ -75,11 +80,13 @@ typedef struct {
     const char *name;
     double drop_ms;
     bool candidates;               /* candidates in the minutes whose marker is missed */
-    double burst_from_s, burst_len_s, burst_rate, burst_offset_ms;   /* offset < 0: random */
+    double burst_from_s, burst_len_s, burst_rate, burst_offset_ms;   /* offset <= -1000: random */
     int max_off_symbols;           /* bound on symbols emitted >140 ms off */
     int max_admitted_off;          /* frames closed with such symbols before the loss was seen */
     int max_tainted;               /* results computed from a chain holding one */
     double ramp_rate, ramp_len_s;  /* a continuous loss (ms per s) instead of a drop */
+    double burst_tick_p;           /* > 0: true ticks detected with this probability from
+                                      30 s before the burst to its end (a tick fade) */
 } scenario_t;
 
 static ev_t *evs; static int nev, cap;
@@ -134,7 +141,10 @@ static void build(void) {
                 else if (missed && S->candidates && (s = to_stream(lead)) >= 0)
                     add(s + 820.0, EV_CANDT, s, 600.0);
             } else {
-                if (sec != 29 && sec != 59 && urand() < 0.9 &&
+                double tp = 0.9;
+                if (S->burst_tick_p > 0 && T >= (S->burst_from_s - 30.0) * 1000.0 &&
+                    T < (S->burst_from_s + S->burst_len_s) * 1000.0) tp = S->burst_tick_p;
+                if (sec != 29 && sec != 59 && urand() < tp &&
                     (s = to_stream(T + 15.0 + (urand() - 0.5) * 4.0)) >= 0)
                     add(s, EV_TICK, s, 10.2);
                 double w = frame[sec] == 'P' ? 800.0 : frame[sec] == '1' ? 500.0 : 200.0;
@@ -148,7 +158,7 @@ static void build(void) {
     if (S->burst_len_s > 0) {
         for (double t = S->burst_from_s * 1000.0; t < (S->burst_from_s + S->burst_len_s) * 1000.0;
              t += 1000.0 / S->burst_rate) {
-            double x = S->burst_offset_ms < 0 ? t + urand() * 1000.0
+            double x = S->burst_offset_ms <= -1000.0 ? t + urand() * 1000.0
                                               : floor(t / 1000.0) * 1000.0 + 15.0 + S->burst_offset_ms;
             double s = to_stream(x);
             if (s >= 0) add(s, EV_TICK, s, 10.2);
@@ -302,8 +312,16 @@ int main(void) {
         /* No candidate: nothing shows whole seconds until the minute-18 marker.
          * The documented limit; only the decoder's frame checks stand between. */
         { "drop 1400 ms, no candidates", 1400, false, 0, 0, 0,  0,        320,  1,  5 },
-        { "false ticks, random",       0, false, 600, 40, 4.0, -1.0,       0,  0,  0 },
+        { "false ticks, random",       0, false, 600, 40, 4.0, -1000.0,       0,  0,  0 },
         { "false ticks, 300 ms late",  0, false, 600, 30, 2.0, 300.0,      0,  0,  0 },
+        /* early, where a loss would put the edges: must not snap without BCD agreement */
+        { "false ticks, 200 ms early", 0, false, 600, 20, 1.0, -200.0,     0,  0,  0 },
+        { "false ticks, 100 ms early", 0, false, 600, 20, 1.0, -100.0,     0,  0,  0 },
+        { "false ticks, 300 ms early", 0, false, 600, 20, 0.75, -300.0,    0,  0,  0 },
+        /* the same in a tick fade (true ticks 10%, BCD pulses as before), as on 15 MHz */
+        { "false ticks, 200 ms early, tick fade", 0, false, 600, 20, 1.0, -200.0, 0, 0, 0, 0, 0, 0.1 },
+        { "false ticks, 100 ms early, tick fade", 0, false, 600, 20, 1.0, -100.0, 0, 0, 0, 0, 0, 0.1 },
+        { "false ticks, 300 ms early, tick fade", 0, false, 600, 20, 0.75, -300.0, 0, 0, 0, 0, 0, 0.1 },
         /* run90g seg2: about 3 ms/s; here 900 ms over 5 minutes, markers missed */
         { "ramp 3 ms/s, 300 s",        0, false,   0,  0,  0,     0,     20,  1,  0, 3.0, 300.0 },
     };

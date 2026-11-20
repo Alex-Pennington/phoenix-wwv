@@ -98,7 +98,8 @@ typedef struct {
     int slews;              /* phase corrections from edges */
     float slewed_ms;        /* their sum */
     int jumps;              /* tick clusters off the held phase */
-    int snaps;              /* of those, early and soon after support: phase moved to them */
+    int snaps;              /* of those, early, BCD starts agreeing, soon after support: phase moved */
+    int jumps_ignored;      /* of those, BCD starts holding the phase: cluster taken as false */
     int candidate_seconds;  /* candidates whole seconds off the held phase (-> RECOVERING) */
     int breaks;             /* phase moves >= 100 ms by markers */
 } sync_phase_stats_t;

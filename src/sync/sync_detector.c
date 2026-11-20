@@ -95,12 +95,16 @@
  * PHASE_JUMP_GATE_MS: over PHASE_JUMP_WINDOW_MS, at least PHASE_JUMP_MIN_TICKS
  * ticks within PHASE_JUMP_RADIUS_MS of each other, PHASE_JUMP_BG_RATIO times the
  * count uniform false ticks would put there, and more than twice the ticks near
- * the held phase. Lost samples only make edges early: an early cluster within
+ * the held phase. The BCD pulse starts since the cluster's first tick, each
+ * within PHASE_GATE_MS of its predicted second, then decide: at least PHASE_MIN_EDGES
+ * on the held phase and more than twice those on the cluster's, the cluster is
+ * false and is ignored (a burst of false ticks in a tick fade). The other way
+ * round, and lost samples only making edges early, an early cluster within
  * PHASE_SNAP_SUPPORT_MS of the last edge or marker support is the loss since
- * then, and the phase moves to it (a break). Any other cluster (late, or after
- * a long gap) is ambiguous: sync drops to RECOVERING with the phase marked
- * unknown, and the next marker within +-5 s of the minute re-locks on its own
- * time. On run90g seg2 the slews follow 3 ms/s only in part; most of the 5.3 s
+ * then, and the phase moves to it (a break). Anything else (late, after a long
+ * gap, or the BCD starts not deciding) is ambiguous: sync drops to RECOVERING
+ * with the phase marked unknown, and the next marker within +-5 s of the minute
+ * re-locks on its own time. On run90g seg2 the slews follow 3 ms/s only in part; most of the 5.3 s
  * is taken back by the snaps and the marker re-anchors. Measured by replaying
  * the chain on the live logs (run90, run90c, run90d, run90f, run90g seg2): no
  * jump on the runs with no loss. */
@@ -911,12 +915,14 @@ static float edge_offset(const sync_detector_t *sd, const phase_edge_t *e) {
 
 static void track_phase(sync_detector_t *sd, float now_ms) {
     float ticks[PHASE_EDGES_MAX], gated[PHASE_EDGES_MAX], gated_ticks[PHASE_EDGES_MAX];
-    int nt = 0, ng = 0, ngt = 0;
+    float btimes[PHASE_EDGES_MAX], tick_t[PHASE_EDGES_MAX], btime_t[PHASE_EDGES_MAX];
+    int nt = 0, ng = 0, ngt = 0, nb = 0;
     for (int i = 0; i < sd->edge_count; i++) {
         const phase_edge_t *e = &sd->edges[(sd->edge_head - sd->edge_count + i + PHASE_EDGES_MAX) % PHASE_EDGES_MAX];
         if (e->t_ms < now_ms - PHASE_JUMP_WINDOW_MS) continue;
         float o = edge_offset(sd, e);
-        if (e->kind == SYNC_EDGE_TICK) ticks[nt++] = o;
+        if (e->kind == SYNC_EDGE_TICK) { tick_t[nt] = e->t_ms; ticks[nt++] = o; }
+        else { btime_t[nb] = e->t_ms; btimes[nb++] = o; }
         if (e->t_ms < now_ms - PHASE_WINDOW_MS || fabsf(o) > PHASE_GATE_MS) continue;
         gated[ng++] = o;
         if (e->kind == SYNC_EDGE_TICK) gated_ticks[ngt++] = o;
@@ -936,13 +942,36 @@ static void track_phase(sync_detector_t *sd, float now_ms) {
         float background = (float)nt * 2.0f * PHASE_JUMP_RADIUS_MS / 1000.0f;
         if (best >= PHASE_JUMP_MIN_TICKS && (float)best >= PHASE_JUMP_BG_RATIO * background &&
             best > 2 * near) {
-            char why[64];
-            snprintf(why, sizeof why, "%d ticks at %+.0f ms, %d near it", best, best_at, near);
+            /* The BCD pulse starts must agree, each within PHASE_GATE_MS of its
+             * predicted second under one phase or the other: a burst of false
+             * ticks in a tick fade otherwise moves a right phase */
+            /* from the cluster's first tick: before it the edges were on the
+             * held phase whichever is right */
+            float since = now_ms;
+            for (int j = 0; j < nt; j++)
+                if (fabsf(second_wrap(ticks[j] - best_at)) <= PHASE_JUMP_RADIUS_MS && tick_t[j] < since)
+                    since = tick_t[j];
+            int bt_new = 0, bt_old = 0;
+            for (int i = 0; i < nb; i++) {
+                if (btime_t[i] < since) continue;
+                if (fabsf(btimes[i]) <= PHASE_GATE_MS) bt_old++;
+                if (fabsf(second_wrap(btimes[i] - best_at)) <= PHASE_GATE_MS) bt_new++;
+            }
+            char why[96];
+            snprintf(why, sizeof why, "%d ticks at %+.0f ms, %d near it; BCD starts %d there, %d on the phase",
+                     best, best_at, near, bt_new, bt_old);
             sd->phase_stats.jumps++;
+            if (bt_old >= PHASE_MIN_EDGES && bt_old > 2 * bt_new) {
+                /* the BCD starts hold the phase: the cluster is false */
+                printf("[SYNC] Tick cluster ignored (%s)\n", why);
+                sd->phase_stats.jumps_ignored++;
+                return;
+            }
+            bool bcd_agrees = bt_new >= PHASE_MIN_EDGES && bt_new > 2 * bt_old;
             /* Samples lost upstream only make the edges early. An early cluster
              * while the phase had support PHASE_SNAP_SUPPORT_MS ago is the loss
              * since then; anything else is ambiguous. */
-            if (best_at < 0.0f && sd->phase_support_ms > 0.0f &&
+            if (bcd_agrees && best_at < 0.0f && sd->phase_support_ms > 0.0f &&
                 now_ms - sd->phase_support_ms <= PHASE_SNAP_SUPPORT_MS) {
                 note_phase_move(sd, sd->last_confirmed_ms, sd->last_confirmed_ms + best_at, "edge jump");
                 sd->last_confirmed_ms += best_at;
