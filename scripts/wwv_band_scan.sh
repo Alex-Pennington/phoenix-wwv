@@ -4,6 +4,8 @@
 #   scripts/wwv_band_scan.sh [options]
 #
 #   --secs N               seconds per band (default 25)
+#   --extend-secs N        seconds more for each band in a close call (default 35; 0: off)
+#   --avoid KHZ            do not choose this band when another is in the running; repeatable
 #   --bands LIST           kHz, comma-separated (default 2500,5000,10000,15000,20000,25000)
 #   --gain KHZ:LNA:IFGR    a band's gain instead of wwv_bands.GAIN; repeatable
 #   --ppm X                TCXO error used to place the carrier (default 1.09)
@@ -15,7 +17,9 @@
 #   --no-service           do not start or stop sdrplay.service (the caller holds it)
 #
 # Prints the ranked table and a last stdout line `BEST <kHz>` (`BEST none` when no band
-# could be measured without overload). Exit 0 with a best band, 3 without one.
+# could be measured without overload). Exit 0 with a band, 3 without one. The choice:
+# the lowest band within 30 points of the best share of seconds with a tick over 10 dB
+# (wwv_band_scan.py, docs/WWV_LIVE.md).
 #
 # sdrplay.service is started once, here, and stopped on every exit path (end, Ctrl-C,
 # error). The last stderr line is the service state after the stop.
@@ -30,11 +34,11 @@ SERVICE=1
 PY_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --secs|--bands|--gain|--ppm|--json) PY_ARGS+=("$1" "$2"); shift 2 ;;
+    --secs|--extend-secs|--avoid|--bands|--gain|--ppm|--json) PY_ARGS+=("$1" "$2"); shift 2 ;;
     --overload-plugin) PLUGIN=$2; shift 2 ;;
     --no-overload-plugin) PLUGIN=; shift ;;
     --no-service) SERVICE=; shift ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done

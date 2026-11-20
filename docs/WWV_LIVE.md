@@ -74,13 +74,15 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
 
 `scripts/wwv_rsp2_live.sh` drives the run. Its sequence:
 
-1. It starts `sdrplay.service`.
+1. It starts `sdrplay.service`, once for the whole run.
 2. With `--wwv-khz auto`, it runs the band scan below under that same start, and takes the
-   best band.
+   band the scan chooses.
 3. It streams the RSP2 through `scripts/rsp2_stream.py` into `wwv_live`. The settings are those
    of the scored capture, at the chosen band: antenna A, tuner 100 kHz below WWV, AGC off,
    2 MS/s, scale 32, and the band's gain.
-4. It stops the service on every exit path. If the vendor service crashed on stop, the script
+4. With `auto`, a band that has not reached LOCKED `--lock-mins` after it went live is
+   switched (see *Band switch* below).
+5. It stops the service on every exit path. If the vendor service crashed on stop, the script
    also clears the unit's failed state.
 
 `--record PREFIX` also writes the raw stream, at 8 MB/s. Example, 90 minutes at 5 MHz:
@@ -113,20 +115,33 @@ only mixes the carrier at `-s` Hz to DC, and `wwv_live` uses the PHXI centre fre
 - **Gain** is per band, in `scripts/wwv_bands.py`. 2.5, 5, 10 and 15 MHz use LNA state 2 and
   IFGR 59. That is the 5 MHz setting of the scored capture, and 10 MHz was tested with it.
   20 and 25 MHz use LNA 1 and IFGR 59, because their band noise and broadcasting are lower.
-  The values other than 5 and 10 MHz are starting points; the scan's ADC columns say whether
-  they hold. `--gain KHZ:LNA:IFGR` (repeatable) overrides a band in the scan and in the live
+  15 MHz was checked on WWV on 2026-11-20 at 13:03-13:06 UTC:
+
+  | LNA | C/N0       | peak       | score |
+  |-----|------------|------------|-------|
+  | 0   | 64.1 dB-Hz | -10.6 dBFS | 100%  |
+  | 2   | 64-65 dB-Hz | -24 dBFS  | 100%  |
+  | 4   | 52.4 dB-Hz | -32.6 dBFS | 8%    |
+
+  So LNA 2 loses nothing against LNA 0 and keeps 14 dB more headroom, while LNA 4 is
+  receiver-noise limited. 2.5, 20 and 25 MHz are still starting points, because no WWV signal
+  was seen on them. 20 MHz peaks at -6 to -10 dBFS at LNA 1 with no carrier, the most of any
+  band, and has not clipped. The scan's ADC columns say whether the values hold. `--gain KHZ:LNA:IFGR` (repeatable) overrides a band in the scan and in the live
   run, and `--lna` / `--ifgr` override the live band.
 
 ### Band scan
 
 ```
-scripts/wwv_band_scan.sh [--secs 25] [--bands 2500,5000,...] [--gain KHZ:LNA:IFGR] [--json FILE]
+scripts/wwv_band_scan.sh [--secs 25] [--extend-secs 35] [--avoid KHZ] [--bands 2500,5000,...]
+                         [--gain KHZ:LNA:IFGR] [--json FILE]
 ```
 
 It starts `sdrplay.service` once and stops it on every exit path. It opens the RSP2 once and
-reads each band for `--secs`, about 3.5 minutes for all six. It then prints a ranked table, and
-the last stdout line is `BEST <kHz>`. `scripts/wwv_band_scan.py --replay PREFIX:KHZ` measures
-recordings instead and opens no device.
+reads each band for `--secs`, about 3.5 minutes for all six, plus `--extend-secs` for each band
+in a close call. It then prints a ranked table, logs the reason for its choice on stderr, and
+the last stdout line is `BEST <kHz>`. The JSON keeps every per-second tick contrast.
+`scripts/wwv_band_scan.py --replay PREFIX:KHZ` measures recordings instead and opens no device;
+an extension reads the next seconds of the recording.
 
 The method is that of wwv-capture `check_signal.py` and `saga/scripts/tick_contrast.py`:
 
@@ -147,22 +162,56 @@ The method is that of wwv-capture `check_signal.py` and `saga/scripts/tick_contr
     when that exists. The installed module drops the events, so without the build the column
     reads `n/a`.
 
-**Ranking:**
-- A band with clipping or an overload goes last and is never chosen.
-- The rest are ranked by median tick contrast, less 6 dB where WWVH may dominate.
-- 6 dB or more is "usable". The 5 MHz capture the chain was scored on had a 17.1 dB median.
-- When no band is usable, the scan warns and `auto` still goes live on the best one.
-- Under 30 dB-Hz a row reads "no carrier" and gives no carrier offset. Noise alone reads
-  11-14 dB-Hz.
+**Score.** The share of seconds whose tick contrast is over 10 dB, in percent: the `score`
+column. Where WWVH may dominate, a second must clear 16 dB instead. A band with clipping or an
+overload scores -1 and is never chosen. Under 30 dB-Hz a row reads "no carrier" and gives no
+carrier offset; noise alone reads 11-14 dB-Hz.
 
-Three scans at dawn on 2026-11-20 (09:17, 09:20 and 09:27 UTC) show how fast the best band
-moves:
+**Choice.**
+- A score of 40% or more is usable.
+- The scan takes the lowest band whose score is above 0 and within 30 points of the best
+  score: among the usable bands, or among all of them when none is usable. A higher band wins
+  only by more than 30 points.
+- When every score is 0, the higher median contrast wins.
+- When two or more bands score above 0 within 30 points of the best, each is read
+  `--extend-secs` (35 s) more, and the choice is made again on all their seconds, about 57
+  per band.
+- When no band is usable, the scan warns and `auto` still goes live on its choice.
+- `--avoid KHZ` drops a band while another is in the running. The band switch uses it.
 
-| UTC   | 5 MHz tick median | 10 MHz tick median | Best    |
-|-------|-------------------|--------------------|---------|
-| 09:17 | 19.7 dB           | 1.0 dB             | 5 MHz   |
-| 09:21 | 7.5 dB            | 8.0 dB             | 10 MHz  |
-| 09:27 | 23.6 dB           | 11.5 dB            | 5 MHz   |
+**Why these thresholds.** Lock and the 25 s score, from the 2026-11-19 and 2026-11-20 runs:
+
+| Recording or scan                       | Band   | Score, 25 s windows        | Live or replayed outcome                   |
+|-----------------------------------------|--------|----------------------------|--------------------------------------------|
+| scored capture, 11-19 12:09-12:20        | 5 MHz  | 57-100%, mean 86%, SD 13   | LOCKED at 2.5 min, held to the end, 10 markers |
+| smoke recordings, 11-19 17:42 and 17:51 | 5 MHz  | 0% in all 12 windows       | 165 s each, never left ACQUIRING           |
+| scan 11-20 09:17, then run90c           | 5 MHz  | 100%                       | run90c LOCKED until its 09:17 end          |
+| scan 11-20 09:21, smoke                 | 10 MHz | 13% (5 MHz: 29%)           | 3 min: TENTATIVE, no marker                |
+| scan 11-20 09:27, smoke2                | 5 MHz  | 100% (10 MHz: 57%)         | LOCKED at 2.8 min                          |
+| scan 11-20 11:08, run90d                | 5 MHz  | 43% (10 MHz: 9%)           | LOCKED at 2.1 min, held                    |
+
+- **10 dB:** the column the scan already printed. It splits the bands that locked (43% or
+  more) from the ones that did not (13% or less), where the median did not: 7.5 dB against
+  8.0 dB at 09:21.
+- **40% usable:** under the lowest score that went on to lock (43%, 11:08), and above the
+  highest that did not (13%). No band between 13% and 43% has a recorded outcome yet, so
+  where inside that gap lock stops is not measured.
+- **30-point margin:** on that steady band, one 25 s window differs from the next by 18
+  points SD (13 × √2), and by up to 35. A margin smaller than that would choose on noise.
+- **Extension:** 25 s gives about 23 seconds per band, so a score's sampling error is up to
+  10 points. Pooling 60 s brings it under 7, and only close calls pay for it.
+
+Under the old median ranking, 09:21 chose 10 MHz. On the same 25 s figures the new ranking
+chooses 5 MHz (29% against 13%). It would first read both bands 35 s more, and that read was
+not taken.
+
+The same three dawn scans show how fast the best band moves:
+
+| UTC   | 5 MHz median, score | 10 MHz median, score | Old choice | New choice |
+|-------|---------------------|----------------------|------------|------------|
+| 09:17 | 19.7 dB, 100%       | 1.0 dB, 0%           | 5 MHz      | 5 MHz      |
+| 09:21 | 7.5 dB, 29%         | 8.0 dB, 13%          | 10 MHz     | 5 MHz      |
+| 09:27 | 23.6 dB, 100%       | 11.5 dB, 57%         | 5 MHz      | 5 MHz      |
 
 In all three scans:
 - 2.5 MHz read 46-47 dB-Hz with no ticks and no sidebands. Each time its peak sat in exactly
@@ -170,8 +219,49 @@ In all three scans:
 - 15, 20 and 25 MHz had no carrier.
 - No band clipped or overloaded the ADC.
 
-On the 10 MHz choice, a 3-minute live run reached TENTATIVE sync only, with no markers. On the
-5 MHz choice it locked after two markers, and symbols followed.
+### Band switch
 
-`auto` chooses once, at the start. To re-check during a run, the streamer has to stop for a
-scan, about 3.5 minutes without input, and `wwv_live` then restarts its sync. Not built.
+With `--wwv-khz auto`, the wrapper watches `wwv_live`'s `SYNC` lines. When the band has not
+reached LOCKED `--lock-mins` minutes (default 8; 0 turns it off) after it went live, the wrapper:
+
+1. stops the streamer and `wwv_live`, whose sync and decoder state start again;
+2. re-scans with `--avoid` on that band, under the same service start;
+3. goes live again on the scan's choice, as a new segment. If no other band is in the
+   running, it stays on the same band and restarts the timer.
+
+Once a band has locked it is kept, even if it loses lock later.
+
+Every switch is logged on stderr with the UTC time, and the run ends with one line per
+segment: band, length, and whether it locked. A fixed `--wwv-khz` never switches.
+
+Segment 1 writes `--log`, `--timebase`, `--scan-json`, `--record` and `wwv_live --frames` under
+the names given. Segment K writes them with `.segK` before the extension: `run.log` becomes
+`run.seg2.log`, and `PREFIX` becomes `PREFIX.seg2`. `--secs` counts from the first live start,
+so re-scans count toward it. `--carrier-hz`, `--lna` and `--ifgr` hold for the first band only.
+
+**On the radio, 2026-11-20 12:53-13:03 UTC** (`--lock-mins 3 --secs 300`): the scan chose
+5 MHz at 48%. It reached TENTATIVE with one marker, and at 3 minutes the wrapper logged
+`SWITCH`. The re-scan, avoiding 5 MHz, found 15 MHz at 100% (it had no carrier at 12:55)
+and logged `SWITCH: 5000 kHz -> 15000 kHz`. `--secs` ran out during that re-scan.
+
+**Why 8 minutes.** Time to the first LOCKED on 5 MHz:
+
+| Run                | Start (UTC) | First LOCKED |
+|--------------------|-------------|--------------|
+| scored capture     | 11-19 12:09 | 2.5 min      |
+| smoke2             | 11-20 09:30 | 2.8 min      |
+| run90 (night)      | 11-20 00:30 | 5.0 min      |
+| run90c (dawn)      | 11-20 07:47 | 6.9 min      |
+
+run90c then held lock for 83 minutes. A 5-minute limit would have switched away from it.
+Lock needs two minute markers, so it comes just after a minute boundary; 8 minutes covers
+the slowest observed first lock, with one more marker to spare. run90's re-acquisitions after
+losing lock took 2.5-15.5 min, but the switch does not act once a band has locked.
+
+On 2026-11-20, 5-minute live runs did not lock on a good band either:
+- 5 MHz from 12:48, scoring 70%;
+- 15 MHz from 13:07, scoring 100%.
+
+Each reached TENTATIVE and caught two markers 2-3 minutes apart, missing the ones between.
+A tick score shows the band carries ticks, but lock waits on the minute markers. That is why
+the limit is not shorter.
