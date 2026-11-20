@@ -62,7 +62,7 @@ import wwv_bands
 
 FS = 25000.0                # analysis rate
 TICK_DB = 10.0              # a second "has a tick" when its contrast is over this
-USABLE_PCT = 50.0           # score at or over this is usable
+USABLE_PCT = 40.0           # score at or over this is usable
 MARGIN_PCT = 30.0           # a higher band must beat a lower one by more than this
 WWVH_MARGIN_DB = 3.0
 WWVH_VISIBLE_DB = 6.0       # a 1200 Hz tick fold below this is noise, not WWVH

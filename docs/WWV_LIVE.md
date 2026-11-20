@@ -158,7 +158,7 @@ overload scores -1 and is never chosen. Under 30 dB-Hz a row reads "no carrier" 
 carrier offset; noise alone reads 11-14 dB-Hz.
 
 **Choice.**
-- A score of 50% or more is usable.
+- A score of 40% or more is usable.
 - The scan takes the lowest band whose score is above 0 and within 30 points of the best
   score: among the usable bands, or among all of them when none is usable. A higher band wins
   only by more than 30 points.
@@ -178,13 +178,14 @@ carrier offset; noise alone reads 11-14 dB-Hz.
 | scan 11-20 09:17, then run90c           | 5 MHz  | 100%                       | run90c LOCKED until its 09:17 end          |
 | scan 11-20 09:21, smoke                 | 10 MHz | 13% (5 MHz: 29%)           | 3 min: TENTATIVE, no marker                |
 | scan 11-20 09:27, smoke2                | 5 MHz  | 100% (10 MHz: 57%)         | LOCKED at 2.8 min                          |
+| scan 11-20 11:08, run90d                | 5 MHz  | 43% (10 MHz: 9%)           | LOCKED at 2.1 min, held                    |
 
-- **10 dB:** the column the scan already printed. It splits the bands that locked (57% or
+- **10 dB:** the column the scan already printed. It splits the bands that locked (43% or
   more) from the ones that did not (13% or less), where the median did not: 7.5 dB against
   8.0 dB at 09:21.
-- **50% usable:** under the worst 25 s window of a band that held lock for 10 minutes (57%),
-  and above the best that did not lock (13%). No band between 13% and 57% has a recorded
-  outcome yet, so the line inside that gap is not measured.
+- **40% usable:** under the lowest score that went on to lock (43%, 11:08), and above the
+  highest that did not (13%). No band between 13% and 43% has a recorded outcome yet, so
+  where inside that gap lock stops is not measured.
 - **30-point margin:** on that steady band, one 25 s window differs from the next by 18
   points SD (13 × √2), and by up to 35. A margin smaller than that would choose on noise.
 - **Extension:** 25 s gives about 23 seconds per band, so a score's sampling error is up to
