@@ -14,7 +14,13 @@
  * 5. The next minute's marker is confirmed during second 1, after that second's
  *    pulse opened its window under the old anchor (index 61) and before a later
  *    mid-second event. Second 1 must be emitted once, from its boundary pulse.
- * 6. Time-driven: events delivered at pulse end, with bcd_correlator_periodic_check()
+ * 6. Chain: the detector starts each event on the low-level subcarrier when its
+ *    200 ms cooldown ends, so the event runs on through the next second's pulse
+ *    and ends at that pulse's trailing edge (as on the live runs). After a P the
+ *    cooldown ends inside the next pulse, which then starts late. Every window's
+ *    symbol must come from the trailing edge in it (a pulse offset before the
+ *    window), or from the late start after a P (within 250 ms of the second).
+ * 7. Time-driven: events delivered at pulse end, with bcd_correlator_periodic_check()
  *    every 50 ms after sync's. Seconds 5-8 and 0 carry no pulse: each must be
  *    emitted once, as NONE; every other second once, with its symbol. Then the
  *    markers stop: after sync leaves LOCKED, nothing more may be emitted.
@@ -81,6 +87,52 @@ static void run(const char *name, int blips, float start_ms, int minute) {
     }
     int pass = ok == n;
     printf("%-4s %-50s %d/%d symbols right\n", pass ? "ok" : "FAIL", name, ok, n);
+    if (!pass) fails++;
+    bcd_correlator_destroy(c);
+    sync_detector_destroy(sd);
+}
+
+static float offs[60];
+static void on_sym_off(const bcd_symbol_event_t *e, void *u) {
+    on_sym(e, u);
+    if (e->second >= 0 && e->second < 60) offs[e->second] = e->pulse_offset_ms;
+}
+
+static void run_chain(void) {
+    const char *name = "chain of events started on the low level";
+    sync_detector_t *sd = sync_detector_create(NULL);
+    for (int m = 0; m < 4; m++) {
+        sync_detector_tick_marker(sd, 400.0f + 60000.0f * m, 810.0f, 100.0f);
+        sync_detector_periodic_check(sd, 450.0f + 60000.0f * m);
+    }
+    float a = sync_detector_get_last_marker_ms(sd);
+    bcd_correlator_t *c = bcd_correlator_create(NULL);
+    bcd_correlator_set_sync_source(c, sd);
+    bcd_correlator_set_callback(c, on_sym_off, NULL);
+    memset(got, 0, sizeof got);
+    memset(stamp, 0, sizeof stamp);
+    for (int s = 0; s < 60; s++) offs[s] = NAN;
+    float prev_end = -1.0f;
+    for (int s = 1; s <= 59; s++) {
+        float pulse = a + 1000.0f * s + 40.0f;
+        float end = pulse + width(truth(s), s);
+        /* the detector is idle again 15 ms (three low frames) plus 200 ms after
+         * the previous event's end */
+        float start = (prev_end < 0.0f) ? pulse : prev_end + 215.0f;
+        bcd_correlator_time_event(c, start, end - start, 1.0f);
+        prev_end = end;
+    }
+    int ok = 0, n = 0, edges = 0;
+    for (int s = 1; s <= 57; s++) {       /* window 58 is still open */
+        n++;
+        if (offs[s] < -100.0f) edges++;
+        if (got[s] == truth(s) && offs[s] <= 250.0f) ok++;
+        else printf("     %s: second %d got %c want %c, pulse offset %+.0f ms\n",
+                    name, s, got[s] ? got[s] : '-', truth(s), offs[s]);
+    }
+    int pass = ok == n && edges > 40;
+    printf("%-4s %-50s %d/%d symbols right, %d from a trailing edge\n",
+           pass ? "ok" : "FAIL", name, ok, n, edges);
     if (!pass) fails++;
     bcd_correlator_destroy(c);
     sync_detector_destroy(sd);
@@ -204,6 +256,7 @@ int main(void) {
     run("pulses start 40 ms before the anchor second", 0, -40.0f, 0);
     run("minute after the last marker (stale anchor)", 0, 20.0f, 1);
     run_reanchor();
+    run_chain();
     run_timed();
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;

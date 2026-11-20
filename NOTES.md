@@ -68,7 +68,37 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   seconds the decoder saw, 30.4% (1381/4547) carried a pulse that starts more than 250 ms after
   the second (23.1-35.4% per 10-minute block), against 0.7-12% on the four captures
   (`tests/air/symbol_rates.py`). They carry no evidence, so they slow CONFIRMED as much as
-  erasures. Not traced.
+  erasures.
+  - **Traced (fix/wwv-mid-second): a chain of BTIME events started on the low-level
+    subcarrier.** When the 200 ms cooldown ends, the detector starts an event on the low level.
+    That event's end threshold is half its own mean, so it runs through the next second's pulse
+    and ends at that pulse's trailing edge. The next event then starts mid-second again. On run90
+    / run90c, of 1381 / 559 mid windows, the pulse was inside an event from the previous window in
+    922 / 374. The previous cooldown hid the pulse start in 325 / 153, and nothing started by
+    +250 ms in 134 / 32. Mid starts cluster at +450 and +750 ms, and 460 of 1381 start within
+    10 ms of the cooldown's end. After a P the share is 5% (the cooldown ends inside the next
+    pulse). No link to the tone schedule, the tick or the voice.
+  - **The correlator now takes such a window's symbol from the trailing edge** (source `EDGE`,
+    `EDGE_MIN_END_MS` / `EDGE_LEAD_MS` in `include/correlation/bcd_correlator_internal.h`).
+    Mid-second falls from 30.4% to 8.2% on run90 and from 11.8% to 3.3% on run90c, and time of day
+    CONFIRMS at 2040 s (was 3059 s) and 1074 s (was 1194 s).
+  - **The detector is not changed.** Why the low level clears the start threshold, max(2 x
+    noise, 0.5 x pulse level), cannot be shown from the event logs. `wwv_live --frames` now
+    records the detector's energy and thresholds per frame for the next live run. A detector-side
+    fix (a start threshold set between the tracked low level and the pulse level) needs that
+    evidence first.
+- **`EDGE` symbols read a 0 as 1 more often than boundary symbols on the RSP2 captures**: 4/33
+  saga plain and 6/53 saga agc, against 2/262 and 6/238 at the boundary. Live it is 146/932
+  (run90) and 13/400 (run90c), close to the boundary rate. In each traced case the carried event
+  started on the low level in the last 350 ms of the previous second, so its mean is low and the
+  low level after the pulse stays above half of it, and the event ends late. No start-offset bin
+  separates them (86-95% right in each). The decoder weighs `EDGE` and boundary looks alike.
+- **A boundary window's width would also read better from its trailing edge on live.** Taking the
+  first event end in [+100, +900) ms as the pulse end, run90's boundary 1 -> 0 falls from 15.0%
+  to 6.3% and run90c's from 4.1% to 0.3%, but 0 -> P appears (54 / 10, and a P outside a P
+  position reads 1). Not changed: it is the boundary path, not the mid-second one.
+- **DECODED time of day wrong rose with the `EDGE` symbols**: 0 -> 1 on run90 and 1 -> 3 on run90c
+  (decode_score.py). CONFIRMED wrong stays 0. DECODED is the unverified state.
 - **Saga plain ticks are 42.6% matched** (saga agc 59.9%, kiwi 75-76%). The limit on the weaker
   RSP2 signal is not investigated.
 - **Tone tracker window (audit F3)** is still Hann, not the Blackman-Harris it had before 591d6ee.
@@ -227,6 +257,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - The sync detector holds LOCKED for 20 minutes without a marker (was 90 s), and RECOVERING re-locks
   on one marker on the held phase (it never re-locked before). Its STATE telemetry and callback see
   far fewer transitions.
+- `bcd_symbol_event_t.source` can be `"EDGE"`: the symbol came from the trailing edge of an event
+  that started in an earlier window, and `pulse_offset_ms` is that event's start (before -100 ms).
+  `struct bcd_correlator` gained the `edge_*` fields, and there is a new internal
+  `bcd_window_note_edge()`. The old static `close_window()` in `bcd_correlator.c` (destroy path)
+  does not use the edge.
+- `wwv_live` gained `-F` / `--frames FILE` (BTIME detector state per frame, 9 float32).
 - `wwv_td_config_t` gained `p01_pessimistic`, `p01_prior_weight` and `confirm_looks`. A caller
   that fills the struct by hand must set them; `wwv_td_default_config()` does. `BCDS,FRAME`'s
   p01 is the nominal model's.

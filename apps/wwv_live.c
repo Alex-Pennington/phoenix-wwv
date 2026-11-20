@@ -37,6 +37,8 @@
 
 #include "wwv_detector_manager.h"
 #include "wwv_chain_log.h"
+#include "wwv_detector_manager_internal.h"   /* the BTIME detector, for --frames */
+#include "bcd_internal.h"
 #include "iq_frontend.h"
 #include "telemetry.h"
 #include "version.h"
@@ -87,6 +89,7 @@ typedef struct {
     const char *log_path;
     const char *timebase_path;
     const char *csv_dir;
+    const char *frames_path;
     double status_s;
     bool tones;
 } options_t;
@@ -101,6 +104,8 @@ typedef struct {
     wwv_chain_log_t *chain_log;
     FILE *log;
     wwv_detector_observer_t log_obs;
+    FILE *frames;               /* --frames: BTIME detector state per frame */
+    float frame_pulse;          /* width of a BTIME event that ended on this frame */
 
     bool anchored;
     bool refining;              /* anchor still taking the lower envelope */
@@ -171,6 +176,7 @@ static void obs_marker(const marker_event_t *e, void *u) {
 }
 static void obs_bt(const bcd_time_event_t *e, void *u) {
     (void)u; if (A.log) A.log_obs.on_bcd_time(e, A.log_obs.user);
+    A.frame_pulse = e->duration_ms;
 }
 static void obs_bt_routed(const bcd_time_event_t *e, void *u) {
     (void)u; if (A.log) A.log_obs.on_bcd_time_routed(e, A.log_obs.user);
@@ -276,9 +282,31 @@ static void print_status(double stream_ms) {
  * Sample path
  *============================================================================*/
 
+/* One --frames record per BTIME frame (5.12 ms), 9 float32, native byte order:
+ *   t_ms (frame start, stream time), energy (bucket value), noise_floor,
+ *   threshold_high, threshold_low, state (0 idle, 1 in pulse, 2 cooldown),
+ *   start_threshold (max of threshold_high and BCD_TIME_EDGE_FRACTION x
+ *   pulse_level: what an idle frame must exceed), pulse_level, pulse
+ *   (duration_ms of a BTIME event that ended on this frame, else 0).
+ * The first six fields are tests/air/btime_frames's; its seventh (ref) needs
+ * the data-channel samples and is not written here. */
+static void write_frame(const bcd_time_detector_t *bt) {
+    float start = bt->threshold_high;
+    if (BCD_TIME_EDGE_FRACTION * bt->pulse_level > start) start = BCD_TIME_EDGE_FRACTION * bt->pulse_level;
+    float rec[9] = {
+        (float)((double)(bt->frame_count - 1) * bcd_time_detector_get_frame_duration_ms()),
+        bt->current_energy, bt->noise_floor, bt->threshold_high, bt->threshold_low,
+        (float)bt->state, start, bt->pulse_level, A.frame_pulse };
+    fwrite(rec, sizeof rec, 1, A.frames);
+    A.frame_pulse = 0.0f;
+}
+
 static void det_sample(float i, float q, void *u) {
     (void)u;
     wwv_detector_manager_process_detector_sample(A.mgr, i, q);
+    if (A.frames && A.mgr->bcd_time && A.mgr->bcd_time->buffer_idx == 0 &&
+        A.mgr->bcd_time->frame_count > 0)
+        write_frame(A.mgr->bcd_time);     /* a frame just ran */
     double ms = wwv_detector_manager_get_now_ms(A.mgr);
     if (ms >= A.next_status_ms) {
         print_status(ms);
@@ -533,6 +561,8 @@ static void usage(const char *p) {
         "  -l, --log FILE         air-harness event log (score.py and tests/air/*.py read it)\n"
         "  -j, --timebase FILE    JSON with out_utc0_unix for the scoring scripts\n"
         "  -c, --csv-dir DIR      detector CSV logs (default none)\n"
+        "  -F, --frames FILE      BTIME detector state per 5.12 ms frame, 9 float32 (36 B,\n"
+        "                         7 kB/s; layout at write_frame() in apps/wwv_live.c)\n"
         "  -S, --status SECONDS   status line period in stream time (default 10)\n"
         "      --no-tones         skip the 12 kHz tone trackers\n"
         "  -h, --help\n", p);
@@ -544,10 +574,10 @@ int main(int argc, char **argv) {
     static const struct option lo[] = {
         {"input", 1, 0, 'i'}, {"format", 1, 0, 'f'}, {"rate", 1, 0, 'r'}, {"shift", 1, 0, 's'},
         {"scale", 1, 0, 'g'}, {"agc", 0, 0, 'a'}, {"udp-port", 1, 0, 'p'}, {"t0", 1, 0, 'T'},
-        {"log", 1, 0, 'l'}, {"timebase", 1, 0, 'j'}, {"csv-dir", 1, 0, 'c'}, {"status", 1, 0, 'S'},
+        {"log", 1, 0, 'l'}, {"timebase", 1, 0, 'j'}, {"csv-dir", 1, 0, 'c'}, {"frames", 1, 0, 'F'}, {"status", 1, 0, 'S'},
         {"no-tones", 0, 0, 'N'}, {"help", 0, 0, 'h'}, {0, 0, 0, 0}};
     int c;
-    while ((c = getopt_long(argc, argv, "i:f:r:s:g:ap:T:l:j:c:S:h", lo, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:f:r:s:g:ap:T:l:j:c:F:S:h", lo, NULL)) != -1) {
         switch (c) {
             case 'i': A.opt.input = optarg; break;
             case 'f':
@@ -564,6 +594,7 @@ int main(int argc, char **argv) {
             case 'l': A.opt.log_path = optarg; break;
             case 'j': A.opt.timebase_path = optarg; break;
             case 'c': A.opt.csv_dir = optarg; break;
+            case 'F': A.opt.frames_path = optarg; break;
             case 'S': A.opt.status_s = atof(optarg); break;
             case 'N': A.opt.tones = false; break;
             default: usage(argv[0]); return c == 'h' ? 0 : 2;
@@ -588,6 +619,10 @@ int main(int argc, char **argv) {
     if (A.opt.log_path) {
         A.log = fopen(A.opt.log_path, "w");
         if (!A.log) { fprintf(stderr, "wwv_live: %s: %s\n", A.opt.log_path, strerror(errno)); return 2; }
+    }
+    if (A.opt.frames_path) {
+        A.frames = fopen(A.opt.frames_path, "wb");
+        if (!A.frames) { fprintf(stderr, "wwv_live: %s: %s\n", A.opt.frames_path, strerror(errno)); return 2; }
     }
     /* Detector creation prints go to the log when there is one, as in the harness */
     wwv_detector_config_t cfg = WWV_DETECTOR_CONFIG_DEFAULT;
@@ -638,6 +673,7 @@ int main(int argc, char **argv) {
     telem_cleanup();
     if (A.chain_log) wwv_chain_log_destroy(A.chain_log);
     if (A.log) fclose(A.log);
+    if (A.frames) fclose(A.frames);
     iq_frontend_destroy(A.fe);
     return 0;
 }

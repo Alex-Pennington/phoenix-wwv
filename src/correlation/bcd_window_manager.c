@@ -75,18 +75,59 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->freq_first_ms = 0.0f;
     corr->freq_first_dur_ms = 0.0f;
     corr->freq_last_ms = 0.0f;
+
+    /* A trailing edge noted before this window opened */
+    corr->edge_valid = false;
+    if (corr->edge_pending) {
+        if (corr->edge_pending_end_ms < corr->window_start_ms) {
+            corr->edge_pending = false;                 /* its window was never opened */
+        } else if (corr->edge_pending_end_ms < corr->window_start_ms + WINDOW_DURATION_MS) {
+            corr->edge_valid = true;
+            corr->edge_start_ms = corr->edge_pending_start_ms;
+            corr->edge_end_ms = corr->edge_pending_end_ms;
+            corr->edge_pending = false;
+        }
+    }
+}
+
+void bcd_window_note_edge(bcd_correlator_t *corr, float start_ms, float end_ms) {
+    float anchor_ms = bcd_window_get_minute_anchor(corr);
+    if (anchor_ms < 0) return;
+    int si = bcd_window_get_index(start_ms, anchor_ms);
+    int ei = bcd_window_get_index(end_ms, anchor_ms);
+    if (ei <= si) return;                       /* ends in the window it started in */
+    if (corr->window_open && ei == corr->window_index) {
+        corr->edge_valid = true;
+        corr->edge_start_ms = start_ms;
+        corr->edge_end_ms = end_ms;
+    } else if (!corr->window_open || ei > corr->window_index) {
+        corr->edge_pending = true;
+        corr->edge_pending_start_ms = start_ms;
+        corr->edge_pending_end_ms = end_ms;
+    }                                           /* else: that second is already emitted */
 }
 
 void bcd_window_close(bcd_correlator_t *corr) {
     if (!corr->window_open) return;
 
+    /* The trailing edge of this second's pulse, from an event that started in an
+     * earlier window (see EDGE_MIN_END_MS). It gives the symbol when no event of
+     * this window starts before it. */
+    float second_ms = corr->window_start_ms + WINDOW_LEAD_MS;
+    bool edge = corr->edge_valid && corr->edge_end_ms - second_ms >= EDGE_MIN_END_MS &&
+                !(corr->time_event_count > 0 && corr->time_first_ms < corr->edge_end_ms) &&
+                !(corr->freq_event_count > 0 && corr->freq_first_ms < corr->edge_end_ms);
+    float edge_width_ms = corr->edge_end_ms - second_ms - EDGE_LEAD_MS;
+    if (edge && bcd_symbol_classify_duration(edge_width_ms, corr->current_second) == BCD_CORR_SYM_NONE)
+        edge = false;
+
     /* A window with no event that sync did not cover from its start says
      * nothing about its second: it is not emitted. */
-    if (corr->window_partial && corr->time_event_count + corr->freq_event_count == 0) {
+    if (corr->window_partial && corr->time_event_count + corr->freq_event_count == 0 && !edge) {
         corr->window_open = false;
         return;
     }
-    if (corr->time_event_count + corr->freq_event_count == 0) corr->silent_windows++;
+    if (corr->time_event_count + corr->freq_event_count == 0 && !edge) corr->silent_windows++;
 
     int total_events = corr->time_event_count + corr->freq_event_count;
     float total_energy = corr->time_energy_sum + corr->freq_energy_sum;
@@ -133,6 +174,17 @@ void bcd_window_close(bcd_correlator_t *corr) {
         (isnan(pulse_offset_ms) || corr->freq_first_ms < pulse_offset_ms))
         pulse_offset_ms = corr->freq_first_ms;
     pulse_offset_ms -= corr->window_start_ms + WINDOW_LEAD_MS;
+
+    /* The pulse ran through the second inside an event that started earlier:
+     * its width is the trailing edge's, and it started at that event's start,
+     * before the second. */
+    if (edge) {
+        duration_ms = edge_width_ms;
+        symbol = bcd_symbol_classify_duration(duration_ms, corr->current_second);
+        pulse_offset_ms = corr->edge_start_ms - second_ms;
+        source = "EDGE";
+        if (confidence == 0.0f) confidence = 0.6f;
+    }
 
     /* Track intervals */
     float interval_ms = 0.0f;
@@ -256,8 +308,17 @@ bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
         return false;
     }
 
-    /* A later second: close the current window, open the event's */
+    /* A later second: close the current window, open the event's. A skipped
+     * window that holds a trailing edge is opened and closed on the way. */
+    int from = corr->window_index;
     bcd_window_close(corr);
+    if (corr->edge_pending) {
+        int ei = bcd_window_get_index(corr->edge_pending_end_ms, anchor_ms);
+        if (ei > from && ei < event_index) {
+            bcd_window_open(corr, ei, anchor_ms);
+            bcd_window_close(corr);
+        }
+    }
     bcd_window_open(corr, event_index, anchor_ms);
     return true;
 }

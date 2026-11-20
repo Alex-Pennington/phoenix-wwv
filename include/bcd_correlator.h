@@ -64,7 +64,7 @@ typedef struct {
     float timestamp_ms;
     float duration_ms;
     float confidence;           /* 0-1, higher if both detectors contributed */
-    const char *source;         /* "BOTH", "TIME", "FREQ", or "NONE" */
+    const char *source;         /* "BOTH", "TIME", "FREQ", "EDGE" or "NONE" */
     int second;                 /* WWV second in the minute (0-59), from the sync anchor */
     float minute_start_ms;      /* start of the minute this second belongs to: the
                                    sync anchor plus whole minutes */
@@ -72,7 +72,11 @@ typedef struct {
                                    its second (-100..+900 ms); NAN when it held none.
                                    A BCD pulse starts at the second, so a window whose
                                    first event starts well after it holds no pulse
-                                   from that second */
+                                   from that second. Source "EDGE": the pulse was
+                                   inside a detector event that started in an earlier
+                                   window and ended in this one; the offset is that
+                                   event's start (before -100 ms), and the width is
+                                   taken from its end */
 } bcd_symbol_event_t;
 
 typedef void (*bcd_corr_symbol_callback_fn)(const bcd_symbol_event_t *event, void *user_data);
