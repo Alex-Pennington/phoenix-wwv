@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rank the WWV bands on saga's RSP2: carrier C/N0, 1 kHz tick contrast, ADC overload.
+# Rank the WWV bands on saga's RSP2: carrier C/N0, 1 kHz tick and 100 Hz BCD contrast, ADC overload.
 #
 #   scripts/wwv_band_scan.sh [options]
 #
@@ -10,6 +10,8 @@
 #   --gain KHZ:LNA:IFGR    a band's gain instead of wwv_bands.GAIN; repeatable
 #   --ppm X                TCXO error used to place the carrier (default 1.09)
 #   --json FILE            write every figure as JSON
+#   --keep-raw DIR         keep each band's raw I/Q (8 MB/s, 200 MB per band at 25 s)
+#                          for wwv_band_scan.py --replay
 #   --overload-plugin DIR  SoapySDRPlay3 build that logs the API's ADC overload events
 #                          (default $WWV_OVERLOAD_PLUGIN, else wwv-capture's
 #                          saga/soapysdrplay3-src/plugin-overloadlog when present)
@@ -18,8 +20,9 @@
 #
 # Prints the ranked table and a last stdout line `BEST <kHz>` (`BEST none` when no band
 # could be measured without overload). Exit 0 with a band, 3 without one. The choice:
-# the lowest band within 30 points of the best share of seconds with a tick over 10 dB
-# (wwv_band_scan.py, docs/WWV_LIVE.md).
+# among bands with 40% of seconds over a 10 dB tick contrast and 50% over a 10 dB BCD
+# contrast, the lowest band within 20 points of the best BCD score (wwv_band_scan.py,
+# docs/WWV_LIVE.md).
 #
 # sdrplay.service is started once, here, and stopped on every exit path (end, Ctrl-C,
 # error). The last stderr line is the service state after the stop.
@@ -34,11 +37,11 @@ SERVICE=1
 PY_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --secs|--extend-secs|--avoid|--bands|--gain|--ppm|--json) PY_ARGS+=("$1" "$2"); shift 2 ;;
+    --secs|--extend-secs|--avoid|--bands|--gain|--ppm|--json|--keep-raw) PY_ARGS+=("$1" "$2"); shift 2 ;;
     --overload-plugin) PLUGIN=$2; shift 2 ;;
     --no-overload-plugin) PLUGIN=; shift ;;
     --no-service) SERVICE=; shift ;;
-    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
