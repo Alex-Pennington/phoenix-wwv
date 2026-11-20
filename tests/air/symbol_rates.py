@@ -86,8 +86,8 @@ for m, fr, adm in frames:
     c = tally([(m, fr, adm)])
     n0 = c[('0', '0')] + c[('0', '1')]
     if n0 >= 10: xs.append((c[('0', '1')], n0))
-if xs:
-    k = sum(a for a, _ in xs); n = sum(b for _, b in xs); p = k / n
+k = sum(a for a, _ in xs); n = sum(b for _, b in xs); p = k / n if n else 0.0
+if len(xs) > 1 and 0.0 < p < 1.0:
     chi = sum((a - b * p) ** 2 / (b * p * (1 - p)) for a, b in xs)
     print(f'  per-frame 0->1 (admitted, >=10 sent 0s): {len(xs)} frames, pooled {100 * p:.1f}%, '
           f'overdispersion (chi2/dof) {chi / (len(xs) - 1):.2f}')
