@@ -173,7 +173,7 @@ Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`,
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`,
-about 2.5 minutes). The stubs in `tests/live/bin` stand in for `systemctl` and `sudo`, and the
+about 2.5 minutes). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
 script refuses to run unless the PATH reaches them. Its cases cover each reopen reason,
 `--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto` scan going live and
 ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan, a scan that finds

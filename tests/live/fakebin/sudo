@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stub sudo for tests/live: runs the command as is, so `sudo systemctl` reaches the stub.
+[ "$1" = -n ] && shift
+exec "$@"

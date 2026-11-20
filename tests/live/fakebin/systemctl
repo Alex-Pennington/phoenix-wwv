@@ -1,0 +1,18 @@
+#!/bin/bash
+# Stub systemctl for tests/live: a fake sdrplay.service in $STUB_DIR (state, pid, nr), and
+# every call logged to $STUB_DIR/calls. It never reaches systemd.
+D=${STUB_DIR:?STUB_DIR not set: refusing to run outside the stub tests}
+[ -f "$D/state" ] || { echo inactive > "$D/state"; echo 0 > "$D/pid"; echo 0 > "$D/nr"; }
+echo "$(date +%T) systemctl $*" >> "$D/calls"
+cmd=$1; shift
+case $cmd in
+  start) echo active > "$D/state"; echo $((RANDOM + 1000)) > "$D/pid" ;;
+  stop) echo inactive > "$D/state"; echo 0 > "$D/pid" ;;
+  reset-failed) ;;
+  is-active) cat "$D/state"; [ "$(cat "$D/state")" = active ] ;;
+  show)
+    while [ $# -gt 0 ]; do
+      [ "$1" = -p ] && { case $2 in MainPID) cat "$D/pid" ;; NRestarts) cat "$D/nr" ;; Result) echo success ;; esac; shift; }
+      shift
+    done ;;
+esac
