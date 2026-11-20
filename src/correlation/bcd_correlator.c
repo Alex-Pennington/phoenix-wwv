@@ -216,7 +216,12 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
 
     /* Check for window transition first; ignore the event when sync is not
      * locked or its window was already emitted */
-    if (!bcd_window_check_transition(corr, timestamp_ms)) return;
+    bool accepted = bcd_window_check_transition(corr, timestamp_ms);
+
+    /* Its end may be a later window's trailing edge, even when its own window
+     * is already emitted */
+    bcd_window_note_edge(corr, timestamp_ms, timestamp_ms + duration_ms);
+    if (!accepted) return;
 
     /* Accumulate into current window */
     if (corr->time_event_count == 0) {
