@@ -32,8 +32,9 @@
 #
 # A band switch stops the streamer and wwv_live (its sync and decoder start again),
 # re-scans and goes live again. Every switch is logged on stderr. Segment 1 writes the
-# --log, --timebase, --scan-json and --record names as given; segment K writes them
-# with .segK before the extension (run.log -> run.seg2.log; PREFIX -> PREFIX.seg2).
+# --log, --timebase, --scan-json, --record and wwv_live --frames names as given; segment
+# K writes them with .segK before the extension (run.log -> run.seg2.log; PREFIX ->
+# PREFIX.seg2).
 # --carrier-hz, --lna and --ifgr hold for the first band only.
 #
 # sdrplay.service is started here, once (scans and live segments all run under the
@@ -67,7 +68,7 @@ while [ $# -gt 0 ]; do
     --scan-json) SCAN_JSON=$2; shift 2 ;;
     --lock-mins) LOCK_MINS=$2; shift 2 ;;
     --) shift; break ;;
-    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -112,6 +113,24 @@ seg_name() {
   else
     printf '%s.seg%s' "$name" "$k"
   fi
+}
+
+# seg_extra K: EXTRA with wwv_live's --frames file named for segment K (it is opened "wb").
+seg_extra() {
+  SEG_EXTRA=()
+  local i=0 n=${#EXTRA[@]} x
+  while [ "$i" -lt "$n" ]; do
+    x=${EXTRA[$i]}
+    case $x in
+      -F|--frames)
+        SEG_EXTRA+=("$x")
+        i=$((i + 1))
+        [ "$i" -lt "$n" ] && SEG_EXTRA+=("$(seg_name "${EXTRA[$i]}" "$1")") ;;
+      --frames=*) SEG_EXTRA+=("--frames=$(seg_name "${x#--frames=}" "$1")") ;;
+      *) SEG_EXTRA+=("$x") ;;
+    esac
+    i=$((i + 1))
+  done
 }
 
 SCPID=; SPID=; WPID=; RPID=; FIFODIR=
@@ -213,7 +232,8 @@ while :; do
   RPID=$!
   python3 -I "$HERE/rsp2_stream.py" "${ST_ARGS[@]}" > "$FIFODIR/iq" &
   SPID=$!
-  "$WWV_LIVE" "${WL_ARGS[@]}" "${EXTRA[@]}" < "$FIFODIR/iq" > "$FIFODIR/out" &
+  seg_extra "$SEG"
+  "$WWV_LIVE" "${WL_ARGS[@]}" "${SEG_EXTRA[@]}" < "$FIFODIR/iq" > "$FIFODIR/out" &
   WPID=$!
 
   T_SEG=$SECONDS; LOCKED=; SWITCH=
