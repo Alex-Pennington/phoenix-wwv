@@ -50,13 +50,28 @@ extern "C" {
 #define BCD_TIME_EDGE_FRACTION      0.5f
 /* A pulse also starts at half amplitude: the start threshold is BCD_TIME_EDGE_FRACTION
  * of the running mean level of recent valid pulses (each pulse's mean, averaged with
- * weight BCD_TIME_LEVEL_ALPHA), or threshold_high if higher. threshold_high alone sits
+ * weight BCD_TIME_LEVEL_ALPHA), or threshold_high or the low-level term below (see
+ * BCD_TIME_START_LOW_RATIO), whichever is highest. threshold_high alone sits
  * on the low-level subcarrier and starts events between pulses, whose cooldown hides
  * the next rise. WWV sends a pulse every second except :00, so after
  * BCD_TIME_LEVEL_HOLD_MS with no valid pulse the level is stale (a fade) and is
  * dropped until the next valid pulse. */
 #define BCD_TIME_LEVEL_ALPHA        0.25f
 #define BCD_TIME_LEVEL_HOLD_MS      2000.0f
+/* A pulse is a step up from the low level, so a start must also clear
+ * BCD_TIME_START_LOW_RATIO times the low level: 7.5 dB, half of WWV's 15 dB
+ * pulse/low step in dB. The low level is the median energy over the second half
+ * (100-200 ms after the event's end) of the last event's cooldown, which follows the
+ * end of a pulse. An event that ends early, on a dip of the 100 Hz phase ripple, leaves
+ * the rest of its pulse at the start of the cooldown, where neither the half nor the
+ * median sees it. It is not taken from idle frames, which may hold
+ * a pulse too weak to start, and it is dropped with the pulse level. Without it the
+ * start threshold falls to 1.3-1.5 times the low level when the pulse level is low or
+ * stale, and a start on the low level runs through the next second's pulse (its end
+ * is half its own mean). */
+#ifndef BCD_TIME_START_LOW_RATIO
+#define BCD_TIME_START_LOW_RATIO    2.37f
+#endif
 
 /* Pulse classification thresholds (same as existing bcd_decoder) */
 #define BCD_TIME_PULSE_MIN_MS       100.0f  /* Ignore pulses shorter than this */

@@ -72,3 +72,8 @@ add_test(NAME wwv_time_decoder_sim_xlive2 CONFIGURATIONS Slow
 set_tests_properties(wwv_time_decoder_sim_x2 wwv_time_decoder_sim_x3
                      wwv_time_decoder_sim_xlive wwv_time_decoder_sim_xlive2
                      PROPERTIES LABELS slow TIMEOUT 3000)
+
+# Frame replay: re-runs the BTIME state machine on a wwv_live --frames record (or
+# btime_frames -8) and rewrites the run's log with the replayed BTIME events.
+add_executable(btime_replay air/btime_replay.c)
+target_link_libraries(btime_replay PRIVATE phoenix_wwv)

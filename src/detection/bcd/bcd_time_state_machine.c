@@ -20,6 +20,7 @@
 #include "version.h"
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 
 /*============================================================================
  * Internal Configuration
@@ -41,6 +42,18 @@
 /*============================================================================
  * Internal Functions
  *============================================================================*/
+
+static int cmp_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+/* Median of n values (sorts them in place); 0 for none */
+static float median_of(float *v, int n) {
+    if (n <= 0) return 0.0f;
+    qsort(v, (size_t)n, sizeof *v, cmp_float);
+    return (n & 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+}
 
 float bcd_time_calculate_bucket_energy(bcd_time_detector_t *td) {
     return fft_processor_get_bucket_energy(td->fft, BCD_TIME_TARGET_FREQ_HZ, BCD_TIME_BANDWIDTH_HZ);
@@ -78,19 +91,28 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
         td->threshold_low = td->threshold_high * BCD_TIME_HYSTERESIS_RATIO;
     }
 
-    /* Drop a pulse level that no valid pulse has refreshed (see BCD_TIME_LEVEL_HOLD_MS) */
-    if (td->pulse_level > 0.0f &&
+    /* Drop a pulse level and low level that no valid pulse has refreshed (see
+     * BCD_TIME_LEVEL_HOLD_MS) */
+    if ((td->pulse_level > 0.0f || td->low_level > 0.0f) &&
         (frame - td->last_valid_frame) * FRAME_DURATION_MS > BCD_TIME_LEVEL_HOLD_MS) {
         td->pulse_level = 0.0f;
+        td->low_level = 0.0f;
     }
+
+    /* An idle frame starts an event above threshold_high, half the pulse level and
+     * BCD_TIME_START_LOW_RATIO times the low level, whichever is highest */
+    float start_threshold = td->threshold_high;
+    if (BCD_TIME_EDGE_FRACTION * td->pulse_level > start_threshold) {
+        start_threshold = BCD_TIME_EDGE_FRACTION * td->pulse_level;
+    }
+    if (BCD_TIME_START_LOW_RATIO * td->low_level > start_threshold) {
+        start_threshold = BCD_TIME_START_LOW_RATIO * td->low_level;
+    }
+    td->start_threshold = start_threshold;
 
     /* State machine */
     switch (td->state) {
         case STATE_IDLE: {
-            float start_threshold = td->threshold_high;
-            if (BCD_TIME_EDGE_FRACTION * td->pulse_level > start_threshold) {
-                start_threshold = BCD_TIME_EDGE_FRACTION * td->pulse_level;
-            }
             if (energy > start_threshold) {
                 td->state = STATE_IN_PULSE;
                 td->pulse_start_frame = frame;
@@ -194,13 +216,22 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 } else {
                     td->state = STATE_COOLDOWN;
                     td->cooldown_frames = MS_TO_FRAMES(BCD_TIME_COOLDOWN_MS);
+                    td->cooldown_energy_frames = 0;
                 }
             }
             break;
 
         case STATE_COOLDOWN:
+            /* after an event's end: the low level (BCD_TIME_START_LOW_RATIO) */
+            if (td->cooldown_energy_frames < BCD_TIME_COOLDOWN_FRAMES_MAX) {
+                td->cooldown_energy[td->cooldown_energy_frames++] = energy;
+            }
             if (--td->cooldown_frames <= 0) {
                 td->state = STATE_IDLE;
+                /* the second half: the rest of a pulse cut short comes first */
+                int half = td->cooldown_energy_frames / 2;
+                td->low_level = median_of(td->cooldown_energy + half,
+                                          td->cooldown_energy_frames - half);
             }
             break;
     }

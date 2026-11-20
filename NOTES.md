@@ -19,6 +19,29 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     the second. 9 of those 12 events have a mean of 0.12-0.44 of the pulse level. Saga's pulse/low
     ratio is 2.1-2.7 at p10 (kiwi 6.8-7.8), so in a fade the low level reaches half the tracked
     pulse level. The same events make most of the 21/18 spurious windows.
+    - **Traced and changed on fix/wwv-btime-start.** The start threshold was max(2 x noise floor,
+      0.5 x pulse level). The noise floor adapts only on idle frames, which are the low level, so
+      2 x it is 1.2-1.5 x the low level; and every event started on the low level feeds its mean
+      (near the low level) into the pulse level, pulling it to 0.52-0.67 of the measured high
+      level at mid starts on saga. 12-20% of low-level frames exceed 1.4 x the low level's
+      median at every site. A start now also needs 2.37 x the low level (7.5 dB, half the 15 dB
+      step), measured as the median over the second half of each cooldown
+      (`BCD_TIME_START_LOW_RATIO`). Mid starts / carried, d46cee4 -> fix: saga plain 178/43 ->
+      33/5, saga agc 171/98 -> 59/38; run90f (1649 s replayed from `--frames`) 1443/211 ->
+      336/38. `tests/air/btime_replay` re-runs the state machine on a frame record;
+      `tests/air/btime_start_forensics.py` gives these counts.
+    - **Residual carried events (fix branch).** On saga agc 38 remain: at their starts the
+      threshold is 1.99 x the second's low level (median), because the cooldown estimate fell in
+      its low tail (it reads the low level at 1.00 median, p10 0.79). Averaging over more than one
+      cooldown would narrow it and slow fade tracking. Not done.
+    - **When no valid pulse comes for 2 s, both levels drop and the old 2 x noise threshold
+      (1.2 x the low level) applies again.** On run90f 115 of the fix's 336 mid starts come
+      from that state. Its decoder-view mid rate rises from 9.6% to 18.6% of non-erased
+      seconds, and erasures from 6.5% to 28.2% (the pulses it no longer starts have pulse/low
+      1.45 at the median). A fallback that keeps the last low level, or a longer hold for it,
+      is the next thing to measure. Not done.
+    - **The "noise floor" is not noise.** It is a low percentile of the 100 Hz low level, so
+      `BCD_TIME_THRESHOLD_MULT` x it tracks the low level, not the receiver noise.
   - **The detector's energy ripples with the 100 Hz phase.** Its 5.12 ms Hann-windowed FFT
     frame holds half a 100 Hz cycle, and bins 0-2 sum the two sidebands with a phase that drifts
     4.3 degrees per frame, so the plateau ripples with a period of about 214 ms (measured over the
@@ -365,6 +388,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - README claims and the audit's F10 items are untouched.
 
 ## Commit message corrections
+
+- "BCD time detector: a start must clear 2.37 times the low level, measured after each pulse"
+  quotes run90f's "75 of 80 sampled from the noise term" and "threshold 1.40 x the low level"
+  from the first 138 s, next to counts from the first 1175 s. Over 1175 s, 1010 of the 1036
+  mid starts were set by the noise term, at 1.24 x the low level (median).
 
 - "Tests: BCD time detector pulse width on a synthetic WWV time code" says that at 07ffb51 the
   steady case's 0s end 72-132 ms after the sent end and its 1s start at +227..+229 ms. It is 9 of
