@@ -59,6 +59,16 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
   minute.
 - `-l FILE` writes the air harness's event log (`wwv_chain_log`). wwv-capture `score.py` and the
   `tests/air` scorers read it.
+- `-F FILE` writes the BCD time detector's state for every 5.12 ms frame: 9 float32 per record,
+  in native byte order (`t_ms energy noise_floor threshold_high threshold_low state
+  start_threshold pulse_level pulse`; see `write_frame()` in `apps/wwv_live.c`). That is
+  7 kB/s, 37 MB for 90 minutes. The event log carries only the events, so the energy around a
+  missed or mid-second pulse is in this file alone. The first six fields match
+  `tests/air/btime_frames` on the same input. Through the wrapper, pass it after `--`:
+
+  ```
+  scripts/wwv_rsp2_live.sh --secs 5400 --log run.log --timebase run.json -- --frames run.frames
+  ```
 
 ## Saga RSP2
 
