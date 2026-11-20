@@ -11,14 +11,15 @@ typedef struct {
     float y1, y2;  // Output history
 } biquad_state_t;
 
-// Sync channel: 800-1400 Hz bandpass (4th order = 2 cascaded biquads)
+// Sync channel: 800-1400 Hz bandpass (4th-order Butterworth = 4 cascaded biquads)
 typedef struct {
-    biquad_state_t hp[2];  // 800 Hz highpass (2 sections)
-    biquad_state_t lp[2];  // 1400 Hz lowpass (2 sections)
+    biquad_state_t bp[4];
 } sync_channel_t;
 
-// Data channel: 0-150 Hz lowpass (4th order = 2 cascaded biquads)
+// Data channel: 50-150 Hz bandpass (4th-order Butterworth HP + 4th-order LP).
+// The highpass removes the carrier, which the SDR delivers at DC.
 typedef struct {
+    biquad_state_t hp[2];  // 50 Hz highpass (2 sections)
     biquad_state_t lp[2];  // 150 Hz lowpass (2 sections)
 } data_channel_t;
 

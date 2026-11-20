@@ -14,6 +14,8 @@
 #include "slow_marker_detector.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <math.h>
 
 /*============================================================================
  * Lifecycle
@@ -24,6 +26,7 @@ wwv_detector_manager_t *wwv_detector_manager_create(const wwv_detector_config_t 
     if (!mgr) return NULL;
     
     if (!wwv_detector_lifecycle_create_all(mgr, config)) {
+        wwv_detector_lifecycle_destroy_all(mgr);
         free(mgr);
         return NULL;
     }
@@ -35,7 +38,7 @@ void wwv_detector_manager_destroy(wwv_detector_manager_t *mgr) {
     if (!mgr) return;
     
     /* Print final stats before cleanup */
-    wwv_detector_manager_print_stats(mgr);
+    if (mgr->verbose) wwv_detector_manager_print_stats(mgr);
     
     /* Destroy all detectors */
     wwv_detector_lifecycle_destroy_all(mgr);
@@ -47,16 +50,46 @@ void wwv_detector_manager_destroy(wwv_detector_manager_t *mgr) {
  * Sample Processing
  *============================================================================*/
 
+/* waterfall.c (1ec38d1) normalize(): fast warmup, then slow */
+static float normalize(wwv_normalizer_t *n, float i, float q) {
+    float mag = sqrtf(i*i + q*q);
+    float alpha = (n->warmup < 50000) ? 0.01f : 0.0001f;
+    n->level += alpha * (mag - n->level);
+    n->warmup++;
+    if (n->level < 0.0001f) n->level = 0.0001f;
+    return 1.0f / n->level;
+}
+
 void wwv_detector_manager_process_detector_sample(wwv_detector_manager_t *mgr,
                                                    float i_sample, float q_sample) {
     if (!mgr) return;
     
-    if (mgr->tick_detector) {
-        tick_detector_process_sample(mgr->tick_detector, i_sample, q_sample);
+    uint64_t n = mgr->detector_samples;
+    mgr->now_ms = (double)n / (double)WWV_DETECTOR_SAMPLE_RATE * 1000.0;
+    
+    if (mgr->agc) {
+        float nf = normalize(&mgr->normalizer, i_sample, q_sample);
+        i_sample *= nf;
+        q_sample *= nf;
     }
     
-    if (mgr->marker_detector) {
-        marker_detector_process_sample(mgr->marker_detector, i_sample, q_sample);
+    /* Sync channel (800-1400 Hz) for ticks and markers, data channel (50-150 Hz)
+     * for the BCD subcarrier */
+    float s_i = sync_channel_process(&mgr->sync_i, i_sample);
+    float s_q = sync_channel_process(&mgr->sync_q, q_sample);
+    float d_i = data_channel_process(&mgr->data_i, i_sample);
+    float d_q = data_channel_process(&mgr->data_q, q_sample);
+    
+    if (mgr->tick_detector) tick_detector_process_sample(mgr->tick_detector, s_i, s_q);
+    if (mgr->marker_detector) marker_detector_process_sample(mgr->marker_detector, s_i, s_q);
+    if (mgr->bcd_time) bcd_time_detector_process_sample(mgr->bcd_time, d_i, d_q);
+    if (mgr->bcd_freq) bcd_freq_detector_process_sample(mgr->bcd_freq, d_i, d_q);
+    
+    if (n % WWV_PERIODIC_CHECK_SAMPLES == 0) {
+        float now = (float)mgr->now_ms;
+        if (mgr->sync_detector) sync_detector_periodic_check(mgr->sync_detector, now);
+        if (mgr->bcd_correlator) bcd_correlator_periodic_check(mgr->bcd_correlator, now);
+        if (mgr->time_decoder) wwv_time_decoder_periodic(mgr->time_decoder, now);
     }
     
     mgr->detector_samples++;
@@ -93,6 +126,13 @@ void wwv_detector_manager_process_display_fft(wwv_detector_manager_t *mgr,
  * Callbacks
  *============================================================================*/
 
+void wwv_detector_manager_set_observer(wwv_detector_manager_t *mgr,
+                                        const wwv_detector_observer_t *observer) {
+    if (!mgr) return;
+    if (observer) mgr->observer = *observer;
+    else memset(&mgr->observer, 0, sizeof(mgr->observer));
+}
+
 void wwv_detector_manager_set_tick_callback(wwv_detector_manager_t *mgr,
                                              wwv_tick_callback_fn cb, void *user_data) {
     if (!mgr) return;
@@ -124,7 +164,7 @@ wwv_sync_status_t wwv_detector_manager_get_sync_status(wwv_detector_manager_t *m
     if (mgr && mgr->sync_detector) {
         sync_state_t state = sync_detector_get_state(mgr->sync_detector);
         status.is_synced = (state == SYNC_LOCKED);
-        status.confidence = sync_detector_get_confidence(mgr->sync_detector);
+        status.confidence = (int)(sync_detector_get_confidence(mgr->sync_detector) * 100.0f + 0.5f);
         status.drift_ppm = 0.0f;  /* TODO: sync_detector doesn't provide drift yet */
     }
     
@@ -134,6 +174,34 @@ wwv_sync_status_t wwv_detector_manager_get_sync_status(wwv_detector_manager_t *m
     }
     
     return status;
+}
+
+uint64_t wwv_detector_manager_get_detector_samples(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->detector_samples : 0;
+}
+
+double wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->now_ms : 0.0;
+}
+
+tick_detector_t *wwv_detector_manager_get_tick_detector(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->tick_detector : NULL;
+}
+
+marker_detector_t *wwv_detector_manager_get_marker_detector(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->marker_detector : NULL;
+}
+
+sync_detector_t *wwv_detector_manager_get_sync_detector(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->sync_detector : NULL;
+}
+
+bcd_correlator_t *wwv_detector_manager_get_bcd_correlator(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->bcd_correlator : NULL;
+}
+
+wwv_time_decoder_t *wwv_detector_manager_get_time_decoder(wwv_detector_manager_t *mgr) {
+    return mgr ? mgr->time_decoder : NULL;
 }
 
 int wwv_detector_manager_get_tick_count(wwv_detector_manager_t *mgr) {

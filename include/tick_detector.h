@@ -73,7 +73,9 @@ typedef void (*tick_callback_fn)(const tick_event_t *event, void *user_data);
 typedef struct {
     int marker_number;
     float timestamp_ms;        /* TRAILING EDGE - when pulse energy dropped below threshold */
-    float start_timestamp_ms;  /* LEADING EDGE - timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS (ON-TIME MARKER) */
+    float start_timestamp_ms;  /* LEADING EDGE (ON-TIME MARKER): timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS,
+                                  or from timestamp_ms alone when the run is off a clean
+                                  marker's length (see tick_internal.h) */
     float duration_ms;         /* Measured duration (may be biased longer than actual due to threshold hysteresis) */
     float corr_ratio;
     float interval_ms;         /* Time since previous marker */

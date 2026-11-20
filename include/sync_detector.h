@@ -91,7 +91,8 @@ void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms);
 /**
  * Report minute marker from tick detector (duration-based detection)
  * @param sd Detector handle
- * @param timestamp_ms Timestamp when marker pulse ended
+ * @param timestamp_ms Leading edge of the marker (tick_marker_event_t.start_timestamp_ms).
+ *                     It becomes the minute anchor, so it must be the pulse start.
  * @param duration_ms Duration of the pulse (should be ~800ms)
  * @param corr_ratio Correlation ratio from tick detector
  */
@@ -101,7 +102,9 @@ void sync_detector_tick_marker(sync_detector_t *sd, float timestamp_ms,
 /**
  * Report minute marker from marker detector (energy accumulation-based)
  * @param sd Detector handle
- * @param timestamp_ms Timestamp of detection
+ * @param timestamp_ms Leading edge of the marker (marker_event_t.start_timestamp_ms).
+ *                     It becomes the minute anchor. marker_event_t.timestamp_ms is the
+ *                     end of the 1 s window run, 1.3-1.8 s after the pulse starts.
  * @param accum_energy Accumulated energy in detection window
  * @param duration_ms Duration of accumulated energy above threshold
  */

@@ -103,6 +103,7 @@ struct sync_detector {
     /* Confirmed markers */
     float last_confirmed_ms;
     float prev_confirmed_ms;
+    float last_rejected_ms;         /* Most recent rejected marker, 0 = none */
     int confirmed_count;
     int good_intervals;
 
@@ -215,7 +216,27 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
         good_interval = (error_ms <= 5000.0f);
     }
 
+    /* Re-anchor on positive evidence only. A wrong anchor (a false first marker)
+     * would otherwise reject every real marker for good, because each is judged
+     * against it. Two consecutive rejected markers one minute apart outvote it.
+     * A lone false marker never re-anchors: any accepted marker clears the
+     * rejected candidate. */
+    if (!good_interval && sd->last_rejected_ms > 0) {
+        float since_rejected = marker_time - sd->last_rejected_ms;
+        if (since_rejected >= MARKER_INTERVAL_MIN_MS &&
+            since_rejected <= MARKER_INTERVAL_MAX_MS) {
+            printf("[SYNC] Re-anchor: markers at %.1fms and %.1fms are %.1fs apart; "
+                   "dropping anchor %.1fms\n", sd->last_rejected_ms, marker_time,
+                   since_rejected / 1000.0f, sd->last_confirmed_ms);
+            sd->last_confirmed_ms = sd->last_rejected_ms;
+            sd->good_intervals = 0;
+            interval_ms = since_rejected;
+            good_interval = true;
+        }
+    }
+
     if (good_interval) {
+        sd->last_rejected_ms = 0.0f;
         /* Update confirmed marker history */
         sd->prev_confirmed_ms = sd->last_confirmed_ms;
         sd->last_confirmed_ms = marker_time;
@@ -261,6 +282,7 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
     } else {
         printf("[SYNC] Marker rejected (%s): interval=%.1fs (out of range)\n",
                source, interval_ms / 1000.0f);
+        sd->last_rejected_ms = marker_time;
     }
 
     /* Clear both pending events */
@@ -670,6 +692,10 @@ void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
 
 void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
     if (!sd) return;
+
+    /* A lone pending marker is confirmed PENDING_TIMEOUT_MS after it, not when
+     * the next marker event happens to arrive a minute later. */
+    check_timeout(sd, current_ms);
 
     /* Confidence decay */
     float decay_rate = (sd->state == SYNC_RECOVERING) ?

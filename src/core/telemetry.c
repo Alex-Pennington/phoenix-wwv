@@ -40,6 +40,8 @@ static uint32_t g_enabled_channels = TELEM_NONE;
 static uint32_t g_stats_sent = 0;
 static uint32_t g_stats_dropped = 0;
 static bool g_initialized = false;
+static telem_tap_fn g_tap = NULL;
+static void *g_tap_user = NULL;
 
 /*============================================================================
  * Console Buffer (for hot-path performance)
@@ -204,7 +206,13 @@ const char *telem_channel_prefix(telem_channel_t channel) {
     return "????";
 }
 
-void telem_send(telem_channel_t channel, const char *csv_line) {
+void telem_set_tap(telem_tap_fn fn, void *user) {
+    g_tap = fn;
+    g_tap_user = user;
+}
+
+/* UDP send, without the tap */
+static void send_udp(telem_channel_t channel, const char *csv_line) {
     /* Fast path: check if enabled before any work */
     if (!g_initialized || g_sock == SOCKET_INVALID) {
         return;
@@ -246,9 +254,14 @@ void telem_send(telem_channel_t channel, const char *csv_line) {
     g_stats_sent++;
 }
 
+void telem_send(telem_channel_t channel, const char *csv_line) {
+    if (g_tap && csv_line) g_tap(channel, csv_line, g_tap_user);
+    send_udp(channel, csv_line);
+}
+
 void telem_sendf(telem_channel_t channel, const char *fmt, ...) {
     /* Fast path: check if enabled before formatting */
-    if (!g_initialized || (g_enabled_channels & channel) == 0) {
+    if (!g_tap && (!g_initialized || (g_enabled_channels & channel) == 0)) {
         if (g_initialized) g_stats_dropped++;
         return;
     }

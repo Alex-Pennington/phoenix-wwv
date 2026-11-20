@@ -126,6 +126,16 @@ void telem_sendf(telem_channel_t channel, const char *fmt, ...);
 const char *telem_channel_prefix(telem_channel_t channel);
 
 /**
+ * Tap: a local copy of every message, for a host that logs what it sends.
+ *
+ * The tap is called synchronously from telem_send()/telem_sendf() with the channel
+ * and the CSV line without its prefix, whether or not telem_init() has run and
+ * whatever the channel mask. NULL removes it.
+ */
+typedef void (*telem_tap_fn)(telem_channel_t channel, const char *csv_line, void *user);
+void telem_set_tap(telem_tap_fn fn, void *user);
+
+/**
  * Get statistics
  * @param sent     Receives count of messages sent (can be NULL)
  * @param dropped  Receives count of messages dropped/filtered (can be NULL)

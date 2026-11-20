@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,17 @@ extern "C" {
 #define MARKER_WARMUP_FRAMES        200     /* ~1 second warmup */
 #define MARKER_WARMUP_ADAPT_RATE    0.02f   /* Faster adaptation during warmup */
 #define MARKER_MIN_STARTUP_MS       10000.0f /* No markers in first 10 seconds */
+
+/* Tone purity. A WWV minute marker is a pure 1000 Hz tone. Through the 256-point
+ * Hann window its energy sits in the centre bin (5, 977 Hz) and leaks about 0.04
+ * of that into the bins two either side (3 and 7, 586 and 1367 Hz). Broadband
+ * audio (the :52.5 voice announcement, noise) puts as much in those flank bins as
+ * in the centre (ratio ~1.0 through the sync filter). The test compares the
+ * EXCESS over the pre-event background, so it does not depend on SNR. The
+ * threshold is the geometric mean of 0.04 and 1.0. */
+#define MARKER_FLANK_OFFSET_BINS    2
+#define MARKER_MAX_FLANK_RATIO      0.2f
+#define MARKER_PURITY_RING          1024    /* frames (5.2 s): covers the longest run */
 
 /* Display */
 #define MARKER_FLASH_FRAMES         30      /* UI flash duration */
@@ -76,6 +88,15 @@ struct marker_detector {
     int history_count;              /* Frames accumulated so far */
     float accumulated_energy;       /* Sum of energy_history */
     float baseline_energy;          /* Self-tracked noise floor */
+
+    /* Tone purity: per-frame centre-bin and flank-bin levels, and their
+     * backgrounds (tracked like baseline_energy, frozen in a run) */
+    float *mag_buffer;              /* FFT magnitudes, MARKER_FFT_SIZE */
+    float *centre_ring;
+    float *flank_ring;
+    float bg_centre;
+    float bg_flank;
+    float last_flank_ratio;         /* Of the last completed run, for logging */
 
     /* Detection state */
     detector_state_t state;

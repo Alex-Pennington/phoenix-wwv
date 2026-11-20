@@ -10,6 +10,10 @@
  *   - Self-tracking baseline adapts slowly during IDLE state
  *   - Do NOT inject external baselines - incompatible scaling between FFT paths
  *   - Proven reliable in v133 testing
+ *   - A run is accepted only if its excess over background is a pure tone: the
+ *     bins two either side of 1000 Hz must hold under 0.2 of the centre bin's
+ *     excess. This rejects the :52.5 voice announcement, which is broadband.
+ *     A rejected run returns to IDLE without the 30 s cooldown.
  */
 
 #ifndef MARKER_DETECTOR_H
@@ -53,11 +57,15 @@ typedef struct marker_detector marker_detector_t;
 
 typedef struct {
     int marker_number;
-    float timestamp_ms;
+    float timestamp_ms;             /* When the detector fired (end of the 1 s window excursion) */
     float since_last_marker_sec;
     float accumulated_energy;
     float peak_energy;
-    float duration_ms;
+    float duration_ms;              /* Estimated pulse length, window stretch removed.
+                                       Unreliable when the window sum barely clears the
+                                       threshold (weak or faded markers). */
+    float start_timestamp_ms;       /* Leading edge (on-time marker): window-run midpoint
+                                       minus (window + 800 ms)/2 */
 } marker_event_t;
 
 typedef void (*marker_callback_fn)(const marker_event_t *event, void *user_data);

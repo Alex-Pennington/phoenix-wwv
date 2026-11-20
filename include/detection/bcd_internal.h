@@ -72,6 +72,10 @@ struct bcd_time_detector {
     float pulse_peak_energy;
     int pulse_duration_frames;
     int cooldown_frames;
+    float pulse_energy_sum;     /* energy of the pulse's frames at or above its end threshold */
+    int pulse_energy_frames;    /* how many frames pulse_energy_sum holds */
+    float pulse_level;          /* running mean level of valid pulses; 0 = not known */
+    uint64_t last_valid_frame;  /* end frame of the last valid pulse */
 
     /* Phase 9: Minimum duration validation */
     int consecutive_low_frames;
