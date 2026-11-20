@@ -154,9 +154,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 - `sync_detector_full_reset()` does not clear `last_confirmed_ms`, so a stale anchor survives a
   reset. The re-anchor rule mitigates it.
-- The sync detector gets no per-tick events (`sync_detector_tick_event()`): neither the manager
-  nor the harness ever fed them, so tick-hole evidence never arrives. Kept that way so the scored
-  chain did not change.
+- The sync detector gets no per-tick lock evidence (`sync_detector_tick_event()`): neither the
+  manager nor the harness ever fed it, so tick-hole evidence never arrives. Kept that way so the
+  scored chain did not change. Ticks and BCD time-pulse leading edges now reach sync through
+  `sync_detector_second_edge()`, which only tracks the held sub-second phase while LOCKED
+  (fix/wwv-sync-drift); it never adds confidence, starts a lock or chooses the minute.
   - **Measured on the holdover branch, still not fed.** With ticks fed, no tick hole is detected in
     the four captures or the 90-minute live run (a hole needs 20 consecutive 950-1050 ms ticks
     first). The 0.05-per-tick confidence instead locks sync on one marker: kiwi agc locks at
@@ -166,6 +168,46 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **`sync_detector_get_frame_time()` takes the current second from `tick_gap.last_tick_ms`**, which
   stays 0 because ticks are not fed. wwv_live's STATUS line prints `sec=1` in all 40 LOCKED lines
   of the 2026-11-20 live run. Display only; the correlator does not use it.
+- **Lost samples move the held phase; the tracker follows them only in part on a weak band**
+  (fix/wwv-sync-drift). On run90g seg2 (15 MHz) the stream lost about 3 ms/s, up to 5 ms/s, from
+  t=1330 s: 5.3 s by the end, read from the console's least-delayed lag (it matches every TMARK
+  lead within about 20 ms). Before the tracker the held phase was 0.66 s, 1.39 s and 1.24 s late
+  at the re-anchors (1991 s, 2469 s, 2947 s) and 575 of 2662 windows were 500 ms or more off;
+  after, 72 of 2381.
+  - On seg2, true ticks are 1-8 a minute against about 60 false ones, so BCD time-pulse starts
+    carry the slew. Their leading edges spread over about -35..+105 ms around the predicted
+    second there, and the coordinator's +-40 ms gate holds only part of that spread. Slews
+    take back 344 ms of the 5.3 s; the rest comes from the snaps (5) and the marker
+    re-anchors. 498 windows are still more than 140 ms off.
+  - The outcome is sensitive to the BCD-only dead band: 15 ms gives time of day 29 right, last
+    right at 14:49; 20 ms gives 15/17, last right 14:39. Both give 0 false confirms.
+  - The BCD time detector's lead differs by band: +17..+34 ms from the marker lead on the
+    5/10 MHz runs, peaking near +50 ms on seg2. `PHASE_LEAD_BTIME_MS` is 30 ms for all.
+  - **The loss is known exactly upstream.** wwv_live's lag (arrival minus stream time) rises by
+    what was lost, and the SDRplay stream callback carries `firstSampleNum`, so the producer
+    can see each gap. Filling the gap in the stream (zeros for the lost span) would keep stream
+    time on the wall clock and fix whole seconds too, which no tick can. That is
+    `scripts/rsp2_stream.py` / `apps/wwv_live.c`, outside this branch. The run90g console holds
+    no `errno` line; where the libusb errno=12 losses were logged was not checked.
+- **Ticks cannot see whole seconds.** A loss of n s + d reads as d, and a snap or slew to it
+  leaves the phase whole seconds off until a marker or a candidate 1-5 whole seconds off shows
+  it. Frames that close in between can pass the decoder's marker check. On run90d the 1.115 s
+  loss (about 1077 s) met a marker 7 s later, which moved the phase -1049 ms; the decoder
+  dropped its 16-frame chain there. The run's one snap (-102 ms at 666 s) took back a +101 ms
+  marker move made just before it. The decoder drops its chain at such a marker
+  (900 ms or more) or candidate (`sync_detector_get_phase_resets`). With no marker and no
+  candidate nothing shows it (test_sync_phase_track "no candidates": 312 symbols off for 5 min,
+  no time of day wrong).
+- **The snap assumes edges only move early.** An early tick cluster within 60 s of support is
+  taken as the loss. A false early cluster (6+ ticks within 15 ms over 30 s, 4 times the
+  background) would move a right phase; the real edges then show a late cluster and sync drops
+  to RECOVERING. A late false burst is tested (RECOVERING, no wrong output); an early one is
+  not.
+- **The decoder's chain tolerance is inclusive at 1000 ms** (`fabsf(d - n * MINUTE_MS) <=
+  CHAIN_TOLERANCE_MS`), so a frame whose phase is exactly a whole second off chains. The phase-
+  reset count covers the marker and candidate cases; the tolerance is unchanged.
+- **Date DECODED wrong rose on seg2**: before, 0 right of 3 decoded; after, 9 right of 19, 10
+  wrong. All DECODED (unverified); FALSE CONFIRM 0. Not traced per frame.
 - `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
   (recovery re-locks on a marker on the held phase alone).
 - **Stream times are `float` milliseconds** through sync, the correlator and the decoder. The step
