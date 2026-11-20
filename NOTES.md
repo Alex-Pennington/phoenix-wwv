@@ -51,6 +51,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **A marker-detector run shorter than `min_duration_ms` still takes the 30 s cooldown.** A
   short in-band blip in the seconds before :00 would hide that minute's marker, as the voice
   runs did before the purity test. Not seen on air.
+  - **Seen on air, and fixed (fix/wwv-marker-rate, 2026-11-20):** kiwi agc 11:43's marker was
+    hidden by the cooldown of a 138 ms window run 28 s earlier. A short run now takes no
+    cooldown and is printed (`MARKER short run`); kiwi agc finds 10 markers, was 9.
 - **The tick-path marker edge is taken from the trailing edge when a run is more than 40 ms off
   a clean marker's length.** That assumes the end is right. On air it is (runs of 614-763 and
   983 ms ended +814..+828 ms after :00). A marker that fades out before 800 ms would get an early

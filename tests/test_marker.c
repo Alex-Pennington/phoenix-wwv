@@ -12,6 +12,9 @@
  *    after each burst must still be found.
  * 4. Weak marker: a marker 1.1x the weakest this detector finds in band noise
  *    (amplitude 0.11 at noise 0.1; 0.105 is not detected) must still count.
+ * 5. Short run: a 1000 ms in-band blip that ends 13 s before each marker and
+ *    lifts the window sum just over the threshold (a 343 ms window run) must not
+ *    hide the marker. Fails before the short run stopped taking the cooldown.
  * Cases 3 and 4 run white noise through the sync channel filter, as on air.
  */
 #include <stdio.h>
@@ -20,6 +23,7 @@
 #include "channel_filters.h"
 
 #define FS 50000.0
+#define BLIP_A 0.16   /* window run 343 ms, peak 3.44x baseline: a short run */
 
 static int n_ev; static float ev_start[32], ev_dur[32];
 static void on_marker(const marker_event_t *e, void *u) {
@@ -41,6 +45,25 @@ static void run(marker_detector_t *md, double seconds, double first_ms, double s
         double nz = ((r >> 8) / 16777216.0 - 0.5) * 0.02;
         double s = (a + bg) * sin(2 * M_PI * 1000 * t) + nz;
         double c = (a + bg) * cos(2 * M_PI * 1000 * t) + nz;
+        marker_detector_process_sample(md, (float)s, (float)c);
+    }
+}
+
+/* As run(), no step, plus a blip of amplitude blip_a and length blip_ms ending
+ * blip_before_ms before each marker. */
+static void run_blip(marker_detector_t *md, double seconds, double first_ms,
+                     double blip_before_ms, double blip_ms, double blip_a) {
+    unsigned r = 7;
+    for (long n = 0; n < (long)(seconds * FS); n++) {
+        double t = n / FS, tms = t * 1000.0;
+        double k = floor((tms - first_ms) / 60000.0), ph = tms - first_ms - k * 60000.0;
+        double a = (k >= 0 && ph >= 0 && ph < 800.0) ? 1.0 : 0.0;
+        double pb = ph - (60000.0 - blip_before_ms - blip_ms);
+        if (pb >= 0 && pb < blip_ms) a = blip_a;
+        r = r * 1103515245u + 12345u;
+        double nz = ((r >> 8) / 16777216.0 - 0.5) * 0.02;
+        double s = (a + 0.05) * sin(2 * M_PI * 1000 * t) + nz;
+        double c = (a + 0.05) * cos(2 * M_PI * 1000 * t) + nz;
         marker_detector_process_sample(md, (float)s, (float)c);
     }
 }
@@ -133,6 +156,19 @@ int main(void) {
     run_noise(md, 200.0, 20000.0, 0.12, 0.1, 0.0);
     hit = on_time(20000.0, &stray);
     printf("%-4s weak marker: %d of 3 found, %d stray\n", (hit == 3 && stray == 0) ? "ok" : "FAIL", hit, stray);
+    if (hit != 3 || stray != 0) fails++;
+    marker_detector_destroy(md);
+
+    /* 5. A short run does not hide the next marker: a 1000 ms blip that lifts
+     * the window sum just over the threshold (a window run of about 300 ms,
+     * under min_duration_ms) ends 13 s before each of the markers at 80 and
+     * 140 s. The 30 s cooldown it used to take hid both. */
+    md = marker_detector_create(NULL);
+    marker_detector_set_callback(md, on_marker, NULL);
+    n_ev = 0;
+    run_blip(md, 200.0, 20000.0, 13000.0, 1000.0, BLIP_A);
+    hit = on_time(20000.0, &stray);
+    printf("%-4s short run: %d of 3 markers found, %d stray\n", (hit == 3 && stray == 0) ? "ok" : "FAIL", hit, stray);
     if (hit != 3 || stray != 0) fails++;
     marker_detector_destroy(md);
 

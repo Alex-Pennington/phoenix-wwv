@@ -278,13 +278,16 @@ void marker_state_machine_run(marker_detector_t *md) {
                         md->callback(&event, md->callback_user_data);
                     }
                 } else if (!timed_out) {
-                    /* Too short. Logged because it takes the cooldown, which
-                     * hides any marker in the next 30 s. */
+                    /* Too short to be a marker, so no cooldown: like a purity
+                     * rejection, it must not hide the marker that follows. A
+                     * blip 13 s before :00 took the 30 s cooldown and hid the
+                     * kiwi agc 11:43 marker. */
                     printf("[%7.1fs] MARKER short run: window run %.0fms < %.0fms, start=%.1fms "
-                           "peak/baseline %.2f, cooldown %.0fs\n",
+                           "peak/baseline %.2f\n",
                            frame * FRAME_DURATION_MS / 1000.0f, duration_ms, md->min_duration_ms,
-                           pulse_start_ms, md->marker_peak_energy / md->baseline_energy,
-                           MARKER_COOLDOWN_MS / 1000.0f);
+                           pulse_start_ms, md->marker_peak_energy / md->baseline_energy);
+                    md->state = STATE_IDLE;
+                    break;
                 } else {
                     printf("[%7.1fs] MARKER timed out after %.0fms - resetting baseline\n",
                            frame * FRAME_DURATION_MS / 1000.0f, duration_ms);
