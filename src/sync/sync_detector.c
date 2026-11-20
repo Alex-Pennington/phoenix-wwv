@@ -122,6 +122,14 @@
 /* A phase move at least this large is a break: windows and frames that span it
  * are discarded (sync_detector_get_phase_epoch). Slews stay below it. */
 #define PHASE_BREAK_MS               100.0f
+/* A marker move at least this large, or a candidate whole seconds off, says
+ * the held phase was a whole second off for an unknown time: frames already
+ * decoded may hold every symbol in the wrong second, and such a frame can pass
+ * the decoder's marker check. The decoder drops its chain
+ * (sync_detector_get_phase_resets). Sub-second errors are left to its checks:
+ * on run90g seg2, dropping the chain at 500 ms moves and at every lost phase
+ * ended decoding at 14:41 (14:49 without). */
+#define PHASE_WRONG_MS               900.0f
 /* A candidate within this of a whole number of seconds (1..5) off the held
  * phase says the held phase is a whole number of seconds off */
 #define CANDIDATE_SECOND_TOL_MS      60.0f
@@ -216,6 +224,7 @@ struct sync_detector {
     int edge_head, edge_count;
     float last_phase_eval_ms;
     int phase_epoch;
+    int phase_resets;               /* the phase was found wrong: see sync_detector_get_phase_resets */
     float phase_support_ms;         /* last time the held phase had edge or marker support */
     sync_phase_stats_t phase_stats;
 
@@ -312,6 +321,7 @@ static void note_phase_move(sync_detector_t *sd, float old_ms, float new_ms, con
     if (fabsf(d) < PHASE_BREAK_MS) return;
     sd->phase_epoch++;
     sd->phase_stats.breaks++;
+    if (fabsf(d) >= PHASE_WRONG_MS) sd->phase_resets++;
     printf("[SYNC] Phase break #%d (%s): held phase moved %+.0f ms\n", sd->phase_epoch, why, d);
 }
 
@@ -755,6 +765,7 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
                     char why[64];
                     snprintf(why, sizeof why, "candidate %s %+.0f s off", source, k);
                     sd->phase_stats.candidate_seconds++;
+                    sd->phase_resets++;
                     enter_phase_unknown(sd, leads[i], why);
                     return;
                 }
@@ -967,6 +978,10 @@ void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edg
     if (timestamp_ms - sd->last_phase_eval_ms < PHASE_EVAL_MS) return;
     sd->last_phase_eval_ms = timestamp_ms;
     track_phase(sd, timestamp_ms);
+}
+
+int sync_detector_get_phase_resets(sync_detector_t *sd) {
+    return sd ? sd->phase_resets : 0;
 }
 
 int sync_detector_get_phase_epoch(sync_detector_t *sd) {

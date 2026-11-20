@@ -61,6 +61,7 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->window_anchor_ms = anchor_ms;
     corr->window_partial = false;
     corr->window_epoch = corr->sync_source ? sync_detector_get_phase_epoch(corr->sync_source) : 0;
+    corr->window_resets = corr->sync_source ? sync_detector_get_phase_resets(corr->sync_source) : 0;
 
     /* Reset accumulators */
     corr->time_energy_sum = 0.0f;
@@ -238,7 +239,8 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .minute_start_ms = corr->window_anchor_ms +
                                60000.0f * (float)((corr->window_index - corr->current_second) / 60),
             .pulse_offset_ms = pulse_offset_ms,
-            .phase_epoch = corr->window_epoch
+            .phase_epoch = corr->window_epoch,
+            .phase_resets = corr->window_resets
         };
         corr->callback(&event, corr->callback_user_data);
     }

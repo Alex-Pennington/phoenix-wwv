@@ -75,6 +75,7 @@ struct bcd_correlator {
     int late_events;                /* events for a window already emitted */
     int silent_windows;             /* windows emitted as NONE: locked, no event */
     int window_epoch;               /* sync phase epoch the window was opened in */
+    int window_resets;              /* sync phase resets when it was opened */
     int broken_windows;             /* windows discarded: the phase broke inside them */
 
     /* Energy accumulation for current window */

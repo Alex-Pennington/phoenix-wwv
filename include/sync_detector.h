@@ -119,6 +119,14 @@ void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edg
  */
 int sync_detector_get_phase_epoch(sync_detector_t *sd);
 
+/**
+ * Phase resets: incremented when a marker moves the held phase by 900 ms or
+ * more, or a candidate lands whole seconds off it: the phase was a whole second
+ * off for an unknown time before that. The time decoder drops its chain when
+ * the count changes.
+ */
+int sync_detector_get_phase_resets(sync_detector_t *sd);
+
 /** Counts of what the phase tracker did */
 sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd);
 
