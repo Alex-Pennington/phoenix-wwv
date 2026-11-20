@@ -115,8 +115,18 @@ only mixes the carrier at `-s` Hz to DC, and `wwv_live` uses the PHXI centre fre
 - **Gain** is per band, in `scripts/wwv_bands.py`. 2.5, 5, 10 and 15 MHz use LNA state 2 and
   IFGR 59. That is the 5 MHz setting of the scored capture, and 10 MHz was tested with it.
   20 and 25 MHz use LNA 1 and IFGR 59, because their band noise and broadcasting are lower.
-  The values other than 5 and 10 MHz are starting points; the scan's ADC columns say whether
-  they hold. `--gain KHZ:LNA:IFGR` (repeatable) overrides a band in the scan and in the live
+  15 MHz was checked on WWV on 2026-11-20 at 13:03-13:06 UTC:
+
+  | LNA | C/N0       | peak       | score |
+  |-----|------------|------------|-------|
+  | 0   | 64.1 dB-Hz | -10.6 dBFS | 100%  |
+  | 2   | 64-65 dB-Hz | -24 dBFS  | 100%  |
+  | 4   | 52.4 dB-Hz | -32.6 dBFS | 8%    |
+
+  So LNA 2 loses nothing against LNA 0 and keeps 14 dB more headroom, while LNA 4 is
+  receiver-noise limited. 2.5, 20 and 25 MHz are still starting points, because no WWV signal
+  was seen on them. 20 MHz peaks at -6 to -10 dBFS at LNA 1 with no carrier, the most of any
+  band, and has not clipped. The scan's ADC columns say whether the values hold. `--gain KHZ:LNA:IFGR` (repeatable) overrides a band in the scan and in the live
   run, and `--lna` / `--ifgr` override the live band.
 
 ### Band scan
@@ -229,6 +239,11 @@ the names given. Segment K writes them with `.segK` before the extension: `run.l
 `run.seg2.log`, and `PREFIX` becomes `PREFIX.seg2`. `--secs` counts from the first live start,
 so re-scans count toward it. `--carrier-hz`, `--lna` and `--ifgr` hold for the first band only.
 
+**On the radio, 2026-11-20 12:53-13:03 UTC** (`--lock-mins 3 --secs 300`): the scan chose
+5 MHz at 48%. It reached TENTATIVE with one marker, and at 3 minutes the wrapper logged
+`SWITCH`. The re-scan, avoiding 5 MHz, found 15 MHz at 100% (it had no carrier at 12:55)
+and logged `SWITCH: 5000 kHz -> 15000 kHz`. `--secs` ran out during that re-scan.
+
 **Why 8 minutes.** Time to the first LOCKED on 5 MHz:
 
 | Run                | Start (UTC) | First LOCKED |
@@ -242,3 +257,11 @@ run90c then held lock for 83 minutes. A 5-minute limit would have switched away 
 Lock needs two minute markers, so it comes just after a minute boundary; 8 minutes covers
 the slowest observed first lock, with one more marker to spare. run90's re-acquisitions after
 losing lock took 2.5-15.5 min, but the switch does not act once a band has locked.
+
+On 2026-11-20, 5-minute live runs did not lock on a good band either:
+- 5 MHz from 12:48, scoring 70%;
+- 15 MHz from 13:07, scoring 100%.
+
+Each reached TENTATIVE and caught two markers 2-3 minutes apart, missing the ones between.
+A tick score shows the band carries ticks, but lock waits on the minute markers. That is why
+the limit is not shorter.
