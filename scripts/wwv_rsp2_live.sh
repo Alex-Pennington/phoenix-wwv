@@ -55,7 +55,11 @@
 # same start), and stopped on every exit path (end, Ctrl-C, error): it stays disabled
 # except while recording. The last line printed is the service state after the stop.
 # The vendor service can crash on stop; the script then reports it and clears the
-# unit's failed state.
+# unit's failed state. A guard process in its own session covers the exit no trap
+# sees (SIGKILL, a session that dies with its shell): when this script is gone and
+# its cleanup did not run, the guard stops the processes it started (by the PIDs
+# it recorded, never by process group, which the caller may share) and then the
+# unit, and appends what it did to this script's stderr.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -154,7 +158,39 @@ seg_extra() {
   done
 }
 
-SCPID=; SPID=; WPID=; RPID=; FIFODIR=
+SCPID=; SPID=; WPID=; RPID=; FIFODIR=; GUARD_PID=
+# note_pids: record the running children for the guard.
+note_pids() {
+  [ -n "$FIFODIR" ] && printf '%s\n' $SCPID $SPID $WPID $RPID > "$FIFODIR/pids.tmp" &&
+    mv -f "$FIFODIR/pids.tmp" "$FIFODIR/pids"
+  return 0
+}
+# start_guard: a watcher in a new session, so a signal to this script's process
+# group does not reach it. It does nothing while this script runs.
+start_guard() {
+  setsid bash -c '
+    me=$1; dir=$2; tag=$3
+    while kill -0 "$me" 2>/dev/null; do sleep 1; done
+    say() { echo "[$tag guard] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >&2; }
+    say "wwv_rsp2_live.sh ($me) exited without its cleanup; stopping what it started"
+    pids=()
+    for p in $(cat "$dir/pids" 2>/dev/null); do
+      # only a process of ours: the PID may have been reused
+      grep -qaE "rsp2_stream|wwv_live|wwv_band_scan|awk" "/proc/$p/cmdline" 2>/dev/null && pids+=("$p")
+    done
+    [ ${#pids[@]} -gt 0 ] && kill -TERM "${pids[@]}" 2>/dev/null
+    for _ in $(seq 100); do
+      alive=0; for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+      [ $alive = 0 ] && break; sleep 0.1
+    done
+    for p in "${pids[@]}"; do kill -KILL "$p" 2>/dev/null; done
+    sudo -n systemctl stop sdrplay.service || say "ERROR: systemctl stop sdrplay.service failed"
+    if [ "$(systemctl is-active sdrplay.service)" = failed ]; then sudo -n systemctl reset-failed sdrplay.service; fi
+    /bin/rm -rf "$dir"
+    say "sdrplay.service: $(systemctl is-active sdrplay.service)"
+  ' wwv_rsp2_live_guard "$$" "$FIFODIR" "$SDRPLAY_TAG" < /dev/null >&2 &
+  GUARD_PID=$!
+}
 # gone PID TENTHS: true once PID has exited, polling every 0.1 s for TENTHS tenths.
 gone() {
   local i
@@ -206,6 +242,8 @@ cleanup() {
   stop_live
   [ -n "$FIFODIR" ] && /bin/rm -rf "$FIFODIR"
   sdrplay_stop
+  # the guard last: until here, a kill of this cleanup still leaves it to act
+  [ -n "$GUARD_PID" ] && { kill "$GUARD_PID" 2>/dev/null || true; }
   exit "$rc"
 }
 trap cleanup EXIT
@@ -213,6 +251,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 FIFODIR=$(mktemp -d)
+start_guard
 sdrplay_start
 
 SEG=1
@@ -225,6 +264,7 @@ scan() {
   say "scanning the WWV bands, $SCAN_SECS s each${1:+, avoiding $2 kHz}; figures in $sj"
   "$HERE/wwv_band_scan.sh" --no-service --secs "$SCAN_SECS" --json "$sj" "${GAINS[@]}" --ppm "$PPM" "$@" >&2 &
   SCPID=$!
+  note_pids
   local src=0
   while kill -0 "$SCPID" 2>/dev/null; do
     if past_end; then
@@ -288,6 +328,7 @@ while :; do
   seg_extra "$SEG"
   "$WWV_LIVE" "${WL_ARGS[@]}" "${SEG_EXTRA[@]}" < "$FIFODIR/iq" > "$FIFODIR/out" &
   WPID=$!
+  note_pids
 
   T_SEG=$SECONDS; LOCKED=; SWITCH=; REOPEN=; ENDED=
   while kill -0 "$WPID" 2>/dev/null; do
