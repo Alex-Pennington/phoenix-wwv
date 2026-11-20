@@ -155,7 +155,8 @@ moves:
 | 09:27 | 23.6 dB           | 11.5 dB            | 5 MHz   |
 
 In all three scans:
-- 2.5 MHz had a carrier (46-47 dB-Hz) but no ticks.
+- 2.5 MHz read 46-47 dB-Hz with no ticks and no sidebands. Each time its peak sat in exactly
+  the bin the scan mixes to. Whether that is a carrier or an artefact is not checked.
 - 15, 20 and 25 MHz had no carrier.
 - No band clipped or overloaded the ADC.
 
