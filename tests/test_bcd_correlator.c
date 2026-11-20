@@ -161,7 +161,9 @@ static void run_timed(void) {
     memset(t_sym, 0, sizeof t_sym);
     t_after_unlock = 0; t_unlock_ms = -1.0f;
     int next_s = 1;   /* next pulse second to deliver, counted from a */
-    for (float now = a + 3200.0f; now < a + 400000.0f; now += 10.0f) {
+    /* Markers stop after t_minute; sync holds the phase for its 20-minute
+     * holdover, then unlocks. Run past it. */
+    for (float now = a + 3200.0f; now < a + 1500000.0f; now += 10.0f) {
         while (next_s < 240) {
             int sec = next_s % 60;
             if (sec == 0 || (sec >= 5 && sec <= 8) || next_s >= 120) { next_s++; continue; }
@@ -186,7 +188,9 @@ static void run_timed(void) {
         else printf("     %s: second %d emitted %d time(s) as %c, want once as %c\n",
                     name, s, t_count[s], t_sym[s] ? t_sym[s] : '-', want);
     }
-    int pass = ok == 60 && t_unlock_ms > 0.0f && t_after_unlock == 0;
+    /* Held through 20 minutes with no marker, then unlocked */
+    int pass = ok == 60 && t_unlock_ms - (t_minute + 3.0f) >= 1200000.0f &&
+               t_after_unlock == 0;
     printf("%-4s %-50s %d/60 seconds once and right; unlock at %+.0f s; %d after unlock\n",
            pass ? "ok" : "FAIL", name, ok, (t_unlock_ms - t_minute) / 1000.0f, t_after_unlock);
     if (!pass) fails++;
