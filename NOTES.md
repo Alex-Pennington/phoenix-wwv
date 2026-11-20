@@ -51,6 +51,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **A marker-detector run shorter than `min_duration_ms` still takes the 30 s cooldown.** A
   short in-band blip in the seconds before :00 would hide that minute's marker, as the voice
   runs did before the purity test. Not seen on air.
+  - **Seen on air, and fixed (fix/wwv-marker-rate, 2026-11-20):** kiwi agc 11:43's marker was
+    hidden by the cooldown of a 138 ms window run 28 s earlier. A short run now takes no
+    cooldown and is printed (`MARKER short run`); kiwi agc finds 10 markers, was 9.
 - **The tick-path marker edge is taken from the trailing edge when a run is more than 40 ms off
   a clean marker's length.** That assumes the end is right. On air it is (runs of 614-763 and
   983 ms ended +814..+828 ms after :00). A marker that fades out before 800 ms would get an early
@@ -103,6 +106,26 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   RSP2 signal is not investigated.
 - **Tone tracker window (audit F3)** is still Hann, not the Blackman-Harris it had before 591d6ee.
   Not touched.
+- **The tick detector re-triggers on noise about every 530 ms on a weak night** (run90 console:
+  1798 TICK intervals of 512-650 ms). Its threshold, twice a floor that falls
+  fast and rises slowly, sits inside the noise; a 5 ms crossing that fails the correlation test
+  is dropped without a log line but still takes the 500 ms cooldown. This is what starts the
+  minute marker's run late (fix/wwv-marker-rate: 99 of 268 live minutes). Not fixed in the
+  detector, where it moves every tick metric; the sync detector now recovers those markers from
+  their end (marker candidates). Giving a dropped run no cooldown is the detector-side fix to
+  measure next.
+- **The tick-path floor reset fires on every late-started marker.** Its run lands in the 50-600 ms
+  gap zone, and `tick_state_reset_floor()` takes the marker's mean energy as the new floor (run90:
+  66 resets, the floor rising 1.6-13.8 times). Ticks in the seconds after :00 then need that much more
+  energy until the floor decays (about 3.5 s for a factor 4). The tick loss it causes is not
+  measured.
+- **The tick timing gate is never enabled in the chain.** `tick_detector_set_gate_enabled()` has
+  no caller; the manager sets only the epoch. All four captures ran with the gate off.
+- **Two marker-detector misses on the captures are near misses**: saga agc 12:12 and 12:18 peaked
+  at 2.74 and 2.83 times baseline against the 3.0 threshold, with no run at all. A second,
+  lower threshold reported only as a candidate (phase-gated by sync, like the short runs) would
+  take them. Not done: the live share of no-run minutes is unknown until a run logs the `MARKER
+  block peak` lines.
 
 ## Sync and correlator
 
@@ -146,6 +169,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   output formats coexist (audit F2).
 - `marker_event_t.accumulated_energy` / `peak_energy` carry swapped quantities since 7e7805e. The
   only reader logs them.
+- **The confidence decay is per periodic check, and the check runs every 50 ms, not 100 ms.**
+  `CONFIDENCE_DECAY_NORMAL` 0.9999 is commented as 6% per minute; at 50 ms it is 11.3%. LOCKED
+  (0.70) therefore needs three markers close together: three consecutive minutes reach 0.73, a
+  missed minute before the second 0.71, but a missed minute between the second and the third
+  only 0.69, and the fourth marker is needed.
+- **Acquisition now takes the first marker plus two minutes in every replay** (run90, run90c,
+  smoke, live15: LOCKED 118-120 s after TENTATIVE). A candidate never starts a phase, so the
+  minute before the first marker is lost even when it holds a late-started marker on the phase
+  the marker then sets (run90 00:31, live15 13:08). Keeping recent candidates and applying them
+  when the first marker arrives would save a minute there; not done.
 
 ## Time decoder (`src/decode/wwv_time_decoder.c`)
 
@@ -274,6 +307,17 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   half the pulse amplitude (`BCD_TIME_EDGE_FRACTION`, `BCD_TIME_LEVEL_ALPHA`,
   `BCD_TIME_LEVEL_HOLD_MS` in `include/bcd_time_detector.h`), and a segment rejected as too short
   takes no cooldown. The median width of a 0 is 36-67 ms shorter than before (184-189 ms against 220-251 ms).
+- **Marker candidates (fix/wwv-marker-rate).** `tick_marker_candidate_t`,
+  `tick_detector_set_candidate_callback()` and `TICK_CANDIDATE_MIN_MS` (`include/tick_detector.h`);
+  `marker_detector_set_candidate_callback()`; `sync_detector_marker_candidate()`; the observer
+  gained `on_tick_marker_candidate` and `on_marker_candidate` (a host that fills the observer
+  positionally must add them); chain-log lines `CANDT start= end= lead_s= lead_e=` and `CANDM t=
+  dur= lead=`. `replay_events` takes an optional console file and rebuilds the tick-path
+  candidates from its `REJECTED: dur=` lines when the log has no `CANDT` lines.
+- **Console lines changed**: the tick gap-zone `REJECTED` line gained `start= end= idle=
+  prev_end=`; the marker detector prints `MARKER short run` (with flank and `(candidate)`) and,
+  every 10 s, `MARKER block peak`; `MINUTE MARKER` gained `peak/baseline`. A marker-detector
+  short run takes no cooldown.
 
 ## Live host (`apps/wwv_live.c`, `scripts/wwv_rsp2_live.sh`)
 
@@ -306,6 +350,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - The tone trackers send no telemetry; wwv_live runs them only for the manager's display path.
 - `marker_correlator` and `tick_correlator` are disabled in both hosts; the tick correlator is
   created by the manager when enabled but never fed (it needs tick-detector internals).
+- **A stream timeout loses samples and nothing records it in the chain log.** run90d's RSP2
+  timeout (console `[rsp2_stream] timeout #1`, about stream 1077 s) lost about 1.1 s: every marker
+  after it reads -1.1 s from UTC. The sync detector followed through the +-5 s interval rule
+  (see Sync and correlator). `tests/air/marker_minutes.py --step 1077000:-1115` scores that run.
+- **`~/wwv-capture/score.py` matches chain-log lines by the prefix `TMARK`**, so any new line
+  starting with it crashes the air scoring. The candidate lines are `CANDT` and `CANDM` for that
+  reason.
 
 ## Documentation
 

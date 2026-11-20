@@ -99,6 +99,32 @@ void wwv_routing_on_marker_event(const marker_event_t *event, void *user_data) {
 }
 
 /*============================================================================
+ * Marker Candidate Routing
+ *============================================================================*/
+
+/* Runs a detector rejected as markers that may be markers. Only the sync
+ * detector sees them: it accepts one only on the minute phase it already holds.
+ * They do not set the tick detector's epoch and reach no external callback. */
+void wwv_routing_on_tick_marker_candidate(const tick_marker_candidate_t *c, void *user_data) {
+    wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
+
+    if (mgr->observer.on_tick_marker_candidate)
+        mgr->observer.on_tick_marker_candidate(c, mgr->observer.user);
+    if (mgr->sync_detector)
+        sync_detector_marker_candidate(mgr->sync_detector, c->lead_from_start_ms,
+                                       c->lead_from_end_ms, "CANDT");
+}
+
+void wwv_routing_on_marker_candidate(const marker_event_t *event, void *user_data) {
+    wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
+
+    if (mgr->observer.on_marker_candidate) mgr->observer.on_marker_candidate(event, mgr->observer.user);
+    if (mgr->sync_detector)
+        sync_detector_marker_candidate(mgr->sync_detector, event->start_timestamp_ms,
+                                       event->start_timestamp_ms, "CANDM");
+}
+
+/*============================================================================
  * Slow Marker Frame Routing
  *============================================================================*/
 

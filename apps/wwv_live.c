@@ -174,6 +174,12 @@ static void obs_marker(const marker_event_t *e, void *u) {
     fmt_utc(A.utc0 + e->start_timestamp_ms / 1000.0, t, sizeof t, 3);
     printf("MARKER   lead %s (stream %.1f ms) dur %.0f ms\n", t, e->start_timestamp_ms, e->duration_ms);
 }
+static void obs_tick_marker_candidate(const tick_marker_candidate_t *c, void *u) {
+    (void)u; if (A.log) A.log_obs.on_tick_marker_candidate(c, A.log_obs.user);
+}
+static void obs_marker_candidate(const marker_event_t *e, void *u) {
+    (void)u; if (A.log) A.log_obs.on_marker_candidate(e, A.log_obs.user);
+}
 static void obs_bt(const bcd_time_event_t *e, void *u) {
     (void)u; if (A.log) A.log_obs.on_bcd_time(e, A.log_obs.user);
     A.frame_pulse = e->duration_ms;
@@ -645,6 +651,7 @@ int main(int argc, char **argv) {
     }
     const wwv_detector_observer_t obs = {
         .on_tick = obs_tick, .on_tick_marker = obs_tick_marker, .on_marker = obs_marker,
+        .on_tick_marker_candidate = obs_tick_marker_candidate, .on_marker_candidate = obs_marker_candidate,
         .on_bcd_time = obs_bt, .on_bcd_time_routed = obs_bt_routed,
         .on_bcd_freq = obs_bf, .on_bcd_freq_routed = obs_bf_routed,
         .on_symbol = obs_symbol, .on_time = obs_time, .on_sync_state = obs_sync };

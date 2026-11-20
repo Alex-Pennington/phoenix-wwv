@@ -83,6 +83,26 @@ typedef struct {
 
 typedef void (*tick_marker_callback_fn)(const tick_marker_event_t *event, void *user_data);
 
+/* A rejected run that may be a minute marker whose start or end was lost: a run
+ * too long for a tick and too short for a marker (at least
+ * TICK_CANDIDATE_MIN_MS), or a marker-length run inside the 55 s marker interval.
+ * The commonest is a marker whose start was hidden by the 500 ms cooldown after a
+ * noise run just before :00: it ends on time and starts late. The detector does
+ * not know the minute, so it gives both readings of the leading edge; only the
+ * sync detector, holding a minute phase, can tell whether either is on it. */
+#define TICK_CANDIDATE_MIN_MS      100.0f
+
+typedef struct {
+    float start_ms;             /* Run start (first frame above threshold_high) */
+    float end_ms;               /* Run end (first frame below threshold_low) */
+    float lead_from_start_ms;   /* From the run's start, as a TMARK of clean length: right
+                                   if the end was cut short */
+    float lead_from_end_ms;     /* end_ms less a clean marker run and the filter delay:
+                                   right if the start was hidden */
+} tick_marker_candidate_t;
+
+typedef void (*tick_marker_candidate_fn)(const tick_marker_candidate_t *c, void *user_data);
+
 /*============================================================================
  * Public API
  *============================================================================*/
@@ -114,6 +134,12 @@ void tick_detector_set_callback(tick_detector_t *td, tick_callback_fn callback, 
  * @param user_data Passed to callback
  */
 void tick_detector_set_marker_callback(tick_detector_t *td, tick_marker_callback_fn callback, void *user_data);
+
+/**
+ * Set callback for marker candidates (tick_marker_candidate_t). They are not
+ * markers and are not counted as such.
+ */
+void tick_detector_set_candidate_callback(tick_detector_t *td, tick_marker_candidate_fn callback, void *user_data);
 
 /**
  * Feed I/Q samples to detector

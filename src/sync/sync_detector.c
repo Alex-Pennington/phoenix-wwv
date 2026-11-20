@@ -50,6 +50,23 @@
 #define SYNC_HOLDOVER_MS             (20.0f * 60000.0f)
 #define SYNC_RETENTION_WINDOW_MS     (60.0f * 60000.0f)
 
+/* Marker candidates (sync_detector_marker_candidate). A candidate is a run a
+ * detector rejected as a marker but that may be one: on the tick path, a marker
+ * whose start was hidden by the cooldown after a noise run just before :00 (live,
+ * 99 of 268 minutes; it ends on time, +812..+826 ms on the captures); in the
+ * marker detector, a window run too short to count. It confirms a minute phase
+ * already held from a marker when either of its leading-edge readings lands
+ * within CANDIDATE_TOLERANCE_MS of a whole number of minutes from the anchor. It
+ * never creates or moves a phase: the confirmed time is the held phase, not the
+ * candidate's. The tolerance covers a marker-detector anchor (-66..+109 ms of
+ * :00 on the captures) against a tick-path end (+-10 ms). Candidates off :00
+ * come at 1.1 a minute on the captures (45 in 42 minutes, the :52.5 voice among
+ * them), so with two readings a random one lands within the tolerance in about
+ * 1 minute in 90. It then confirms the phase held, which matters only if that
+ * phase is wrong, and a wrong phase still needs a second such coincidence (or a
+ * real marker on it) to lock. */
+#define CANDIDATE_TOLERANCE_MS       150.0f
+
 /* Evidence weights */
 #define WEIGHT_TICK                  0.05f
 #define WEIGHT_MARKER                0.40f
@@ -112,6 +129,7 @@ struct sync_detector {
     float last_confirmed_ms;
     float prev_confirmed_ms;
     float last_rejected_ms;         /* Most recent rejected marker, 0 = none */
+    bool last_confirm_weak;         /* The last confirmation was a candidate's */
     int confirmed_count;
     int good_intervals;
 
@@ -209,6 +227,21 @@ static void log_confirmed_marker(sync_detector_t *sd, float timestamp_ms,
 }
 
 static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_ms, const char *source) {
+    /* The marker of a minute a candidate already confirmed: it is measured, the
+     * candidate's time was the held phase, so take its time; count it once. */
+    if (sd->last_confirm_weak && sd->last_confirmed_ms > 0 &&
+        fabsf(marker_time - sd->last_confirmed_ms) < CORRELATION_WINDOW_MS) {
+        printf("[SYNC] Marker (%s) of the minute a candidate confirmed: anchor %.1fms -> %.1fms\n",
+               source, sd->last_confirmed_ms, marker_time);
+        sd->last_confirmed_ms = marker_time;
+        sd->minute_anchor_ms = marker_time;
+        sd->last_confirm_weak = false;
+        sd->tick_pending = false;
+        sd->marker_pending = false;
+        return;
+    }
+    sd->last_confirm_weak = false;
+
     /* Calculate interval from previous marker */
     float interval_ms = (sd->last_confirmed_ms > 0) ?
         (marker_time - sd->last_confirmed_ms) : 0.0f;
@@ -564,6 +597,43 @@ void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
 
     /* Try to correlate with pending tick marker */
     try_correlate(sd, timestamp_ms);
+}
+
+void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float lead_b_ms,
+                                    const char *source) {
+    if (!sd) return;
+    /* No phase to test it against: a candidate never starts one */
+    if (sd->state == SYNC_ACQUIRING || sd->minute_anchor_ms <= 0.0f) return;
+    /* A detector already reported this minute's marker; it decides */
+    if (sd->tick_pending || sd->marker_pending) return;
+
+    const float leads[2] = { lead_a_ms, lead_b_ms };
+    float best_off = 0.0f, predicted = 0.0f;
+    bool on_phase = false;
+    for (int i = 0; i < 2; i++) {
+        float since = leads[i] - sd->minute_anchor_ms;
+        float n = roundf(since / MARKER_NOMINAL_MS);
+        float off = since - n * MARKER_NOMINAL_MS;
+        if (n >= 1.0f && fabsf(off) <= CANDIDATE_TOLERANCE_MS &&
+            (!on_phase || fabsf(off) < fabsf(best_off))) {
+            on_phase = true;
+            best_off = off;
+            predicted = sd->minute_anchor_ms + n * MARKER_NOMINAL_MS;
+        }
+    }
+    if (!on_phase) {
+        printf("[SYNC] Candidate (%s) off the held phase: leads %.1fms / %.1fms\n",
+               source, lead_a_ms, lead_b_ms);
+        return;
+    }
+    /* This minute is already confirmed */
+    if (sd->last_confirmed_ms > 0.0f && fabsf(predicted - sd->last_confirmed_ms) < MARKER_INTERVAL_MIN_MS)
+        return;
+
+    printf("[SYNC] Candidate (%s) on the held phase, %+.0fms: confirms %.1fms\n",
+           source, best_off, predicted);
+    confirm_marker(sd, predicted, best_off, source);
+    if (sd->last_confirmed_ms == predicted) sd->last_confirm_weak = true;
 }
 
 sync_state_t sync_detector_get_state(sync_detector_t *sd) {

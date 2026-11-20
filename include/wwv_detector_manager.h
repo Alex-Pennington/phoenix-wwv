@@ -142,6 +142,8 @@ typedef struct {
     void (*on_tick)(const tick_event_t *e, void *user);
     void (*on_tick_marker)(const tick_marker_event_t *e, void *user);
     void (*on_marker)(const marker_event_t *e, void *user);
+    void (*on_tick_marker_candidate)(const tick_marker_candidate_t *c, void *user);
+    void (*on_marker_candidate)(const marker_event_t *e, void *user);
     void (*on_bcd_time)(const bcd_time_event_t *e, void *user);
     void (*on_bcd_time_routed)(const bcd_time_event_t *e, void *user);
     void (*on_bcd_freq)(const bcd_freq_event_t *e, void *user);

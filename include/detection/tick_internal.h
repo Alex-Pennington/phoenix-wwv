@@ -139,6 +139,8 @@ struct tick_detector {
     float tick_energy_sum;      /* Sum of energy over the current above-threshold run */
     int tick_duration_frames;
     int cooldown_frames;
+    uint64_t idle_since_frame;  /* First IDLE frame after the last cooldown (logging) */
+    uint64_t last_run_end_frame; /* End of the last run, any outcome (logging) */
 
     /* Statistics */
     int ticks_detected;
@@ -172,6 +174,10 @@ struct tick_detector {
     /* Marker callback */
     tick_marker_callback_fn marker_callback;
     void *marker_callback_user_data;
+
+    /* Marker candidate callback */
+    tick_marker_candidate_fn candidate_callback;
+    void *candidate_callback_user_data;
 
     /* Logging */
     FILE *csv_file;

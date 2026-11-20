@@ -86,9 +86,11 @@ bool wwv_detector_lifecycle_create_all(wwv_detector_manager_t *mgr,
     if (mgr->tick_detector) {
         tick_detector_set_callback(mgr->tick_detector, wwv_routing_on_tick_event, mgr);
         tick_detector_set_marker_callback(mgr->tick_detector, wwv_routing_on_tick_marker_event, mgr);
+        tick_detector_set_candidate_callback(mgr->tick_detector, wwv_routing_on_tick_marker_candidate, mgr);
     }
     if (mgr->marker_detector) {
         marker_detector_set_callback(mgr->marker_detector, wwv_routing_on_marker_event, mgr);
+        marker_detector_set_candidate_callback(mgr->marker_detector, wwv_routing_on_marker_candidate, mgr);
     }
     if (mgr->bcd_time) bcd_time_detector_set_callback(mgr->bcd_time, wwv_routing_on_bcd_time_event, mgr);
     if (mgr->bcd_freq) bcd_freq_detector_set_callback(mgr->bcd_freq, wwv_routing_on_bcd_freq_event, mgr);

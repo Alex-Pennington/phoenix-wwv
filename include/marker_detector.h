@@ -92,6 +92,16 @@ void marker_detector_destroy(marker_detector_t *md);
 void marker_detector_set_callback(marker_detector_t *md, marker_callback_fn callback, void *user_data);
 
 /**
+ * Set callback for marker candidates: window runs too short to count as a
+ * marker (under min_duration_ms) that pass the tone-purity test. A weak marker
+ * clears the threshold only briefly; its run's midpoint still places the pulse.
+ * The detector does not know the minute, so it cannot tell such a marker from a
+ * blip; only the sync detector, holding a minute phase, can. Not counted as
+ * markers. The event's start_timestamp_ms is the leading-edge estimate.
+ */
+void marker_detector_set_candidate_callback(marker_detector_t *md, marker_callback_fn callback, void *user_data);
+
+/**
  * Feed I/Q samples to detector
  * @return true if a marker was detected this sample
  */

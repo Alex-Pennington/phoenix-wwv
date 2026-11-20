@@ -103,6 +103,8 @@ void wwv_routing_on_tick_marker_event(const tick_marker_event_t *event, void *us
 
 /** Marker detector: sync detector (leading edge), marker correlator, external callback */
 void wwv_routing_on_marker_event(const marker_event_t *event, void *user_data);
+void wwv_routing_on_tick_marker_candidate(const tick_marker_candidate_t *c, void *user_data);
+void wwv_routing_on_marker_candidate(const marker_event_t *event, void *user_data);
 
 /** Slow marker frames: marker correlator, for verification */
 void wwv_routing_on_slow_marker_frame(const slow_marker_frame_t *frame, void *user_data);

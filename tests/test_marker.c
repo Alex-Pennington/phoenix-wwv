@@ -8,10 +8,18 @@
  *    timing out and misses every later marker.
  * 3. Voice: broadband bursts (band noise, 200 ms on / 100 ms off for 4 s, from
  *    7.5 s before each marker, as the :52.5 announcement) strong enough to trip the
- *    1000 Hz window sum. None may count as a marker, and the real marker 3.5 s
- *    after each burst must still be found.
+ *    1000 Hz window sum. None may count as a marker or a candidate, and the real
+ *    marker 3.5 s after each burst must still be found.
  * 4. Weak marker: a marker 1.1x the weakest this detector finds in band noise
  *    (amplitude 0.11 at noise 0.1; 0.105 is not detected) must still count.
+ * 5. Short run: a 1000 ms in-band blip that ends 13 s before each marker and
+ *    lifts the window sum just over the threshold (a 343 ms window run) must not
+ *    hide the marker. Fails before the short run stopped taking the cooldown.
+ * 6. Weak marker candidates: markers at amplitude 0.10 in noise 0.10 are not
+ *    found as markers, but each gives a short run reported as a candidate within
+ *    30 ms of its leading edge. Case 3 also checks the voice bursts give none.
+ * 7. Voice short runs: weaker voice bursts (no markers) give short runs, which
+ *    fail the purity test and so give no candidate.
  * Cases 3 and 4 run white noise through the sync channel filter, as on air.
  */
 #include <stdio.h>
@@ -20,6 +28,7 @@
 #include "channel_filters.h"
 
 #define FS 50000.0
+#define BLIP_A 0.16   /* window run 343 ms, peak 3.44x baseline: a short run */
 
 static int n_ev; static float ev_start[32], ev_dur[32];
 static void on_marker(const marker_event_t *e, void *u) {
@@ -43,6 +52,32 @@ static void run(marker_detector_t *md, double seconds, double first_ms, double s
         double c = (a + bg) * cos(2 * M_PI * 1000 * t) + nz;
         marker_detector_process_sample(md, (float)s, (float)c);
     }
+}
+
+/* As run(), no step, plus a blip of amplitude blip_a and length blip_ms ending
+ * blip_before_ms before each marker. */
+static void run_blip(marker_detector_t *md, double seconds, double first_ms,
+                     double blip_before_ms, double blip_ms, double blip_a) {
+    unsigned r = 7;
+    for (long n = 0; n < (long)(seconds * FS); n++) {
+        double t = n / FS, tms = t * 1000.0;
+        double k = floor((tms - first_ms) / 60000.0), ph = tms - first_ms - k * 60000.0;
+        double a = (k >= 0 && ph >= 0 && ph < 800.0) ? 1.0 : 0.0;
+        double pb = ph - (60000.0 - blip_before_ms - blip_ms);
+        if (pb >= 0 && pb < blip_ms) a = blip_a;
+        r = r * 1103515245u + 12345u;
+        double nz = ((r >> 8) / 16777216.0 - 0.5) * 0.02;
+        double s = (a + 0.05) * sin(2 * M_PI * 1000 * t) + nz;
+        double c = (a + 0.05) * cos(2 * M_PI * 1000 * t) + nz;
+        marker_detector_process_sample(md, (float)s, (float)c);
+    }
+}
+
+static int n_cand; static float cand_start[32];
+static void on_candidate(const marker_event_t *e, void *u) {
+    (void)u;
+    if (n_cand < 32) cand_start[n_cand] = e->start_timestamp_ms;
+    n_cand++;
 }
 
 static unsigned nr = 12345;
@@ -115,15 +150,17 @@ int main(void) {
     if (late < 3) fails++;
     marker_detector_destroy(md);
 
-    /* 3. Voice bursts at 12.5, 72.5, 132.5, 192.5 s; markers at 20, 80, 140 s. */
+    /* 3. Voice bursts at 12.5, 72.5, 132.5, 192.5 s; markers at 20, 80, 140 s.
+     *    The bursts must give no marker candidate either (the purity test). */
     md = marker_detector_create(NULL);
     marker_detector_set_callback(md, on_marker, NULL);
-    n_ev = 0;
+    marker_detector_set_candidate_callback(md, on_candidate, NULL);
+    n_ev = 0; n_cand = 0;
     run_noise(md, 200.0, 20000.0, 0.3, 0.1, 0.6);
     int stray, hit = on_time(20000.0, &stray);
-    printf("%-4s voice: %d of 3 markers found, %d events on voice bursts\n",
-           (hit == 3 && stray == 0) ? "ok" : "FAIL", hit, stray);
-    if (hit != 3 || stray != 0) fails++;
+    printf("%-4s voice: %d of 3 markers found, %d events and %d candidates on voice bursts\n",
+           (hit == 3 && stray == 0 && n_cand == 0) ? "ok" : "FAIL", hit, stray, n_cand);
+    if (hit != 3 || stray != 0 || n_cand != 0) fails++;
     marker_detector_destroy(md);
 
     /* 4. Weak markers at 20, 80, 140 s. */
@@ -134,6 +171,50 @@ int main(void) {
     hit = on_time(20000.0, &stray);
     printf("%-4s weak marker: %d of 3 found, %d stray\n", (hit == 3 && stray == 0) ? "ok" : "FAIL", hit, stray);
     if (hit != 3 || stray != 0) fails++;
+    marker_detector_destroy(md);
+
+    /* 5. A short run does not hide the next marker: a 1000 ms blip that lifts
+     * the window sum just over the threshold (a window run of about 300 ms,
+     * under min_duration_ms) ends 13 s before each of the markers at 80 and
+     * 140 s. The 30 s cooldown it used to take hid both. */
+    md = marker_detector_create(NULL);
+    marker_detector_set_callback(md, on_marker, NULL);
+    n_ev = 0;
+    run_blip(md, 200.0, 20000.0, 13000.0, 1000.0, BLIP_A);
+    hit = on_time(20000.0, &stray);
+    printf("%-4s short run: %d of 3 markers found, %d stray\n", (hit == 3 && stray == 0) ? "ok" : "FAIL", hit, stray);
+    if (hit != 3 || stray != 0) fails++;
+    marker_detector_destroy(md);
+
+    /* 6. Weaker markers (amplitude 0.10, under the 0.105 case 4 says is not
+     * found) at 20 + 60k s: no marker, but each gives a short run whose
+     * midpoint places it, reported as a candidate. */
+    md = marker_detector_create(NULL);
+    marker_detector_set_callback(md, on_marker, NULL);
+    marker_detector_set_candidate_callback(md, on_candidate, NULL);
+    n_ev = 0; n_cand = 0;
+    run_noise(md, 380.0, 20000.0, 0.10, 0.1, 0.0);
+    int cand_ok = 0;
+    for (int i = 0; i < n_cand && i < 32; i++) {
+        double k = floor((cand_start[i] - 20000.0) / 60000.0 + 0.5);
+        if (fabs(cand_start[i] - 20000.0 - 60000.0 * k) <= 30.0) cand_ok++;
+    }
+    printf("%-4s weak marker candidates: %d of 6 within 30 ms, %d candidates, %d markers\n",
+           (cand_ok == 6 && n_cand == 6 && n_ev == 0) ? "ok" : "FAIL", cand_ok, n_cand, n_ev);
+    if (cand_ok != 6 || n_cand != 6 || n_ev != 0) fails++;
+    marker_detector_destroy(md);
+
+    /* 7. Voice alone, weaker (sigma 0.5): its bursts clear the window threshold
+     * only briefly, giving short runs at :52.5-:56 (7 in 380 s, flank/centre
+     * 0.97-1.11). They must give no candidate: a short run is a candidate only
+     * if it passes the purity test. */
+    md = marker_detector_create(NULL);
+    marker_detector_set_callback(md, on_marker, NULL);
+    marker_detector_set_candidate_callback(md, on_candidate, NULL);
+    n_ev = 0; n_cand = 0;
+    run_noise(md, 380.0, 20000.0, 0.0, 0.1, 0.5);
+    printf("%-4s voice short runs: %d candidates, %d markers\n", (n_cand == 0 && n_ev == 0) ? "ok" : "FAIL", n_cand, n_ev);
+    if (n_cand != 0 || n_ev != 0) fails++;
     marker_detector_destroy(md);
 
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
