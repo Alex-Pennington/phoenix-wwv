@@ -1,13 +1,15 @@
 """Stream raw CS16 I/Q from an SDRplay RSP2 (SoapySDR) to stdout, for wwv_live.
 
 Usage: python3 -I rsp2_stream.py [--wwv-khz 5000] [--offset-khz 100] [--rate 2000000]
-           [--lna 2] [--ifgr 59] [--antenna "Antenna A"] [--secs 0] [--record PREFIX]
+           [--lna N] [--ifgr N] [--gain KHZ:LNA:IFGR ...] [--antenna "Antenna A"]
+           [--secs 0] [--record PREFIX]
 
 The tuner is set to wwv - offset, so WWV sits at +offset Hz, away from DC and LO
 leakage (the RSP2's DC removal stays on). AGC is off; the gain is fixed by the LNA
 state (RFGR) and IF gain reduction (IFGR). Defaults are the settings of the scored
-saga capture (wwv-capture/saga/RESULTS-saga.md): antenna A, LNA state 2, IFGR 59,
-2 MS/s, tuner 4900 kHz for WWV 5000 kHz.
+saga capture (wwv-capture/saga/RESULTS-saga.md): antenna A, 2 MS/s, tuner 4900 kHz
+for WWV 5000 kHz. The gain defaults per band come from wwv_bands.GAIN (LNA 2 / IFGR 59
+at 5 MHz); --gain overrides a band's entry, and --lna / --ifgr override both.
 
 stdout carries interleaved int16 I/Q (native CS16, full scale 32767) and nothing
 else; messages go to stderr. --secs 0 streams until SIGINT/SIGTERM or until the
@@ -21,17 +23,26 @@ import os, sys, json, time, argparse, signal
 import numpy as np
 import SoapySDR
 from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CS16, SOAPY_SDR_OVERFLOW, SOAPY_SDR_TIMEOUT
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True   # no __pycache__ in the tree
+import wwv_bands
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--wwv-khz', type=float, default=5000.0)
 ap.add_argument('--offset-khz', type=float, default=100.0)
 ap.add_argument('--rate', type=float, default=2e6)
-ap.add_argument('--lna', type=int, default=2)
-ap.add_argument('--ifgr', type=int, default=59)
+ap.add_argument('--lna', type=int, default=None)
+ap.add_argument('--ifgr', type=int, default=None)
+ap.add_argument('--gain', action='append', default=[], metavar='KHZ:LNA:IFGR')
 ap.add_argument('--antenna', default='Antenna A')
 ap.add_argument('--secs', type=float, default=0.0)
 ap.add_argument('--record', default=None)
 a = ap.parse_args()
+_lna, _ifgr = wwv_bands.gain_for(a.wwv_khz, wwv_bands.parse_gain_overrides(a.gain))
+if a.lna is None:
+    a.lna = _lna
+if a.ifgr is None:
+    a.ifgr = _ifgr
 
 stop = False
 def _stop(sig, frm):
@@ -84,7 +95,7 @@ def readback():
         hw=dict(dev.getHardwareInfo()), driver=dev.getDriverKey(), hardware=dev.getHardwareKey())
 
 rb = readback()
-log('settings: ' + json.dumps({k: rb[k] for k in ('tuner_hz_readback', 'rate_readback', 'antenna', 'agc',
+log('settings: ' + json.dumps({k: rb[k] for k in ('wwv_hz', 'tuner_hz_readback', 'rate_readback', 'antenna', 'agc',
                                                   'lna_state', 'ifgr', 'bandwidth_readback')}))
 
 st = dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, [ch])
