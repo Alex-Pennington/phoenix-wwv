@@ -111,6 +111,7 @@ typedef struct {
     bool refining;              /* anchor still taking the lower envelope */
     double anchor_unix;         /* UTC of input sample 0 */
     double lag_min_ms, lag_max_ms;  /* arrival lag behind the anchor, this status interval */
+    double lag_said_ms;             /* minimum lag at the last LAG line */
     double utc0;                /* UTC of detector time 0 */
     uint64_t in_samples;
     double next_status_ms;
@@ -248,6 +249,8 @@ static void telem_tap(telem_channel_t ch, const char *line, void *u) {
  * Status line
  *============================================================================*/
 
+#define LAG_STEP_MS 250.0   /* a LAG line for each this much growth of the minimum lag */
+
 static void print_status(double stream_ms) {
     char t[40];
     fmt_utc(A.utc0 + stream_ms / 1000.0, t, sizeof t, 0);
@@ -274,13 +277,26 @@ static void print_status(double stream_ms) {
     } else {
         printf(" | UTC not decoded");
     }
+    bool lag_grew = false;
+    double lag_min = A.lag_min_ms;
     if (!A.opt.have_t0 && A.lag_max_ms >= A.lag_min_ms) {
         /* blocks arrive this long after their last sample's time on the anchored
          * counter; a minimum that grows means samples lost upstream or clock drift */
         printf(" | lag %+.0f..%+.0f ms", A.lag_min_ms, A.lag_max_ms);
+        lag_grew = !A.refining && A.lag_min_ms >= A.lag_said_ms + LAG_STEP_MS;
     }
     A.lag_min_ms = 1e30; A.lag_max_ms = -1e30;
     printf("\n");
+    if (lag_grew) {
+        /* Said once per LAG_STEP_MS of growth. The least-delayed block of the
+         * interval arrives this late, so samples are missing from the counter (lost
+         * before wwv_live) or the input is backed up; either way UTC read off the
+         * sample counter is late by about this much. rsp2_stream's "behind wall
+         * clock" line says which. */
+        printf("LAG      %s stream time is %+.0f ms behind the system clock (%+.0f since the last LAG line): "
+               "UTC from the sample counter is late by that\n", t + 11, lag_min, lag_min - A.lag_said_ms);
+        A.lag_said_ms = lag_min;
+    }
     fflush(stdout);
 }
 
