@@ -64,6 +64,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   "0.32ms Butterworth"). The sync filter's group delay at 1000 Hz is now 1.50 ms. The value
   (3.0 ms) was left alone: kiwi plain tick-path marker leading edges measure -1.8..+2.1 ms from
   :00.
+- **A third of the live run's seconds are mid-second detections.** Of the locked, non-erased
+  seconds the decoder saw, 30.4% (1381/4547) carried a pulse that starts more than 250 ms after
+  the second (23.1-35.4% per 10-minute block), against 0.7-12% on the four captures
+  (`tests/air/symbol_rates.py`). They carry no evidence, so they slow CONFIRMED as much as
+  erasures. Not traced.
 - **Saga plain ticks are 42.6% matched** (saga agc 59.9%, kiwi 75-76%). The limit on the weaker
   RSP2 signal is not investigated.
 - **Tone tracker window (audit F3)** is still Hann, not the Blackman-Harris it had before 591d6ee.
@@ -165,8 +170,20 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   0 -> 1 14.4%, 1 -> 0 15.0%, P -> 1 14.8%, P -> 0 6.1%; per 10-minute block 0 -> 1 10.7-21.4%,
   1 -> 0 7.3-23.8%, erase 4.1-18.5%, mid 23.1-35.4%. With the fixed 0.07 / 0.15 the simulation
   (5000 chains of 60 minutes) confirmed wrong in 0 chains at these rates, 12 at 1.5x and 41 at
-  2x, mostly status bits; the replay had 0. With the pessimistic rates raised from the chain's
-  evidence it is 0 at all three. The slow ctest now also runs 1x and 2x live.
+  2x, mostly status bits; the replay had 0. With 20% of minutes at twice the live rates it
+  confirmed wrong in 2 (LSW, DUT1). With the pessimistic rates raised from the chain's evidence
+  it is 0 in all four. The slow ctest now also runs 1x and 2x live.
+- **What the adaptive pessimistic rates cost.** Time of day CONFIRMED, median / p90 minutes
+  (never, of 5000): live rates with P -> 0, 60-minute chains, 24 / 33 on the fixed model, 28 /
+  38 now (27 / 37 with P -> 1 alone as the proxy). The slow gates (30 minutes): x2 air 18 / 24
+  (74) to 20 / 28 (256), x3 air 22 / >30 (568) to 28 / >30 (2013), xlive 23 (765) to 27
+  (1651). The x2 / x3 cases draw P -> 1 at 1.8 times p10, so the proxy reads p10 high there. At
+  the measured air rates nothing moves (11 / 13). The live replay: 2219 s to 3059 s.
+- **The simulator draws each symbol's error independently; the live run's are not quite.** A
+  sent 0 after a sent P reads 1 in 6.9% (14/203), after a 0 in 14.8%; a sent 1 after a P reads
+  0 in 6.4% against 17.5-18.1%. Per second of the minute the 0 -> 1 spread is 1.37 times
+  binomial, per frame 1.48. The gate's rates are pooled over contexts, so it is not optimistic on
+  that count, but runs of errors on one bit are only as frequent as chance makes them.
 - **A frame opens at stream time 0.0 when a run ends.** On saga plain the last symbol carries
   `minute_start_ms` 0 and the decoder emits a `BCDS,FRAME` and `BCDS,UTC` line for a frame starting
   at 0.0, which `decode_score.py` scores as 12:10 (all NONE). Not traced.
