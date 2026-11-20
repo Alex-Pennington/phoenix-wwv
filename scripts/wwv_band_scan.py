@@ -4,17 +4,19 @@ and stops sdrplay.service.
 Usage: python3 -I wwv_band_scan.py [--bands 2500,5000,10000,15000,20000,25000] [--secs 25]
            [--extend-secs 35] [--avoid KHZ ...] [--gain KHZ:LNA:IFGR ...] [--ppm 1.09]
            [--offset-khz 100] [--rate 2000000] [--antenna "Antenna A"] [--json FILE]
-           [--replay PREFIX:KHZ ...]
+           [--replay PREFIX:KHZ ...] [--keep-raw DIR]
 
 The device is opened once. For each band it is retuned (WWV at +offset, as rsp2_stream.py),
 set to the band's gain (wwv_bands.GAIN, or --gain), and read for --secs into memory; the
 band is measured before the next one is read. When the choice is close (below), the
 contending bands are read again for --extend-secs and scored on both reads together. The
 table goes to stdout, the last line is `BEST <kHz>` (or `BEST none`), and --json writes
-every figure, the per-second tick contrasts included. --replay measures recordings instead
-(PREFIX.cs16 and PREFIX.timelog.npy from rsp2_stream.py --record or rsp_record.py,
+every figure, the per-second tick and BCD contrasts included. --replay measures recordings
+instead (PREFIX.cs16 and PREFIX.timelog.npy from rsp2_stream.py --record or rsp_record.py,
 PREFIX.json for the gain) and opens no device; an extension reads the next --extend-secs
-of the recording.
+of the recording. --keep-raw DIR writes each band's reads, extension included, as
+DIR/scan_<UTC>_<kHz>.cs16/.timelog.npy/.json in that format (8 MB/s: 200 MB per band at
+25 s), so --replay PREFIX:KHZ with the same --secs measures them again.
 
 Measurements, after wwv-capture check_signal.py and saga/scripts/tick_contrast.py:
 - Carrier: the RF is mixed by offset + ppm*f, decimated to 25 kHz, and the strongest bin
@@ -30,6 +32,11 @@ Measurements, after wwv-capture check_signal.py and saga/scripts/tick_contrast.p
   the share of seconds over 10 dB. 1100-1300 Hz is folded the same way for the WWVH tick.
   Deviation: the envelope |IQ| is used, not check_signal's coherent real part, so a residual
   carrier offset cannot fade the demodulated audio within the measurement.
+- BCD: the 80-120 Hz energy of the same envelope (the 100 Hz time-code subcarrier), timed by
+  the tick fold peak when that fold is 6 dB or more. Every second but :00 carries the pulse
+  at full level from 30 ms to at least 230 ms and the low level after 830 ms. Per second,
+  the contrast is the mean energy in 60-200 ms over 850-980 ms; "bcd_fold" is the same
+  ratio over all seconds, and the table gives the median and p10 of the per-second values.
 - Timing: the system time of sample 0 is the least-delayed read (arrival - n/fs), the method
   of the scored saga capture. Host latency makes the fold peak late by a few ms; the tick
   window follows the peak, so the contrast does not depend on it.
@@ -37,21 +44,30 @@ Measurements, after wwv-capture check_signal.py and saga/scripts/tick_contrast.p
   events are counted when the overload-logging SoapySDRPlay3 build is loaded (it logs
   WWVCAP_OVERLOAD_*; wwv_band_scan.sh loads it when present); the stock module drops them.
 
-Score: the share of seconds whose tick contrast is over TICK_DB (10 dB), in percent. Where
-WWVH may dominate (a WWVH band, 2.5-15 MHz, whose 1200 Hz tick fold is at least 6 dB and
-within 3 dB of the 1000 Hz one) the contrast must clear TICK_DB + 6 dB instead. A band with
-ADC clipping or an API overload scores -1 and is never chosen. A score of USABLE_PCT or more
-is "usable". docs/WWV_LIVE.md gives the evidence for each threshold.
+Scores:
+- Tick score: the share of seconds whose tick contrast is over TICK_DB (10 dB), in percent.
+  Where WWVH may dominate (a WWVH band, 2.5-15 MHz, whose 1200 Hz tick fold is at least 6 dB
+  and within 3 dB of the 1000 Hz one) the contrast must clear TICK_DB + 6 dB instead. At
+  USABLE_PCT (40%) or more the band is tick-usable.
+- BCD score: the share of seconds whose BCD contrast is over BCD_DB (10 dB). At
+  BCD_USABLE_PCT (50%) or more, so that the median second clears BCD_DB, the band is
+  BCD-usable. The time of day is decoded from the BCD pulses, not from the ticks.
+- A band is usable when it is both. A band with ADC clipping or an API overload scores -1
+  on both and is never chosen. docs/WWV_LIVE.md gives the evidence for each threshold.
 
-Choice: the lowest-frequency band whose score is above 0 and within MARGIN_PCT of the best, among
-the usable bands, or among all measured bands when none is usable (then flagged "not
-usable"). A higher band wins only by more than MARGIN_PCT. When every score is 0, the
-higher median contrast wins, then the lower band. --avoid drops a band from the choice when
-another band is in the running (wwv_rsp2_live.sh avoids the band that failed to lock).
+Choice, from the first tier that has a band in it:
+  0. usable bands, ranked by BCD score;
+  1. tick-usable bands, ranked by BCD score ("BCD not usable");
+  2. every measured band, ranked by tick score, then median tick contrast ("not usable").
+Within the tier, the lowest-frequency band above 0 and within the tier's margin of the
+best wins: BCD_MARGIN_PCT (20 points) in tiers 0-1, MARGIN_PCT (30) in tier 2. A higher
+band wins only by more than the margin. When the tier's best is 0, the ranking order
+decides. --avoid drops a band from the choice when another band of the tier is in the
+running (wwv_rsp2_live.sh avoids the band that failed to lock).
 
-Extension: when two or more bands score above 0 and within MARGIN_PCT of the best, each of
-them is read for --extend-secs more and the choice is made again on all their seconds.
---extend-secs 0 turns it off.
+Extension: when two or more bands of the choice's tier score above 0 within its margin of
+the best, each of them is read for --extend-secs more and the choice is made again on all
+their seconds. --extend-secs 0 turns it off.
 """
 import os, sys, json, time, argparse, signal
 import numpy as np
@@ -67,6 +83,12 @@ MARGIN_PCT = 30.0           # a higher band must beat a lower one by more than t
 WWVH_MARGIN_DB = 3.0
 WWVH_VISIBLE_DB = 6.0       # a 1200 Hz tick fold below this is noise, not WWVH
 WWVH_PENALTY_DB = 6.0
+BCD_LO_HZ, BCD_HI_HZ = 80.0, 120.0   # 100 Hz subcarrier band of the envelope
+BCD_PULSE_S = (0.060, 0.200)  # inside every pulse (30-230 ms at the shortest), past the filter's rise
+BCD_LOW_S = (0.850, 0.980)    # low level in every second (the longest pulse ends at 830 ms)
+BCD_DB = 10.0               # a second "has a BCD pulse" when its 100 Hz contrast is over this
+BCD_USABLE_PCT = 50.0       # BCD score at or over this is usable: the median second clears BCD_DB
+BCD_MARGIN_PCT = 20.0       # a higher band must beat a lower one's BCD score by more than this
 CLIP = 32700
 CARRIER_DBHZ = 30.0         # below this the "carrier" is the strongest of ~500 noise bins (11-14 dB-Hz)
 
@@ -78,6 +100,34 @@ def log(msg):
 
 def db(x):
     return float(10 * np.log10(x)) if x > 0 else float('-inf')
+
+
+def bcd_contrasts(t, e):
+    """BCD fold and per-second contrasts of a 100 Hz energy series e at UTC times t (s).
+
+    Every second but :00 starts its 100 Hz pulse at 30 ms and ends it by 830 ms, then sends
+    the low level. The fold is the mean energy in BCD_PULSE_S over the mean in BCD_LOW_S,
+    over all seconds; the contrast of one second is the same ratio within that second.
+    Returns (fold dB, array of per-second contrasts dB). Used on the scan's envelope and,
+    by the evidence scripts, on wwv_live --frames energy."""
+    t = np.asarray(t, float)
+    e = np.asarray(e, float)
+    ph = t % 1.0
+    secs = np.floor(t)
+    keep = secs % 60 != 0
+    hi = (ph >= BCD_PULSE_S[0]) & (ph < BCD_PULSE_S[1])
+    lo = (ph >= BCD_LOW_S[0]) & (ph < BCD_LOW_S[1])
+    fold = db(np.mean(e[keep & hi]) / np.mean(e[keep & lo])) if np.any(keep & hi) and np.any(keep & lo) else float('nan')
+    # Per second: whole seconds only (the first and last are partial)
+    u, inv = np.unique(secs, return_inverse=True)
+    sh = np.bincount(inv, e * hi, len(u)); nh = np.bincount(inv, hi, len(u))
+    sl = np.bincount(inv, e * lo, len(u)); nl = np.bincount(inv, lo, len(u))
+    c = []
+    for j in range(1, len(u) - 1):
+        if u[j] % 60 == 0 or not nh[j] or not nl[j] or sh[j] <= 0 or sl[j] <= 0:
+            continue
+        c.append(db((sh[j] / nh[j]) / (sl[j] / nl[j])))
+    return fold, np.array(c)
 
 
 def measure(x16, n, t0, khz, info, ppm, offset_khz, rate):
@@ -172,13 +222,20 @@ def measure(x16, n, t0, khz, info, ppm, offset_khz, rate):
                 wwvh_median_db=round(float(np.median(c2)), 1) if len(c2) else None)
     info['wwvh_warning'] = bool(khz in wwv_bands.WWVH_KHZ and fold2 >= WWVH_VISIBLE_DB
                                 and fold2 >= fold1 - WWVH_MARGIN_DB)
+    # BCD: the 100 Hz subcarrier energy of the same envelope
+    e100 = np.abs(sosfiltfilt(butter(2, [BCD_LO_HZ, BCD_HI_HZ], btype='band', fs=FS, output='sos'), env)) ** 2
+    lag = k1 / 1000.0 if fold1 >= WWVH_VISIBLE_DB else 0.0
+    bfold, bc = bcd_contrasts(t - lag, e100)
+    info.update(bcd_lag_ms=int(round(lag * 1000)), bcd_fold_db=round(bfold, 1),
+                bcd_contrasts_db=[round(float(v), 1) for v in bc])
     info['adc_overload'] = bool(info['clip_ppm'] > 0 or info['overload_events'] > 0
                                 or info['overloaded_at_start'])
     return info
 
 
 def score_row(info):
-    """Contrast summary and score from info['tick_contrasts_db'] (all reads of the band)."""
+    """Tick and BCD summaries and scores from info['tick_contrasts_db'] and
+    info['bcd_contrasts_db'] (all reads of the band)."""
     c = np.array(info.get('tick_contrasts_db') or [], float)
     n = len(c)
     info['tick_seconds'] = int(n)
@@ -192,39 +249,79 @@ def score_row(info):
         info['score_pct'] = -1.0
     else:
         info['score_pct'] = round(float(np.mean(c > need) * 100), 1)
-    info['usable'] = bool(info['score_pct'] is not None and info['score_pct'] >= USABLE_PCT)
+    info['tick_usable'] = bool(info['score_pct'] is not None and info['score_pct'] >= USABLE_PCT)
+    b = np.array(info.get('bcd_contrasts_db') or [], float)
+    m = len(b)
+    info['bcd_seconds'] = int(m)
+    info['bcd_median_db'] = round(float(np.median(b)), 1) if m else None
+    info['bcd_p10_db'] = round(float(np.sort(b)[m // 10]), 1) if m else None
+    if not m:
+        info['bcd_pct'] = None
+    elif info.get('adc_overload'):
+        info['bcd_pct'] = -1.0
+    else:
+        info['bcd_pct'] = round(float(np.mean(b > BCD_DB) * 100), 1)
+    info['bcd_usable'] = bool(info['bcd_pct'] is not None and info['bcd_pct'] >= BCD_USABLE_PCT)
+    info['usable'] = bool(info['tick_usable'] and info['bcd_usable'])
     return info
 
 
+def _tier(r):
+    """0: tick and BCD usable; 1: tick usable only; 2: neither."""
+    return 0 if r.get('usable') else 1 if r.get('tick_usable') else 2
+
+
+def _key(r, tier):
+    """The score a tier ranks by: the BCD score in tiers 0 and 1, the tick score in tier 2."""
+    v = r.get('bcd_pct') if tier < 2 else r.get('score_pct')
+    return v if v is not None else -999.0
+
+
+def _margin(tier):
+    return BCD_MARGIN_PCT if tier < 2 else MARGIN_PCT
+
+
 def _rank_key(r):
-    """Ranking order: score, then median contrast, then the lower band."""
-    s = r.get('score_pct')
-    m = r.get('tick_median_db')
-    return (-(s if s is not None else -999.0), -(m if m is not None else -999.0), r['khz'])
+    """Ranking order: tier, then the tier's score, then the tick score (tiers 0-1) or the
+    median tick contrast (tier 2), then the lower band."""
+    t = _tier(r)
+    s2 = r.get('score_pct') if t < 2 else r.get('tick_median_db')
+    return (t, -_key(r, t), -(s2 if s2 is not None else -999.0), r['khz'])
 
 
 def _measured(rows):
     return [r for r in rows if r.get('score_pct') is not None and r['score_pct'] >= 0]
 
 
+def _level(ok):
+    """(tier, bands): the best tier with a band in it; tier 2 holds every measured band."""
+    for t, sel in ((0, lambda r: r['usable']), (1, lambda r: r['tick_usable'])):
+        s = [r for r in ok if sel(r)]
+        if s:
+            return t, s
+    return 2, ok
+
+
 def contenders(rows):
-    """Bands above 0 and within MARGIN_PCT of the best score, when there are two or more."""
+    """Bands of the choice's tier above 0 and within its margin of the best, when there
+    are two or more."""
     ok = _measured(rows)
     if not ok:
         return []
-    top = max(r['score_pct'] for r in ok)
-    near = [r for r in ok if r['score_pct'] > 0 and r['score_pct'] >= top - MARGIN_PCT]
+    t, s = _level(ok)
+    top = max(_key(r, t) for r in s)
+    near = [r for r in s if _key(r, t) > 0 and _key(r, t) >= top - _margin(t)]
     return near if len(near) >= 2 else []
 
 
-def _pick(pool):
-    """(best, leader): the lowest band above 0 and within MARGIN_PCT of the leader, when
-    the leader is above 0; else the leader."""
+def _pick(pool, t):
+    """(best, leader): the lowest band above 0 and within the tier's margin of the leader,
+    when the leader is above 0; else the leader."""
     lead = sorted(pool, key=_rank_key)[0]
-    if lead['score_pct'] <= 0:
+    top = _key(lead, t)
+    if top <= 0:
         return lead, lead
-    top = lead['score_pct']
-    return min((r for r in pool if r['score_pct'] > 0 and r['score_pct'] >= top - MARGIN_PCT),
+    return min((r for r in pool if _key(r, t) > 0 and _key(r, t) >= top - _margin(t)),
                key=lambda r: r['khz']), lead
 
 
@@ -233,30 +330,31 @@ def choose(rows, avoid=()):
     ok = _measured(rows)
     if not ok:
         return None, 'no band measured without ADC overload'
-    usable = [r for r in ok if r['usable']]
-    pool = [r for r in usable if r['khz'] not in avoid]
+    t, level = _level(ok)
+    pool = [r for r in level if r['khz'] not in avoid]
     av = ', '.join(f'{k / 1000:g}' for k in sorted(avoid))
     note = ''
-    if usable and not pool:
-        pool = usable
-        note = f'; {av} MHz avoided, but no other band is usable'
-    elif avoid and any(r['khz'] in avoid for r in usable):
-        note = f'; {av} MHz avoided'
     if not pool:
-        pool = [r for r in ok if r['khz'] not in avoid] or ok
-        if avoid:
-            note = f'; {av} MHz avoided' if len(pool) < len(ok) else f'; {av} MHz avoided, but no other band was measured'
-    best, lead = _pick(pool)
+        pool = level
+        note = (f'; {av} MHz avoided, but no other band is usable' if t < 2 else
+                f'; {av} MHz avoided, but no other band was measured')
+    elif avoid and len(pool) < len(level):
+        note = f'; {av} MHz avoided'
+    what = 'BCD score' if t < 2 else 'tick score'
+    k = lambda r: f'{r["khz"] / 1000:g} MHz {_key(r, t):g}%'
+    best, lead = _pick(pool, t)
     if best is lead:
-        why = f'{best["khz"] / 1000:g} MHz scores {best["score_pct"]:g}%'
+        why = f'{best["khz"] / 1000:g} MHz {what} {_key(best, t):g}%'
         lower = sorted((r for r in pool if r['khz'] < best['khz']), key=lambda r: r['khz'])
         if lower:
-            why += '; lower bands: ' + ', '.join(f'{r["khz"] / 1000:g} MHz {r["score_pct"]:g}%' for r in lower)
+            why += '; lower bands: ' + ', '.join(k(r) for r in lower)
     else:
-        why = (f'{best["khz"] / 1000:g} MHz scores {best["score_pct"]:g}%, within {MARGIN_PCT:g} '
-               f'points of {lead["khz"] / 1000:g} MHz ({lead["score_pct"]:g}%): the lower band')
-    if not best['usable']:
-        why = f'no band reaches {USABLE_PCT:g}%; ' + why
+        why = (f'{best["khz"] / 1000:g} MHz {what} {_key(best, t):g}%, within {_margin(t):g} '
+               f'points of {lead["khz"] / 1000:g} MHz ({_key(lead, t):g}%): the lower band')
+    if t == 1:
+        why = f'no band has a BCD score of {BCD_USABLE_PCT:g}% with a tick score of {USABLE_PCT:g}%; ' + why
+    elif t == 2:
+        why = f'no band reaches a tick score of {USABLE_PCT:g}%; ' + why
     return best, why + note
 
 
@@ -273,6 +371,7 @@ def main():
     ap.add_argument('--antenna', default='Antenna A')
     ap.add_argument('--json', default=None)
     ap.add_argument('--replay', action='append', default=[], metavar='PREFIX:KHZ')
+    ap.add_argument('--keep-raw', default=None, metavar='DIR')
     a = ap.parse_args()
     bands = [int(float(x)) for x in a.bands.split(',') if x.strip()]
     avoid = {int(float(x)) for x in a.avoid}
@@ -344,6 +443,34 @@ def main():
                     overload_events=0, overloaded_at_start=False, replay=prefix, replay_skip_s=skip_s)
         return n, t0, info
 
+    TLOG = []          # the last capture's reads: (cumulative samples, time_ns, ret, flags)
+    KEPT = {}          # kHz: [prefix, samples written] for --keep-raw
+
+    def keep_raw(khz, n, info):
+        """--keep-raw: write the read just captured as DIR/scan_<UTC>_<kHz>.cs16, .timelog.npy
+        and .json, the recording format --replay reads. An extension read is appended, so
+        --replay PREFIX:KHZ --secs S reproduces the scan's reads, extension included."""
+        if khz not in KEPT:
+            os.makedirs(a.keep_raw, exist_ok=True)
+            KEPT[khz] = [os.path.join(a.keep_raw, time.strftime('scan_%Y%m%dT%H%M%SZ', time.gmtime(T_SCAN))
+                                      + f'_{khz}'), 0]
+        prefix, done = KEPT[khz]
+        with open(prefix + '.cs16', 'ab') as f:
+            raw[:2 * n].tofile(f)
+        tl = np.array([(c + done, t, r, fl) for c, t, r, fl in TLOG], dtype=np.int64).reshape(-1, 4)
+        if done and os.path.exists(prefix + '.timelog.npy'):
+            tl = np.concatenate([np.load(prefix + '.timelog.npy'), tl])
+        np.save(prefix + '.timelog.npy', tl)
+        meta = json.load(open(prefix + '.json')) if done else dict(
+            wwv_hz=khz * 1e3, offset_hz=a.offset_khz * 1e3, rate_set=a.rate, antenna=a.antenna,
+            lna_state=info['lna'], ifgr=info['ifgr'], overflows=0, timeouts=0, reads_utc=[])
+        meta['overflows'] += info['overflows']; meta['timeouts'] += info['timeouts']
+        meta['samples'] = done + n
+        meta['reads_utc'].append(info['utc'])
+        json.dump(meta, open(prefix + '.json', 'w'), indent=1)
+        KEPT[khz][1] = done + n
+        info['raw'] = prefix
+
     def capture(khz, secs):
         """Tune, read secs into raw[]; return (samples, t0 of sample 0 in s, info)."""
         nwant = int(round(secs * a.rate))
@@ -362,11 +489,13 @@ def main():
             dev.readStream(st, [tmp], mtu, timeoutUs=1000000)
         t_start_ns = time.time_ns()
         n = 0; overflows = 0; timeouts = 0; t0 = None
+        TLOG.clear()
         while n < nwant and not stop[0]:
             want = min(mtu, nwant - n)
             sr = dev.readStream(st, [raw[2 * n:]], want, timeoutUs=1000000)
             tn = time.time_ns()
             if sr.ret > 0:
+                TLOG.append((n + sr.ret, tn, sr.ret, sr.flags))
                 n += sr.ret
                 t = tn / 1e9 - n / a.rate
                 t0 = t if t0 is None else min(t0, t)
@@ -395,13 +524,16 @@ def main():
             tu = time.strftime('%H:%M:%S', time.gmtime())
             n, t0, info = capture(khz, secs)
         info['utc'] = tu
+        if a.keep_raw and not prefix and n:
+            keep_raw(khz, n, info)
         if n < a.rate * 5 or t0 is None:
             log(f'{khz / 1000:g} MHz: only {n} samples, not measured')
             return info, False
         return measure(raw, n, t0, khz, info, a.ppm, a.offset_khz, a.rate), True
 
     rows = []
-    utc_start = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+    T_SCAN = time.time()
+    utc_start = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(T_SCAN))
     if not a.replay:
         log(f'scanning {", ".join(f"{k / 1000:g}" for k in bands)} MHz, {a.secs:g} s each; '
             f'API overload events {"logged" if OVL_PLUGIN else "not available (stock SoapySDRPlay3 module)"}')
@@ -414,18 +546,20 @@ def main():
             info, ok = read_band(prefix, khz, a.secs)
             info['prefix'] = prefix
             if not ok:
-                info.update(score_pct=None, usable=False, adc_overload=False, wwvh_warning=False)
+                info.update(score_pct=None, bcd_pct=None, usable=False, tick_usable=False, bcd_usable=False,
+                            adc_overload=False, wwvh_warning=False)
                 rows.append(info)
                 continue
             rows.append(score_row(info))
             r = rows[-1]
             log(f'{khz / 1000:g} MHz: C/N0 {r["cn0_dbhz"]} dB-Hz, tick median {r["tick_median_db"]} dB, '
-                f'{r["tick_over10_pct"]}% of {r["tick_seconds"]} s over {TICK_DB:g} dB, score {r["score_pct"]}%, '
-                f'peak {r["peak_dbfs"]} dBFS, {r["overflows"]} overflows')
+                f'{r["tick_over10_pct"]}% of {r["tick_seconds"]} s over {TICK_DB:g} dB, score {r["score_pct"]}%; '
+                f'BCD fold {r["bcd_fold_db"]} dB, median {r["bcd_median_db"]} dB, score {r["bcd_pct"]}%; '
+                f'peak {r["peak_dbfs"]} dBFS, {r["overflows"]} overflows' + ('; WWVH may dominate' if r['wwvh_warning'] else ''))
         near = contenders(rows) if a.extend_secs > 0 and not stop[0] else []
         if near:
             log(f'close call between {", ".join(f"{r["khz"] / 1000:g}" for r in near)} MHz '
-                f'(scores {", ".join(f"{r["score_pct"]:g}%" for r in near)}): reading each '
+                f'(tick/BCD scores {", ".join(f"{r["score_pct"]:g}/{r["bcd_pct"]:g}%" for r in near)}): reading each '
                 f'{a.extend_secs:g} s more')
         for r in near:
             if stop[0]:
@@ -434,15 +568,18 @@ def main():
             if not ok:
                 continue
             r['tick_contrasts_db'] = r['tick_contrasts_db'] + info['tick_contrasts_db']
+            r['bcd_contrasts_db'] = r['bcd_contrasts_db'] + info['bcd_contrasts_db']
             r['extended'] = dict((k, info.get(k)) for k in (
-                'utc', 'samples', 'cn0_dbhz', 'tick_fold_db', 'wwvh_fold_db', 'peak_dbfs', 'clip_ppm',
-                'overload_events', 'overflows'))
+                'utc', 'samples', 'cn0_dbhz', 'sb1000_db', 'sb1200_db', 'tick_fold_db', 'wwvh_fold_db',
+                'bcd_fold_db', 'wwvh_warning', 'peak_dbfs', 'clip_ppm', 'overload_events', 'overflows', 'raw'))
             r['extended']['tick_seconds'] = len(info['tick_contrasts_db'])
+            r['extended']['bcd_seconds'] = len(info['bcd_contrasts_db'])
             r['adc_overload'] = bool(r['adc_overload'] or info['adc_overload'])
             score_row(r)
             extended.append(r['khz'])
             log(f'{r["khz"] / 1000:g} MHz extended: {r["tick_over10_pct"]}% of {r["tick_seconds"]} s over '
-                f'{TICK_DB:g} dB, score {r["score_pct"]}%')
+                f'{TICK_DB:g} dB, score {r["score_pct"]}%; BCD {r["bcd_pct"]}% of {r["bcd_seconds"]} s over '
+                f'{BCD_DB:g} dB')
     finally:
         if dev is not None:
             dev.closeStream(st)
@@ -460,7 +597,7 @@ def main():
     print(f'WWV band scan {utc_start}, {a.secs:g} s per band, ppm {a.ppm:g}, '
           f'API overload {"logged" if OVL_PLUGIN else "n/a"}')
     print('rank  MHz  UTC       LNA IFGR  C/N0  carrier   ppm  sb1000 sb1200  tick@ms fold  tick_med p10 >10dB  secs  '
-          'WWVH@ms fold  peak_dBFS clip_ppm ovl  score  notes')
+          'WWVH@ms fold  bcd_fold bcd_med  p10  secs  peak_dBFS clip_ppm ovl  score    BCD  notes')
     for i, r in enumerate(ranked, 1):
         notes = []
         if r is best:
@@ -479,6 +616,8 @@ def main():
             notes.append('avoided')
         if r.get('score_pct') is None:
             notes.append('not measured')
+        elif r.get('tick_usable') and not r.get('bcd_usable'):
+            notes.append('BCD not usable')
         elif not r.get('usable'):
             notes.append('not usable')
         print(f'{i:4d} {r["khz"] / 1000:5g} {r.get("utc", "-"):9s} {r["lna"]:3d} {r["ifgr"]:4d} '
@@ -486,17 +625,22 @@ def main():
               f'{fmt(r.get("sb1000_db"), 6)} {fmt(r.get("sb1200_db"), 6)} '
               f'{fmt(r.get("tick_peak_ms"), 7)} {fmt(r.get("tick_fold_db"), 5)} {fmt(r.get("tick_median_db"), 8)} '
               f'{fmt(r.get("tick_p10_db"), 4)} {fmt(r.get("tick_over10_pct"), 4)}% {fmt(r.get("tick_seconds"), 5)}  '
-              f'{fmt(r.get("wwvh_peak_ms"), 7)} {fmt(r.get("wwvh_fold_db"), 5)} '
+              f'{fmt(r.get("wwvh_peak_ms"), 7)} {fmt(r.get("wwvh_fold_db"), 5)}  '
+              f'{fmt(r.get("bcd_fold_db"), 8)} {fmt(r.get("bcd_median_db"), 7)} {fmt(r.get("bcd_p10_db"), 4)} '
+              f'{fmt(r.get("bcd_seconds"), 5)}  '
               f'{fmt(r.get("peak_dbfs"), 9)} {fmt(r.get("clip_ppm"), 8, 2)} '
               f'{(str(r.get("overload_events")) if OVL_PLUGIN else "n/a"):>3s} '
-              f'{fmt(r.get("score_pct"), 5)}%  {", ".join(notes)}')
+              f'{fmt(r.get("score_pct"), 5)}% {fmt(r.get("bcd_pct"), 5)}%  {", ".join(notes)}')
     log(f'choice: {why}')
     if best is not None and not best['usable']:
-        log(f'WARNING: no band has {USABLE_PCT:g}% of its seconds over a {TICK_DB:g} dB tick contrast')
+        log(f'WARNING: no band has {USABLE_PCT:g}% of its seconds over a {TICK_DB:g} dB tick contrast and '
+            f'{BCD_USABLE_PCT:g}% over a {BCD_DB:g} dB BCD contrast')
     if a.json:
         json.dump(dict(utc_start=utc_start, secs=a.secs, extend_secs=a.extend_secs, ppm=a.ppm,
                        offset_khz=a.offset_khz, rate=a.rate, overload_logged=OVL_PLUGIN,
                        tick_db=TICK_DB, usable_pct=USABLE_PCT, margin_pct=MARGIN_PCT,
+                       bcd_db=BCD_DB, bcd_usable_pct=BCD_USABLE_PCT, bcd_margin_pct=BCD_MARGIN_PCT,
+                       keep_raw=a.keep_raw,
                        avoid=sorted(avoid), extended=extended, rows=ranked,
                        best_khz=best['khz'] if best else None, best_usable=bool(best and best['usable']),
                        choice=why),
