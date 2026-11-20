@@ -54,4 +54,13 @@ add_test(NAME wwv_time_decoder_sim_x2 CONFIGURATIONS Slow
          COMMAND sim_wwv_time_decoder chains=5000 seed=21 p01=0.066 p10=0.136 pP1=0.24 erase=0.25 mid=0.12 label=x2)
 add_test(NAME wwv_time_decoder_sim_x3 CONFIGURATIONS Slow
          COMMAND sim_wwv_time_decoder chains=5000 seed=31 p01=0.10 p10=0.20 pP1=0.36 erase=0.25 mid=0.12 label=x3)
-set_tests_properties(wwv_time_decoder_sim_x2 wwv_time_decoder_sim_x3 PROPERTIES LABELS slow TIMEOUT 3000)
+# The same gate at the rates of the 90-minute live RSP2 run (2026-11-20, replayed:
+# tests/air/symbol_rates.py) and at twice them, mid-second capped at 0.45. The fixed
+# pessimistic model confirmed wrong in 7 of these 5000 chains at twice the live rates.
+add_test(NAME wwv_time_decoder_sim_xlive CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=72 p01=0.14 p10=0.15 pP1=0.15 pP0=0.06 erase=0.09 mid=0.30 label=xlive)
+add_test(NAME wwv_time_decoder_sim_xlive2 CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=71 p01=0.28 p10=0.30 pP1=0.30 pP0=0.12 erase=0.18 mid=0.45 label=xlive2)
+set_tests_properties(wwv_time_decoder_sim_x2 wwv_time_decoder_sim_x3
+                     wwv_time_decoder_sim_xlive wwv_time_decoder_sim_xlive2
+                     PROPERTIES LABELS slow TIMEOUT 3000)
