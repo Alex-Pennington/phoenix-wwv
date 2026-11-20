@@ -198,11 +198,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   (900 ms or more) or candidate (`sync_detector_get_phase_resets`). With no marker and no
   candidate nothing shows it (test_sync_phase_track "no candidates": 312 symbols off for 5 min,
   no time of day wrong).
-- **The snap assumes edges only move early.** An early tick cluster within 60 s of support is
-  taken as the loss. A false early cluster (6+ ticks within 15 ms over 30 s, 4 times the
-  background) would move a right phase; the real edges then show a late cluster and sync drops
-  to RECOVERING. A late false burst is tested (RECOVERING, no wrong output); an early one is
-  not.
+- **The snap assumes edges only move early, and needs the BCD pulse starts to agree.** An early
+  tick cluster moves the phase only when the BCD starts since its first tick sit on the
+  cluster's phase (4 or more, over twice those on the held phase); BCD starts holding the phase
+  make it ignored. Tested with false bursts 100-300 ms early in a tick fade (no shift). A burst
+  of false ticks and false BCD starts agreeing on one early phase is not tested; on a band
+  where the BCD starts are as sparse as the ticks, a real jump goes to RECOVERING rather than
+  snapping.
 - **The decoder's chain tolerance is inclusive at 1000 ms** (`fabsf(d - n * MINUTE_MS) <=
   CHAIN_TOLERANCE_MS`), so a frame whose phase is exactly a whole second off chains. The phase-
   reset count covers the marker and candidate cases; the tolerance is unchanged.
