@@ -32,6 +32,7 @@ extern "C" {
 #define NOISE_FLOOR_MIN         0.0001f
 #define NOISE_FLOOR_MAX         5.0f
 #define MIN_LOW_FRAMES          3       /* Debounce pulse end */
+#define BCD_TIME_COOLDOWN_FRAMES_MAX 64 /* holds a BTIME cooldown (39 frames) */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -76,6 +77,10 @@ struct bcd_time_detector {
     int pulse_energy_frames;    /* how many frames pulse_energy_sum holds */
     float pulse_level;          /* running mean level of valid pulses; 0 = not known */
     uint64_t last_valid_frame;  /* end frame of the last valid pulse */
+    float low_level;            /* median energy over the last cooldown; 0 = not known */
+    float cooldown_energy[BCD_TIME_COOLDOWN_FRAMES_MAX]; /* this cooldown's frames so far */
+    int cooldown_energy_frames; /* how many frames cooldown_energy holds */
+    float start_threshold;      /* what an idle frame must exceed to start an event */
 
     /* Phase 9: Minimum duration validation */
     int consecutive_low_frames;

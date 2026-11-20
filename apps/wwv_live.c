@@ -285,14 +285,14 @@ static void print_status(double stream_ms) {
 /* One --frames record per BTIME frame (5.12 ms), 9 float32, native byte order:
  *   t_ms (frame start, stream time), energy (bucket value), noise_floor,
  *   threshold_high, threshold_low, state (0 idle, 1 in pulse, 2 cooldown),
- *   start_threshold (max of threshold_high and BCD_TIME_EDGE_FRACTION x
- *   pulse_level: what an idle frame must exceed), pulse_level, pulse
+ *   start_threshold (what an idle frame must exceed: the highest of
+ *   threshold_high, BCD_TIME_EDGE_FRACTION x pulse_level and
+ *   BCD_TIME_START_LOW_RATIO x the low level), pulse_level, pulse
  *   (duration_ms of a BTIME event that ended on this frame, else 0).
  * The first six fields are tests/air/btime_frames's; its seventh (ref) needs
  * the data-channel samples and is not written here. */
 static void write_frame(const bcd_time_detector_t *bt) {
-    float start = bt->threshold_high;
-    if (BCD_TIME_EDGE_FRACTION * bt->pulse_level > start) start = BCD_TIME_EDGE_FRACTION * bt->pulse_level;
+    float start = bt->start_threshold;
     float rec[9] = {
         (float)((double)(bt->frame_count - 1) * bcd_time_detector_get_frame_duration_ms()),
         bt->current_energy, bt->noise_floor, bt->threshold_high, bt->threshold_low,

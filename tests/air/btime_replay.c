@@ -76,8 +76,7 @@ int main(int argc, char **argv) {
         td->current_energy = rec[1];
         bcd_time_run_state_machine(td);
         td->frame_count++;
-        float start = td->threshold_high;
-        if (BCD_TIME_EDGE_FRACTION * td->pulse_level > start) start = BCD_TIME_EDGE_FRACTION * td->pulse_level;
+        float start = td->start_threshold;
         float out[9] = { (float)((double)(td->frame_count - 1) * FR_MS), td->current_energy,
                          td->noise_floor, td->threshold_high, td->threshold_low, (float)td->state,
                          start, td->pulse_level, g_pulse };
