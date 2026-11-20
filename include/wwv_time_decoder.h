@@ -39,8 +39,10 @@
  * probability p01, a sent 1 as 0 with probability p10. A frame's p01 is estimated
  * from its own reserved bits, which are always 0, against a prior. Erasures and
  * mid-second detections carry no evidence. There are two models: nominal (the
- * measured rates) and pessimistic (rates the worst measured run stays well inside);
- * the pessimistic p01 never goes below its prior mean. The margin of a result is the log-likelihood ratio
+ * measured rates) and pessimistic (rates the worst measured air run stays well
+ * inside, raised to what the chain's own evidence shows: p01 from the reserved
+ * seconds, p10 from the P seconds read short, pooled over the history; never below
+ * the configured rates). The margin of a result is the log-likelihood ratio
  * (nats) between the best hypothesis and the best one that differs in that part.
  *
  * Time of day, date, DUT1, DST bits and the leap second warning each get a state:
@@ -83,7 +85,19 @@ extern "C" {
  * 18/540 = 3.3% -> 0.03). Pessimistic: at least twice the worst run and above its
  * 95% upper bound (p01 0.07 >= 2 x 3.3%; p10 0.15 >= 2 x 6.8%, above P -> 1 11.9%).
  * Prior weight: the 0 -> 1 rate varies between runs as a Beta prior of weight 66
- * would; 50 leaves room for more variation between frames than between runs. */
+ * would; 50 leaves room for more variation between frames than between runs.
+ *
+ * The pessimistic rates are floors, not the model: the live RSP2 run of 2026-11-20
+ * (90 minutes) read a sent 0 as 1 in 14.4%, a 1 as 0 in 15.0%, and P as 1 or 0 in
+ * 20.9%, with 0 -> 1 between 10.7% and 21.4% per 10-minute block. A model that
+ * trusts a symbol more than the signal deserves lowers the effective CONFIRMED
+ * margin: at live rates the fixed 0.07 / 0.15 gave about 9 nats of ln 10^6, at
+ * twice them 4. So each chain raises them to its own evidence: the reserved
+ * seconds sample 0 -> 1 without bias (14.3% live, 14.4% at the data seconds), and
+ * a P read short is the 1 -> 0 failure on a longer pulse: P read 1 or 0 against
+ * 1 -> 0 is 20.9% / 15.0% live, 9.3% / 5.8% saga plain, 2.3% / 0% kiwi plain,
+ * 0% / 0% kiwi agc and 0/34 / 1/87 saga agc, where the floor covers it. The prior
+ * weight is the same for both. */
 #define WWV_TD_DEFAULT_P01          0.01f
 #define WWV_TD_DEFAULT_P10          0.03f
 #define WWV_TD_DEFAULT_P01_PESSIMISTIC 0.07f
@@ -96,7 +110,9 @@ extern "C" {
  * tests/sim_wwv_time_decoder.c (5000 chains of 30 minutes at three times the worst
  * run's rates), ln 10^4 confirmed wrong in 11 chains, ln 10^5 in 1, ln 10^6 in none
  * (three seeds). Requiring the margin on 2 or 3 consecutive minutes left 7 and 4 at
- * ln 10^4 and 1 at ln 10^5, at about the same cost in time, so confirm_looks is 1. */
+ * ln 10^4 and 1 at ln 10^5, at about the same cost in time, so confirm_looks is 1.
+ * With the pessimistic rates raised from the chain's evidence, ln 10^5 still
+ * confirmed wrong in 1 of 5000 chains (60 minutes) at 1.5 times the live rates. */
 #define WWV_TD_DEFAULT_CONFIRMED    13.815511f  /* ln 10^6 */
 #define WWV_TD_DEFAULT_CONFIRM_LOOKS 1
 #define WWV_TD_DEFAULT_BOUNDARY_MS  250.0f
@@ -105,9 +121,13 @@ extern "C" {
 typedef struct {
     float p01;              /* prior mean rate of a sent 0 read as 1 */
     float p10;              /* rate of a sent 1 read as 0 */
-    float p01_pessimistic;  /* pessimistic model: prior mean and floor of p01 */
-    float p10_pessimistic;  /* pessimistic model: p10. CONFIRMED must hold under both */
-    float p01_prior_weight; /* pseudo-observations behind each p01 prior */
+    float p01_pessimistic;  /* pessimistic model: prior mean and floor of p01, which
+                               rises with the chain's reserved seconds read 1 */
+    float p10_pessimistic;  /* pessimistic model: prior mean and floor of p10, which
+                               rises with the chain's P seconds read 1 or 0.
+                               CONFIRMED must hold under both models */
+    float p01_prior_weight; /* pseudo-observations behind each p01 prior, and behind
+                               the pessimistic p10 prior */
     float decoded_nats;     /* margin for DECODED */
     float confirmed_nats;   /* margin for CONFIRMED */
     int confirm_looks;      /* consecutive minutes the CONFIRMED margin must hold */
