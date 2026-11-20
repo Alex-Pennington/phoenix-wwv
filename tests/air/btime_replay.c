@@ -103,8 +103,8 @@ int main(int argc, char **argv) {
             int timed = line_time(line, &tl);
             if (strncmp(line, "BTIME ", 6) == 0) continue;
             if (timed && tl > pos) pos = tl;
-            /* replayed events reported before this line's time go first */
-            while (k < nev && timed && evs[k].at < pos) {
+            /* replayed events reported at or before this line's time go first */
+            while (k < nev && timed && evs[k].at <= pos) {
                 fprintf(lo, "BTIME t=%.1f dur=%.1f at=%.1f\n", evs[k].t, evs[k].dur, evs[k].at);
                 k++;
             }
