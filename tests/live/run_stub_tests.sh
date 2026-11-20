@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# wwv_rsp2_live.sh and rsp2_stream.py against stubs: no radio, no sdrplay.service.
+#
+#   tests/live/run_stub_tests.sh BUILD_DIR WORK_DIR [CASE ...]
+#
+# BUILD_DIR holds wwv_live. WORK_DIR gets a copy of the wrapper with a stub band scan
+# beside it, and one directory per case (console.txt, the fake unit's calls). The stubs
+# in tests/live/fakebin stand in for systemctl and sudo: the fake sdrplay.service lives in
+# the case directory, and every check fails before a case runs if the PATH would reach
+# the real ones. rsp2_stream.py runs against a fake SoapySDR module.
+#
+# Cases (all by default):
+#   fixed_end     fixed band, ends at --secs by the wall clock
+#   stall75       the stream exits 75 once: REOPEN, segment 2, end at --secs
+#   svc_restart   the unit's MainPID changes under the stream: REOPEN
+#   hang          the stream stops writing and its heartbeat: REOPEN on the heartbeat
+#   reopen_max    every stream exits 75: the run ends with status 4 after --reopen-max
+#   deaf          a stream deaf to SIGTERM and --secs: killed 10 s after the TERM
+#   kill9         the wrapper is SIGKILLed: the guard stops the stream and the unit
+#   auto_end      auto: scan, go live on its band, end at --secs
+#   auto_switch   auto: no LOCKED within --lock-mins, re-scan with --avoid, switch, end
+#   auto_rescan_end  auto: --secs runs out during the re-scan, which is stopped
+#   auto_none     auto: the scan finds no band: exit 3, not live
+#   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
+#   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
+#   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
+# Every wrapper case also checks that the fake unit is inactive at the end.
+# Exit 0 when every case passes, 1 otherwise.
+set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../.." && pwd)
+BUILD=${1:?usage: run_stub_tests.sh BUILD_DIR WORK_DIR [CASE ...]}
+WORK=${2:?usage: run_stub_tests.sh BUILD_DIR WORK_DIR [CASE ...]}
+shift 2
+BUILD=$(cd "$BUILD" && pwd)
+[ -x "$BUILD/wwv_live" ] || { echo "no wwv_live in $BUILD" >&2; exit 1; }
+mkdir -p "$WORK"
+WORK=$(cd "$WORK" && pwd)
+
+# The wrapper and its helpers, with the stub scan as wwv_band_scan.sh.
+SCR=$WORK/scripts
+/bin/rm -rf "$SCR"; mkdir -p "$SCR"
+/bin/cp -f "$REPO/scripts/wwv_rsp2_live.sh" "$REPO/scripts/sdrplay_service.sh" "$REPO/scripts/wwv_bands.py" "$SCR/"
+/bin/cp -f "$HERE/stub_band_scan.sh" "$SCR/wwv_band_scan.sh"
+chmod +x "$SCR/wwv_rsp2_live.sh" "$SCR/wwv_band_scan.sh"
+mkdir -p "$WORK/tmp"
+
+STUB_PATH=$HERE/fakebin:$PATH
+# Refuse to run unless systemctl and sudo resolve to the stubs: a real stop would end
+# whatever is using the radio.
+for c in systemctl sudo; do
+  got=$(PATH=$STUB_PATH command -v "$c")
+  [ "$got" = "$HERE/fakebin/$c" ] || { echo "FATAL: $c resolves to $got, not the stub" >&2; exit 1; }
+done
+
+FAIL=0; PASS=0; D=; RC=0
+fail() { echo "  FAIL: $*"; CASE_OK=; }
+has() { grep -qF -- "$1" "$D/console.txt" || fail "no line with: $1"; }
+hasnt() { ! grep -qF -- "$1" "$D/console.txt" || fail "unexpected line with: $1"; }
+rc_is() { [ "$RC" = "$1" ] || fail "exit $RC, want $1"; }
+streams_is() { local n; n=$(cat "$D/streams" 2>/dev/null | wc -c); [ "$n" = "$1" ] || fail "$n stream starts, want $1"; }
+# ended_in K BAND: the run's history ends with segment K on BAND kHz, not reopened or
+# switched. (The streamer gets --secs as the time left and usually ends a moment before
+# the wrapper's own check, so a clean end need not say "--secs reached".)
+ended_in() {
+  grep -qE "\] [0-9TZ:-]+ segment $1: $2 kHz, [0-9]+ s, (never LOCKED|LOCKED)(, --secs reached \(wall clock\))?\$" "$D/console.txt" ||
+    fail "no closing history line for segment $1 on $2 kHz"
+  grep -qE "segment $(($1 + 1)): WWV" "$D/console.txt" && fail "a segment $(($1 + 1)) started"
+  return 0
+}
+unit_off() { [ "$(cat "$D/state" 2>/dev/null)" = inactive ] || fail "fake sdrplay.service is $(cat "$D/state" 2>/dev/null)"; }
+begin() {
+  D=$WORK/$1; /bin/rm -rf "$D"; mkdir -p "$D"; CASE_OK=1; T0=$SECONDS
+  echo "== $1"
+}
+end_case() {
+  if [ -n "$CASE_OK" ]; then PASS=$((PASS + 1)); echo "  ok ($((SECONDS - T0)) s)"; else
+    FAIL=$((FAIL + 1))
+    echo "  --- $D/console.txt (last 25 lines)"; tail -25 "$D/console.txt" | sed 's/^/  | /'; fi
+}
+# live [ENV=V ...] -- wrapper args: run the wrapper copy under the stubs; sets RC.
+live() {
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" \
+      SOAPY_SDR_ROOT=/nonexistent SOAPY_SDR_PLUGIN_PATH=/nonexistent "${envs[@]}" \
+      "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --log "$D/run.log" "$@" -- -p 0 > "$D/console.txt" 2>&1
+  RC=$?
+}
+want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
+CASES=("$@")
+[ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
+                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw)
+
+for c in "${CASES[@]}"; do
+  case $c in
+  fixed_end)
+    begin "$c"
+    live STUB_MODE=ok -- --wwv-khz 10000 --secs 8
+    rc_is 0; ended_in 1 10000; hasnt REOPEN; streams_is 1; unit_off
+    end_case ;;
+  stall75)
+    begin "$c"
+    live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
+    rc_is 0; has 'REOPEN: segment 1: rsp2_stream had no samples for 10 s'
+    has 'REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 5)'
+    ended_in 2 10000; streams_is 2; unit_off
+    end_case ;;
+  svc_restart)
+    begin "$c"
+    ( sleep 4; echo 4242 > "$D/pid.new"; mv -f "$D/pid.new" "$D/pid"; echo 1 > "$D/nr" ) &
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 10
+    wait
+    rc_is 0; has 'REOPEN: segment 1: sdrplay.service restarted under the stream'
+    ended_in 2 5000; streams_is 2; unit_off
+    end_case ;;
+  hang)
+    begin "$c"
+    live STUB_MODE=hang_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 5000 --secs 26 --stall-secs 1
+    rc_is 0; has 'REOPEN: segment 1: rsp2_stream heartbeat is'; has 'the stream is hung'
+    ended_in 2 5000; streams_is 2; unit_off
+    end_case ;;
+  reopen_max)
+    begin "$c"
+    live STUB_MODE=stall75_after:1 -- --wwv-khz 5000 --secs 60 --reopen-max 2
+    rc_is 4; has 'REOPEN: 3 reopens, more than --reopen-max 2; ending the run'; streams_is 3; unit_off
+    end_case ;;
+  deaf)
+    begin "$c"
+    live STUB_MODE=ok STUB_DEAF=1 -- --wwv-khz 5000 --secs 5
+    rc_is 0; has 'segment 1: --secs reached (wall clock); stopped'
+    has 'rsp2_stream did not stop in 10 s after SIGTERM; killing it'; unit_off
+    end_case ;;
+  kill9)
+    begin "$c"
+    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
+        SOAPY_SDR_ROOT=/nonexistent SOAPY_SDR_PLUGIN_PATH=/nonexistent \
+        "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --wwv-khz 5000 --secs 60 -- -p 0 > "$D/console.txt" 2>&1 &
+    W=$!
+    sleep 4
+    kill -KILL "$W"; wait "$W" 2>/dev/null
+    for _ in $(seq 150); do grep -q 'guard\] .*sdrplay.service:' "$D/console.txt" && break; sleep 0.1; done
+    has 'exited without its cleanup; stopping what it started'; has 'guard]'; unit_off
+    pgrep -f "$HERE/stub_stream.py" > /dev/null && fail 'stub_stream.py is still running'
+    pgrep -f "$BUILD/wwv_live" > /dev/null && fail 'wwv_live is still running'
+    end_case ;;
+  auto_end)
+    begin "$c"
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 8 --scan-json "$D/scan.json"
+    rc_is 0; has "going live on the scan's band: 5000 kHz"; ended_in 1 5000
+    hasnt 'unbound variable'; hasnt SWITCH
+    [ "$(cat "$D/scans" 2>/dev/null | wc -l)" = 1 ] || fail "$(cat "$D/scans" 2>/dev/null | wc -l) scans, want 1"
+    [ -f "$D/scan.json" ] || fail 'no --scan-json file'
+    streams_is 1; unit_off
+    end_case ;;
+  auto_switch)
+    begin "$c"
+    # lock limit 6 s: scan 1 s, 10 MHz 6 s, re-scan 1 s, then 15 MHz until --secs at 13 s
+    live STUB_MODE=ok STUB_SCAN_BANDS=10000,15000 -- --wwv-khz auto --lock-mins 0.1 --secs 13 --scan-json "$D/scan.json"
+    rc_is 0; has "going live on the scan's band: 10000 kHz"
+    has 'SWITCH: 10000 kHz has not reached LOCKED in 0.1 min; stopping it to re-scan'
+    has 'SWITCH: 10000 kHz -> 15000 kHz (segment 2)'
+    has 'segment 2: WWV 15000 kHz'
+    ended_in 2 15000
+    hasnt 'unbound variable'
+    sed -n 2p "$D/scans" | grep -qF -- '--avoid 10000' || fail 'the re-scan did not avoid 10000 kHz'
+    [ -f "$D/scan.seg2.json" ] || fail 'no scan.seg2.json'
+    [ -f "$D/run.seg2.log" ] || fail 'no run.seg2.log'
+    streams_is 2; unit_off
+    end_case ;;
+  auto_rescan_end)
+    begin "$c"
+    live STUB_MODE=ok STUB_SCAN_BANDS=10000 STUB_SCAN_SECS=1,30 -- --wwv-khz auto --lock-mins 0.1 --secs 12
+    rc_is 0; has 'SWITCH: 10000 kHz has not reached LOCKED in 0.1 min; stopping it to re-scan'
+    has '--secs reached during the re-scan; stopping it'
+    has '--secs reached before segment 2 could start'
+    [ $((SECONDS - T0)) -lt 25 ] || fail "took $((SECONDS - T0)) s: the re-scan was not stopped at --secs"
+    streams_is 1; unit_off
+    end_case ;;
+  auto_none)
+    begin "$c"
+    live STUB_SCAN_BANDS=none -- --wwv-khz auto --secs 30
+    rc_is 3; has 'the band scan found no band'; has 'not going live'; streams_is 0; unit_off
+    end_case ;;
+  stream_stall)
+    begin "$c"
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" stall_after:2 -- \
+        --secs 20 --stall-secs 2 --heartbeat "$D/hb" > /dev/null 2> "$D/console.txt"
+    has '[harness] exit 75'; has 'stalled: no samples for'
+    end_case ;;
+  stream_lag)
+    begin "$c"
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" lossy:0.5 -- \
+        --secs 4 --report-secs 1 --stall-secs 0 > /dev/null 2> "$D/console.txt"
+    has '[harness] exit 0'; has 'behind wall clock'; has 'samples lost upstream'
+    end_case ;;
+  scan_keep_raw)
+    begin "$c"
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/wwv_band_scan.py" ok -- \
+        --bands 5000,10000 --secs 6 --extend-secs 0 --keep-raw "$D/raw" --json "$D/live.json" > "$D/console.txt" 2>&1
+    has '[harness] exit 0'; has 'BEST '
+    ls "$D"/raw/scan_*_5000.cs16 "$D"/raw/scan_*_10000.timelog.npy "$D"/raw/scan_*_10000.json > /dev/null 2>&1 ||
+      fail 'no kept raw windows'
+    p5=$(ls "$D"/raw/scan_*_5000.cs16 2>/dev/null); p10=$(ls "$D"/raw/scan_*_10000.cs16 2>/dev/null)
+    python3 -I "$REPO/scripts/wwv_band_scan.py" --replay "${p5%.cs16}:5000" --replay "${p10%.cs16}:10000" \
+        --secs 6 --extend-secs 0 --json "$D/replay.json" >> "$D/console.txt" 2>&1 || fail 'the replay failed'
+    python3 -I - "$D/live.json" "$D/replay.json" >> "$D/console.txt" 2>&1 <<'PY' || fail 'the replay of the kept windows differs from the scan'
+import json, sys
+a, b = ({r['khz']: r for r in json.load(open(f))['rows']} for f in sys.argv[1:3])
+bad = [(k, f) for k in a for f in ('tick_contrasts_db', 'bcd_contrasts_db', 'cn0_dbhz', 'score_pct', 'bcd_pct')
+       if a[k].get(f) != b.get(k, {}).get(f)]
+print('replay check:', 'same' if not bad else f'differs: {bad}')
+sys.exit(1 if bad or not a else 0)
+PY
+    end_case ;;
+  *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;
+  esac
+done
+echo "stub tests: $PASS cases passed, $FAIL failed"
+[ "$FAIL" = 0 ]

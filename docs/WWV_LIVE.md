@@ -54,6 +54,16 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
     DECODED, `C` CONFIRMED, `P` PREDICTED, `-` NONE;
   - the arrival lag range (live input only). A rising minimum lag means samples are being lost
     upstream.
+- `LAG` (live input only, console only) is printed each time the minimum arrival lag has grown
+  250 ms since the last `LAG` line, once the anchor is fixed:
+
+  ```
+  LAG      14:52:10Z stream time is +1250 ms behind the system clock (+250 since the last LAG line): UTC from the sample counter is late by that
+  ```
+
+  Samples are missing from the counter, or the input is backed up, so UTC read off the sample
+  counter is late by about that much. rsp2_stream's `behind wall clock` line says which (see
+  *Run length, stalls and reopen*).
 - `SYNC`, `MARKER` and `MINUTE` lines appear as events happen. `MINUTE` shows the frame, every
   decoded part with its state and margin, and how far the system clock sits from the decoded
   minute.
@@ -82,14 +92,93 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
    2 MS/s, scale 32, and the band's gain.
 4. With `auto`, a band that has not reached LOCKED `--lock-mins` after it went live is
    switched (see *Band switch* below).
-5. It stops the service on every exit path. If the vendor service crashed on stop, the script
-   also clears the unit's failed state.
+5. A stream that stalls, hangs, or loses the vendor service under it is reopened on the same
+   band (see *Run length, stalls and reopen*).
+6. It ends at `--secs` by the wall clock, and stops the service on every exit path. If the
+   vendor service crashed on stop, the script also clears the unit's failed state. A guard
+   process covers the exits no trap sees.
 
 `--record PREFIX` also writes the raw stream, at 8 MB/s. Example, 90 minutes at 5 MHz:
 
 ```
 scripts/wwv_rsp2_live.sh --secs 5400 --log run.log --timebase run.json
 ```
+
+### Run length, stalls and reopen
+
+```
+scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
+```
+
+- **`--secs N` is wall clock.** The run ends N seconds after it starts, however many samples
+  came. With `--wwv-khz auto` the clock starts with the first scan, and band-switch re-scans
+  and reopens count toward it. A re-scan still running at `--secs` is stopped. rsp2_stream
+  is given the time left as its own `--secs`, so it usually ends a moment before the wrapper
+  checks. `--secs 0` (the default) runs until Ctrl-C.
+- **`--stall-secs N`** (default 10; 0: never). rsp2_stream ends with exit status 75 when no
+  sample has come for N seconds. That happens when the API service died or restarted under
+  the stream, or the USB transfers stopped. It logs a timeout once when a gap starts and once
+  when it ends.
+- **Reopen.** The wrapper stops the stream and `wwv_live` and opens them again on the same
+  band as a new segment. `wwv_live`'s sample-counter clock cannot carry across a gap, so its
+  sync and decoder start again. The wrapper reopens when:
+  - rsp2_stream exits 75;
+  - `sdrplay.service`'s MainPID or NRestarts changes (systemd restarted the vendor service
+    under the stream);
+  - rsp2_stream's heartbeat file is older than 2 × `--stall-secs` + 15 s (a stream hung
+    inside `readStream`).
+
+  Each reopen is logged on stderr, and again in the history at the end:
+
+  ```
+  [wwv_rsp2_live] 2026-11-20T22:29:26Z REOPEN: segment 1: sdrplay.service restarted under the stream (MainPID NRestarts: 19552 0 -> 49898 1)
+  [wwv_rsp2_live] 2026-11-20T22:29:26Z REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 5)
+  ```
+
+  The reasons read `rsp2_stream had no samples for N s` and `rsp2_stream heartbeat is N s old:
+  the stream is hung`. The `--lock-mins` timer starts again in a reopened segment. A reopened
+  segment's files take the `.segK` names, as after a band switch.
+- **`--reopen-max N`** (default 5). After N reopens the run ends with exit status 4.
+- **Bounded stops.** Every stop is SIGTERM, then SIGKILL if the process has not exited in 10 s
+  (rsp2_stream, the band scan), 5 s (`wwv_live`) or 2 s (the output filter). A kill is
+  logged: `rsp2_stream did not stop in 10 s after SIGTERM; killing it`.
+- **`behind wall clock`.** Every `--report-secs` (60 s) rsp2_stream logs how far its sample
+  count is behind the wall clock since streaming began, and how long its writes to stdout
+  blocked:
+
+  ```
+  [rsp2_stream] behind wall clock +1250 ms (+300 in 60 s), write wait 4 ms (max 1), 0 overflows, 0 timeouts; samples lost upstream (USB or API service), no overflow reported
+  ```
+
+  When "behind" grows by more than 100 ms in an interval, the line names the cause. With
+  little write wait, it reads `samples lost upstream (USB or API service), no overflow
+  reported`. With a long write wait, it reads `the reader is not keeping up`.
+  The last line gives the figure at the end. Read it with `wwv_live`'s `LAG` lines: a `LAG`
+  with upstream loss here means UTC from the sample counter is late by the samples lost.
+- **Kill guard.** At start the wrapper starts a guard process in its own session, so a signal
+  to the wrapper's process group does not reach it. It does nothing while the wrapper runs.
+  If the wrapper exits without its cleanup (SIGKILL, a session that dies with its shell):
+  1. The guard sends SIGTERM to the processes the wrapper recorded, by PID, never by process
+     group, which the caller may share. A PID counts only if its command line is still
+     rsp2_stream, `wwv_live`, the band scan or the output filter.
+  2. It sends SIGKILL to any still running after 10 s.
+  3. It stops `sdrplay.service` and clears a failed state.
+
+  It appends what it did to the wrapper's stderr, as `[wwv_rsp2_live guard]` lines ending
+  with the unit's state. The wrapper's own cleanup stops the guard last.
+
+Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when an
+`auto` scan finds no band, 4 after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else
+`wwv_live`'s or rsp2_stream's own.
+
+`tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
+radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`,
+about 2.5 minutes). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
+script refuses to run unless the PATH reaches them. Its cases cover each reopen reason,
+`--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto` scan going live and
+ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan, a scan that finds
+no band, rsp2_stream's stall exit and `behind wall clock` line, and the scan's `--keep-raw`
+round trip.
 
 ### Band
 
@@ -133,15 +222,22 @@ only mixes the carrier at `-s` Hz to DC, and `wwv_live` uses the PHXI centre fre
 
 ```
 scripts/wwv_band_scan.sh [--secs 25] [--extend-secs 35] [--avoid KHZ] [--bands 2500,5000,...]
-                         [--gain KHZ:LNA:IFGR] [--json FILE]
+                         [--gain KHZ:LNA:IFGR] [--json FILE] [--keep-raw DIR]
 ```
 
 It starts `sdrplay.service` once and stops it on every exit path. It opens the RSP2 once and
 reads each band for `--secs`, about 3.5 minutes for all six, plus `--extend-secs` for each band
 in a close call. It then prints a ranked table, logs the reason for its choice on stderr, and
-the last stdout line is `BEST <kHz>`. The JSON keeps every per-second tick contrast.
+the last stdout line is `BEST <kHz>`. The JSON keeps every per-second tick and BCD contrast.
 `scripts/wwv_band_scan.py --replay PREFIX:KHZ` measures recordings instead and opens no device;
 an extension reads the next seconds of the recording.
+
+`--keep-raw DIR` writes each band's raw I/Q, extension included, as
+`DIR/scan_<UTC>_<kHz>.cs16`, `.timelog.npy` and `.json`: the recording format `--replay`
+reads. That is 8 MB/s, 200 MB per band at 25 s, about 1.2 GB for a six-band scan.
+`--replay DIR/scan_<UTC>_<kHz>:<kHz>` with the same `--secs` measures them again and gives
+the same figures (the `scan_keep_raw` stub test checks that). Scans without it keep only the
+JSON, which carries no 100 Hz figures from before this score existed.
 
 The method is that of wwv-capture `check_signal.py` and `saga/scripts/tick_contrast.py`:
 
@@ -154,32 +250,58 @@ The method is that of wwv-capture `check_signal.py` and `saga/scripts/tick_contr
     The table gives the median, p10 and the share of seconds over 10 dB.
   - The envelope is used rather than a coherent demodulator, so a residual carrier offset does
     not fade the audio.
+- **BCD:** the 80-120 Hz energy of the same envelope, the 100 Hz time-code subcarrier.
+  - Every second but :00 sends the pulse at full level from 30 ms to 230, 530 or 830 ms, then
+    the low level.
+  - The BCD contrast of a second is the mean energy in 60-200 ms (inside every pulse, past
+    the filter's rise) over 850-980 ms (the low level in every second), in dB.
+  - The windows follow the tick fold peak when that fold is 6 dB or more; host latency puts
+    it 13-16 ms late.
+  - `bcd_fold` is the same ratio over all seconds. The table gives the per-second median, p10
+    and count.
 - **WWVH:** the same fold at 1100-1300 Hz. "WWVH may dominate" is printed when a WWVH band
   (2.5-15 MHz) shows a 1200 Hz tick fold of at least 6 dB, within 3 dB of the 1000 Hz one.
+  - The sidebands do not show WWVH. In the saga capture (25 windows, 12:09-12:20 UTC),
+    sb1200 reads 17-24 dB in odd minutes and about 4 dB in even ones. sb1000 reaches 31-35 dB
+    in the even windows.
+  - That follows WWV's own 600 Hz (odd minutes) and 500 Hz (even) tones, at twice their
+    frequency. So `sb1200 >= sb1000` gives the minute's parity, and the scan does not use it.
+  - The WWVH tick fold also takes the WWV tick's spectrum: on that capture it reads
+    5.5-15.7 dB beside WWV tick folds of 15-28 dB. Only a 1200 Hz fold close to the
+    1000 Hz one counts.
 - **ADC:** raw peak in dBFS, and the share of samples at full scale.
   - API overload events are counted only with the overload-logging SoapySDRPlay3 build
     (`--overload-plugin DIR`). The default is wwv-capture `saga/soapysdrplay3-src/plugin-overloadlog`
     when that exists. The installed module drops the events, so without the build the column
     reads `n/a`.
 
-**Score.** The share of seconds whose tick contrast is over 10 dB, in percent: the `score`
-column. Where WWVH may dominate, a second must clear 16 dB instead. A band with clipping or an
-overload scores -1 and is never chosen. Under 30 dB-Hz a row reads "no carrier" and gives no
-carrier offset; noise alone reads 11-14 dB-Hz.
+**Scores.**
+- **Tick score:** the share of seconds whose tick contrast is over 10 dB, in percent: the
+  `score` column. Where WWVH may dominate, a second must clear 16 dB instead.
+- **BCD score:** the share of seconds whose BCD contrast is over 10 dB: the `BCD` column.
+- A band with clipping or an overload scores -1 on both and is never chosen.
+- Under 30 dB-Hz a row reads "no carrier" and gives no carrier offset; noise alone reads
+  11-14 dB-Hz.
 
 **Choice.**
-- A score of 40% or more is usable.
-- The scan takes the lowest band whose score is above 0 and within 30 points of the best
-  score: among the usable bands, or among all of them when none is usable. A higher band wins
-  only by more than 30 points.
-- When every score is 0, the higher median contrast wins.
-- When two or more bands score above 0 within 30 points of the best, each is read
-  `--extend-secs` (35 s) more, and the choice is made again on all their seconds, about 57
-  per band.
+- A tick score of 40% or more is tick-usable. A BCD score of 50% or more is BCD-usable: the
+  median second clears 10 dB. A band that is both is usable.
+- The scan takes the first of these tiers that has a band in it:
+  1. the usable bands, ranked by BCD score;
+  2. the tick-usable bands, ranked by BCD score (noted "BCD not usable");
+  3. every measured band, ranked by tick score, then median tick contrast ("not usable").
+- Within the tier it takes the lowest band whose score is above 0 and within the margin of
+  the best: 20 points of BCD score in tiers 1-2, 30 points of tick score in tier 3. A higher
+  band wins only by more than the margin.
+- When the tier's best score is 0, the ranking order decides.
+- When two or more bands of the tier score above 0 within its margin of the best, each is
+  read `--extend-secs` (35 s) more, and the choice is made again on all their seconds,
+  about 57 per band.
 - When no band is usable, the scan warns and `auto` still goes live on its choice.
-- `--avoid KHZ` drops a band while another is in the running. The band switch uses it.
+- `--avoid KHZ` drops a band while another band of the tier is in the running. The band
+  switch uses it.
 
-**Why these thresholds.** Lock and the 25 s score, from the 2026-11-19 and 2026-11-20 runs:
+**Why the tick thresholds.** Lock and the 25 s score, from the 2026-11-19 and 2026-11-20 runs:
 
 | Recording or scan                       | Band   | Score, 25 s windows        | Live or replayed outcome                   |
 |-----------------------------------------|--------|----------------------------|--------------------------------------------|
@@ -201,13 +323,13 @@ carrier offset; noise alone reads 11-14 dB-Hz.
 - **Extension:** 25 s gives about 23 seconds per band, so a score's sampling error is up to
   10 points. Pooling 60 s brings it under 7, and only close calls pay for it.
 
-Under the old median ranking, 09:21 chose 10 MHz. On the same 25 s figures the new ranking
+Under the median ranking, 09:21 chose 10 MHz. On the same 25 s figures the tick-score ranking
 chooses 5 MHz (29% against 13%). It would first read both bands 35 s more, and that read was
 not taken.
 
 The same three dawn scans show how fast the best band moves:
 
-| UTC   | 5 MHz median, score | 10 MHz median, score | Old choice | New choice |
+| UTC   | 5 MHz median, score | 10 MHz median, score | Median ranking | Tick-score ranking |
 |-------|---------------------|----------------------|------------|------------|
 | 09:17 | 19.7 dB, 100%       | 1.0 dB, 0%           | 5 MHz      | 5 MHz      |
 | 09:21 | 7.5 dB, 29%         | 8.0 dB, 13%          | 10 MHz     | 5 MHz      |
@@ -218,6 +340,75 @@ In all three scans:
   the bin the scan mixes to. Whether that is a carrier or an artefact is not checked.
 - 15, 20 and 25 MHz had no carrier.
 - No band clipped or overloaded the ADC.
+
+**Why the BCD thresholds.** The time of day is decoded from the BCD pulses. On 2026-11-20
+the tick ranking put 10 MHz, then 15 MHz, first (run90g). 15 MHz locked, but its symbols
+were far worse than 5 MHz's.
+
+Two measures of the 100 Hz contrast are on record:
+- **Raw I/Q, the scan's own measure.** The saga recordings, re-measured in 25 s windows with
+  the scan's code.
+- **`wwv_live --frames`.** The BTIME detector's energy every 5.12 ms, folded by UTC second
+  with the same `bcd_contrasts()`, from the live runs that kept frames.
+
+The detector's energy is a 50 Hz bucket of a 256-point FFT at 50 kHz (195 Hz bins), so it
+admits more noise and its contrast is compressed. On the saga capture, replayed through
+`wwv_live --frames`, the per-second median is 7.4 dB in the frames and 21.4 dB with the
+scan's measure.
+
+The frames are put on the scan's scale with one model: contrast = (x+1)/(x/R+1), where x is
+the pulse-to-noise ratio and R the transmitted pulse-to-low ratio. The frames see x lower by
+a fixed factor, 15.5 dB at R = 30 dB, fitted on the saga medians. R between 26 and 40 dB
+moves the mapped window medians by up to 1.5 dB.
+
+The model holds for medians, not for the tails. Mapped saga frames give a p10-p90 of
+17.7-23.2 dB, where the scan measures 12.6-25.8 dB. So the per-25 s-window median is the
+figure compared.
+
+| Source (UTC)                            | Band   | Tick score | BCD, scan scale, window median | Usable windows at 10 dB / 50% | Outcome |
+|-----------------------------------------|--------|------------|--------------------------------|-------------------------------|---------|
+| scored capture, raw, 11-19 12:09-12:20   | 5 MHz  | 56-100%    | 14.5-25.4 dB; BCD score 71-100%, mean 94% | 25 of 25 | LOCKED at 2.5 min, decoded |
+| chk30, raw, 11-19 12:07                  | 5 MHz  | 65%        | 16.8 dB; BCD score 88%         | 1 of 1                        | (scan only) |
+| chk30, raw, 11-19 12:08                  | 10 MHz | 0%         | -0.2 dB; BCD score 0%          | 0 of 1                        | (scan only) |
+| smoke, raw, 11-19 17:42 and 17:51        | 5 MHz  | 0%         | -0.5 to 0.6 dB; BCD score 0%   | 0 of 12                       | never left ACQUIRING |
+| run90f frames, 11-20 13:18-13:48         | 5 MHz  | 50% (scan) | p10 9.3, median 14.1 dB        | 60 of 71 (85%)                | 1->0 27.5%, P->1 13.2%, mid 10.2%, erase 6.6% |
+| run90g seg 1 frames, 13:51-13:59         | 10 MHz | 0% (scan)  | p10 6.2, median 8.3 dB         | 7 of 19 (37%)                 | never LOCKED in 8 min |
+| run90g seg 2 frames, 14:02-14:54         | 15 MHz | 30% (scan) | median 5.4, p90 14.1 dB        | 39 of 124 (31%)               | 1->0 48.6%, P->1 35.0%, mid 37.0%, erase 27.7%; date never right |
+
+The symbol rates are from `tests/air/symbol_rates.py` on each run's log.
+
+Noise alone (smoke, the 12:08 10 MHz window: 306 seconds) gives per-second BCD contrasts
+with a median of -0.2 dB, a p99 of 5.6 dB and a maximum of 8.0 dB. None is over 10 dB.
+
+- **10 dB per second, 50% usable.** Only the median transfers between the two measures, so
+  "usable" is set where the median second clears the threshold. At 10 dB:
+  - 85% of run90f's windows pass, against 31% of 15 MHz's and 37% of 10 MHz's;
+  - every window of the scored capture passes;
+  - no noise second reaches it.
+
+  The other thresholds, as the share of windows that pass:
+
+  | Threshold   | run90f 5 MHz | 10 MHz seg 1 | 15 MHz seg 2 |
+  |-------------|--------------|--------------|--------------|
+  | 8 dB        | 97%          | 58%          | 40%          |
+  | 12 dB       | 62%          | 11%          | 19%          |
+
+  8 dB lets more than half of the 10 MHz windows through. 12 dB drops 38% of run90f's
+  windows. 10 dB is also the tick threshold.
+- **20-point margin.** On the scored capture, one 25 s window's BCD score differs from the
+  next by 8.8 points SD, and by up to 21. At a score near 50% over 23 seconds, the binomial
+  SD is 10 points, or 15 points for the difference of two bands. A margin of 20 points
+  covers the largest step measured. The tick margin stays 30 points, where its own steps
+  were larger.
+- **What a 25 s window cannot show.** 15 MHz in run90g faded in and out: 31% of its windows
+  would pass. A scan that reads such a band in a good window still chooses it. The band
+  switch's `--lock-mins` is the backstop. No raw I/Q of run90g's scan windows was kept: the
+  scan JSONs from before this change carry no 100 Hz figure, so its 14:01 window cannot be
+  scored. `--keep-raw` keeps that evidence from now on.
+- **run90f's own date.** Live, run90f decoded the date wrong: 10 minutes read 2026-05-04
+  and one read 2026-11-20. It stands as the better band here on its symbol rates against
+  15 MHz's. run90c and run90d (5 MHz, date CONFIRMED in 69 and 61 minutes) kept neither
+  frames nor raw I/Q, so their BCD contrast is not measured.
 
 ### Band switch
 
@@ -236,8 +427,8 @@ segment: band, length, and whether it locked. A fixed `--wwv-khz` never switches
 
 Segment 1 writes `--log`, `--timebase`, `--scan-json`, `--record` and `wwv_live --frames` under
 the names given. Segment K writes them with `.segK` before the extension: `run.log` becomes
-`run.seg2.log`, and `PREFIX` becomes `PREFIX.seg2`. `--secs` counts from the first live start,
-so re-scans count toward it. `--carrier-hz`, `--lna` and `--ifgr` hold for the first band only.
+`run.seg2.log`, and `PREFIX` becomes `PREFIX.seg2`. `--secs` counts from the start of the
+first scan, so the scans count toward it. `--carrier-hz`, `--lna` and `--ifgr` hold for the first band only.
 
 **On the radio, 2026-11-20 12:53-13:03 UTC** (`--lock-mins 3 --secs 300`): the scan chose
 5 MHz at 48%. It reached TENTATIVE with one marker, and at 3 minutes the wrapper logged
