@@ -88,6 +88,40 @@ void sync_detector_destroy(sync_detector_t *sd);
  */
 void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms);
 
+/* Edges that mark whole seconds, for sync_detector_second_edge() */
+typedef enum {
+    SYNC_EDGE_TICK = 0,     /* tick_event_t.timestamp_ms */
+    SYNC_EDGE_BTIME = 1     /* BCD time-detector pulse leading edge (bcd_time_event_t.timestamp_ms) */
+} sync_edge_kind_t;
+
+typedef struct {
+    int slews;              /* phase corrections from edges */
+    float slewed_ms;        /* their sum */
+    int jumps;              /* tick clusters off the held phase */
+    int snaps;              /* of those, early and soon after support: phase moved to them */
+    int candidate_seconds;  /* candidates whole seconds off the held phase (-> RECOVERING) */
+    int breaks;             /* phase moves >= 100 ms by markers */
+} sync_phase_stats_t;
+
+/**
+ * Report an edge at a whole second, to track the sub-second phase while LOCKED.
+ * Only its time is used (never a pulse's width). It never starts a lock, never
+ * chooses the minute and never moves the phase by whole seconds; a jump it
+ * cannot follow drops sync to RECOVERING until a marker re-locks. Ignored when
+ * not LOCKED. See PHASE_* in sync_detector.c.
+ */
+void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edge_kind_t kind);
+
+/**
+ * Phase epoch: incremented whenever the held phase moves by 100 ms or more (a
+ * marker re-anchor) or is lost (a jump, a candidate whole seconds off). A BCD
+ * window or time-decoder frame that spans a change of epoch is discarded.
+ */
+int sync_detector_get_phase_epoch(sync_detector_t *sd);
+
+/** Counts of what the phase tracker did */
+sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd);
+
 /**
  * Report minute marker from tick detector (duration-based detection)
  * @param sd Detector handle
