@@ -141,7 +141,9 @@ static void close_window(bcd_correlator_t *corr) {
                 .duration_ms = duration_ms,
                 .confidence = confidence,
                 .source = source,
-                .second = corr->current_second
+                .second = corr->current_second,
+                .phase_epoch = corr->window_epoch,
+                .phase_resets = corr->window_resets
             };
             corr->callback(&event, corr->callback_user_data);
         }

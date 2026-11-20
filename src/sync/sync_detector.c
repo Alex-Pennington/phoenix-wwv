@@ -67,6 +67,78 @@
  * real marker on it) to lock. */
 #define CANDIDATE_TOLERANCE_MS       150.0f
 
+/* Second-phase tracking (sync_detector_second_edge). The held phase counts
+ * samples, so samples lost upstream move it: on live run90g (15 MHz) the stream
+ * lost about 3 ms/s (up to 5 ms/s) for 30 minutes, 5.3 s in all, and the held
+ * phase was 0.66 s, 1.39 s and 1.24 s late when the next markers re-anchored it.
+ * A window opens WINDOW_LEAD_MS (100 ms) before its second and a pulse starts
+ * about 40 ms after it, so a phase about 140 ms late already puts every pulse in
+ * the previous window. While LOCKED, the edges that mark whole seconds (ticks,
+ * and the leading edges of BCD time-detector pulses) keep the sub-second phase:
+ *   - each edge's offset from its predicted second (the held phase plus the
+ *     edge's own lead, PHASE_LEAD_*) is taken modulo 1 s;
+ *   - only edges within PHASE_GATE_MS of the prediction count, over the last
+ *     PHASE_WINDOW_MS. A pulse's width (its symbol) is never used;
+ *   - the estimate is the median of the in-gate ticks when there are at least
+ *     PHASE_MIN_EDGES of them (ticks are sharp on a strong signal: +-5 ms), else
+ *     of all in-gate edges (BCD starts are broad, but on the weak 15 MHz run they
+ *     are 5-10 times as many as true ticks). Beyond the dead band
+ *     (PHASE_DEADBAND_MS for ticks; PHASE_DEADBAND_BTIME_MS when BCD starts set
+ *     it, whose lead differs by band: +17..+34 ms on the 5/10 MHz runs, later on
+ *     15 MHz), the phase moves by PHASE_GAIN of it, at most once per
+ *     PHASE_EVAL_MS. A slew is at most PHASE_GAIN x PHASE_GATE_MS.
+ * Ticks give the phase modulo 1 s only, so the tracker never starts a lock,
+ * never chooses the minute and cannot see whole seconds: a loss of n s + d reads
+ * as d. Whole seconds come from markers (confirm_marker()'s +-5 s re-anchor) and
+ * from a candidate that lands a whole number of seconds off the held phase.
+ * A jump the slew cannot follow shows as a tick cluster outside
+ * PHASE_JUMP_GATE_MS: over PHASE_JUMP_WINDOW_MS, at least PHASE_JUMP_MIN_TICKS
+ * ticks within PHASE_JUMP_RADIUS_MS of each other, PHASE_JUMP_BG_RATIO times the
+ * count uniform false ticks would put there, and more than twice the ticks near
+ * the held phase. The BCD pulse starts since the cluster's first tick, each
+ * within PHASE_GATE_MS of its predicted second, then decide: at least PHASE_MIN_EDGES
+ * on the held phase and more than twice those on the cluster's, the cluster is
+ * false and is ignored (a burst of false ticks in a tick fade). The other way
+ * round, and lost samples only making edges early, an early cluster within
+ * PHASE_SNAP_SUPPORT_MS of the last edge or marker support is the loss since
+ * then, and the phase moves to it (a break). Anything else (late, after a long
+ * gap, or the BCD starts not deciding) is ambiguous: sync drops to RECOVERING
+ * with the phase marked unknown, and the next marker within +-5 s of the minute
+ * re-locks on its own time. On run90g seg2 the slews follow 3 ms/s only in part; most of the 5.3 s
+ * is taken back by the snaps and the marker re-anchors. Measured by replaying
+ * the chain on the live logs (run90, run90c, run90d, run90f, run90g seg2): no
+ * jump on the runs with no loss. */
+#define PHASE_WINDOW_MS              12000.0f
+#define PHASE_EVAL_MS                1000.0f
+#define PHASE_GATE_MS                40.0f
+#define PHASE_MIN_EDGES              4
+#define PHASE_DEADBAND_MS            8.0f
+#define PHASE_DEADBAND_BTIME_MS      15.0f
+#define PHASE_GAIN                   0.5f
+#define PHASE_LEAD_TICK_MS           15.0f    /* tick detector, from the marker lead */
+#define PHASE_LEAD_BTIME_MS          30.0f    /* BCD time detector leading edge */
+#define PHASE_JUMP_WINDOW_MS         30000.0f
+#define PHASE_JUMP_GATE_MS           80.0f
+#define PHASE_JUMP_RADIUS_MS         15.0f
+#define PHASE_JUMP_MIN_TICKS         6
+#define PHASE_JUMP_BG_RATIO          4.0f
+#define PHASE_SNAP_SUPPORT_MS        60000.0f
+/* A phase move at least this large is a break: windows and frames that span it
+ * are discarded (sync_detector_get_phase_epoch). Slews stay below it. */
+#define PHASE_BREAK_MS               100.0f
+/* A marker move at least this large, or a candidate whole seconds off, says
+ * the held phase was a whole second off for an unknown time: frames already
+ * decoded may hold every symbol in the wrong second, and such a frame can pass
+ * the decoder's marker check. The decoder drops its chain
+ * (sync_detector_get_phase_resets). Sub-second errors are left to its checks:
+ * on run90g seg2, dropping the chain at 500 ms moves and at every lost phase
+ * ended decoding at 14:41 (14:49 without). */
+#define PHASE_WRONG_MS               900.0f
+/* A candidate within this of a whole number of seconds (1..5) off the held
+ * phase says the held phase is a whole number of seconds off */
+#define CANDIDATE_SECOND_TOL_MS      60.0f
+#define PHASE_EDGES_MAX              256
+
 /* Evidence weights */
 #define WEIGHT_TICK                  0.05f
 #define WEIGHT_MARKER                0.40f
@@ -112,7 +184,13 @@ typedef struct {
     bool recovery_tick_seen;
     bool recovery_marker_seen;
     bool recovery_p_marker_seen;
+    bool phase_unknown;             /* entered on a jump: whole seconds unknown */
 } recovery_state_t;
+
+typedef struct {
+    float t_ms;
+    uint8_t kind;                   /* sync_edge_kind_t */
+} phase_edge_t;
 
 struct sync_detector {
     /* Legacy pending events (backward compat) */
@@ -144,6 +222,15 @@ struct sync_detector {
 
     /* Recovery state */
     recovery_state_t recovery;
+
+    /* Second-phase tracking */
+    phase_edge_t edges[PHASE_EDGES_MAX];
+    int edge_head, edge_count;
+    float last_phase_eval_ms;
+    int phase_epoch;
+    int phase_resets;               /* the phase was found wrong: see sync_detector_get_phase_resets */
+    float phase_support_ms;         /* last time the held phase had edge or marker support */
+    sync_phase_stats_t phase_stats;
 
     /* Signal loss detection */
     int signal_weak_count;
@@ -226,6 +313,22 @@ static void log_confirmed_marker(sync_detector_t *sd, float timestamp_ms,
                 sd->last_confirmed_ms);
 }
 
+/* Sub-minute part of a phase change, in (-30 s, +30 s] */
+static float minute_wrap(float d) {
+    return d - roundf(d / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS;
+}
+
+/* A move of the held phase by at least PHASE_BREAK_MS starts a new phase epoch */
+static void note_phase_move(sync_detector_t *sd, float old_ms, float new_ms, const char *why) {
+    if (old_ms <= 0.0f) return;
+    float d = minute_wrap(new_ms - old_ms);
+    if (fabsf(d) < PHASE_BREAK_MS) return;
+    sd->phase_epoch++;
+    sd->phase_stats.breaks++;
+    if (fabsf(d) >= PHASE_WRONG_MS) sd->phase_resets++;
+    printf("[SYNC] Phase break #%d (%s): held phase moved %+.0f ms\n", sd->phase_epoch, why, d);
+}
+
 static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_ms, const char *source) {
     /* The marker of a minute a candidate already confirmed: it is measured, the
      * candidate's time was the held phase, so take its time; count it once. */
@@ -233,6 +336,7 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
         fabsf(marker_time - sd->last_confirmed_ms) < CORRELATION_WINDOW_MS) {
         printf("[SYNC] Marker (%s) of the minute a candidate confirmed: anchor %.1fms -> %.1fms\n",
                source, sd->last_confirmed_ms, marker_time);
+        note_phase_move(sd, sd->last_confirmed_ms, marker_time, "marker of a candidate's minute");
         sd->last_confirmed_ms = marker_time;
         sd->minute_anchor_ms = marker_time;
         sd->last_confirm_weak = false;
@@ -269,6 +373,7 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
             printf("[SYNC] Re-anchor: markers at %.1fms and %.1fms are %.1fs apart; "
                    "dropping anchor %.1fms\n", sd->last_rejected_ms, marker_time,
                    since_rejected / 1000.0f, sd->last_confirmed_ms);
+            note_phase_move(sd, sd->last_confirmed_ms, sd->last_rejected_ms, "re-anchor");
             sd->last_confirmed_ms = sd->last_rejected_ms;
             sd->good_intervals = 0;
             interval_ms = since_rejected;
@@ -280,8 +385,10 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
         sd->last_rejected_ms = 0.0f;
         /* Update confirmed marker history */
         sd->prev_confirmed_ms = sd->last_confirmed_ms;
+        note_phase_move(sd, sd->last_confirmed_ms, marker_time, source);
         sd->last_confirmed_ms = marker_time;
         sd->minute_anchor_ms = marker_time;  /* Set authoritative anchor */
+        sd->phase_support_ms = marker_time;
         sd->confirmed_count++;
 
         /* Track good intervals for lock confidence */
@@ -310,11 +417,13 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
             transition_state(sd, SYNC_TENTATIVE);
         }
 
-        /* In recovery, a marker on the retained minute phase validates it */
+        /* In recovery, a marker on the retained minute phase validates it. After
+         * a jump the retained phase is off by an unknown amount: a marker within
+         * the +-5 s interval test (above) is the new phase. */
         if (sd->state == SYNC_RECOVERING && sd->recovery.has_retained_state) {
-            float off = marker_time - sd->recovery.retained_anchor_ms;
-            off -= roundf(off / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS;
-            if (fabsf(off) <= sd->marker_tolerance_ms) sd->recovery.recovery_marker_seen = true;
+            float off = minute_wrap(marker_time - sd->recovery.retained_anchor_ms);
+            if (fabsf(off) <= sd->marker_tolerance_ms || sd->recovery.phase_unknown)
+                sd->recovery.recovery_marker_seen = true;
         }
 
         /* Flash for UI */
@@ -495,6 +604,7 @@ static void sync_detector_full_reset(sync_detector_t *sd) {
 
     memset(&sd->tick_gap, 0, sizeof(tick_gap_tracker_t));
     memset(&sd->recovery, 0, sizeof(recovery_state_t));
+    sd->edge_count = 0;
 
     sd->confidence = 0.0f;
     sd->evidence_mask = 0;
@@ -502,6 +612,25 @@ static void sync_detector_full_reset(sync_detector_t *sd) {
     sd->expecting_marker_soon = false;
 
     transition_state(sd, SYNC_ACQUIRING);
+}
+
+/* The held phase is off by an unknown number of whole seconds: frames stop
+ * (RECOVERING) and the next marker within +-5 s of the minute re-locks. */
+static void enter_phase_unknown(sync_detector_t *sd, float now_ms, const char *why) {
+    if (sd->state != SYNC_LOCKED) return;
+    printf("[SYNC] Held phase lost (%s) - whole seconds unknown, waiting for a marker\n", why);
+    sd->phase_epoch++;
+    sd->recovery.retained_anchor_ms = sd->minute_anchor_ms;
+    sd->recovery.signal_lost_ms = now_ms;
+    sd->recovery.recovery_start_ms = now_ms;
+    sd->recovery.has_retained_state = true;
+    sd->recovery.recovery_tick_seen = false;
+    sd->recovery.recovery_marker_seen = false;
+    sd->recovery.recovery_p_marker_seen = false;
+    sd->recovery.phase_unknown = true;
+    sd->last_confirm_weak = false;
+    sd->edge_count = 0;
+    transition_state(sd, SYNC_RECOVERING);
 }
 
 /*============================================================================
@@ -604,6 +733,8 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
     if (!sd) return;
     /* No phase to test it against: a candidate never starts one */
     if (sd->state == SYNC_ACQUIRING || sd->minute_anchor_ms <= 0.0f) return;
+    /* After a jump the held phase is not known to the second */
+    if (sd->state == SYNC_RECOVERING && sd->recovery.phase_unknown) return;
     /* A detector already reported this minute's marker; it decides */
     if (sd->tick_pending || sd->marker_pending) return;
 
@@ -624,6 +755,26 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
     if (!on_phase) {
         printf("[SYNC] Candidate (%s) off the held phase: leads %.1fms / %.1fms\n",
                source, lead_a_ms, lead_b_ms);
+        /* A whole number of seconds off: the held phase may be right modulo 1 s
+         * and seconds off (a loss of n s + d that the tracker followed as d). It
+         * cannot be told which is wrong, so the phase is not trusted. */
+        if (sd->state == SYNC_LOCKED) {
+            for (int i = 0; i < 2; i++) {
+                float since = leads[i] - sd->minute_anchor_ms;
+                if (roundf(since / MARKER_NOMINAL_MS) < 1.0f) continue;
+                float off = minute_wrap(since);
+                float k = roundf(off / 1000.0f);
+                if (fabsf(k) >= 1.0f && fabsf(k) <= 5.0f &&
+                    fabsf(off - k * 1000.0f) <= CANDIDATE_SECOND_TOL_MS) {
+                    char why[64];
+                    snprintf(why, sizeof why, "candidate %s %+.0f s off", source, k);
+                    sd->phase_stats.candidate_seconds++;
+                    sd->phase_resets++;
+                    enter_phase_unknown(sd, leads[i], why);
+                    return;
+                }
+            }
+        }
         return;
     }
     /* This minute is already confirmed */
@@ -742,6 +893,135 @@ void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms) {
     }
 }
 
+static float second_wrap(float d) {
+    return d - roundf(d / 1000.0f) * 1000.0f;
+}
+
+static int cmp_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+static float median_of(float *v, int n) {
+    qsort(v, (size_t)n, sizeof *v, cmp_float);
+    return (n & 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+}
+
+/* Offset of an edge from its predicted second under the held phase */
+static float edge_offset(const sync_detector_t *sd, const phase_edge_t *e) {
+    float lead = e->kind == SYNC_EDGE_TICK ? PHASE_LEAD_TICK_MS : PHASE_LEAD_BTIME_MS;
+    return second_wrap(e->t_ms - sd->last_confirmed_ms - lead);
+}
+
+static void track_phase(sync_detector_t *sd, float now_ms) {
+    float ticks[PHASE_EDGES_MAX], gated[PHASE_EDGES_MAX], gated_ticks[PHASE_EDGES_MAX];
+    float btimes[PHASE_EDGES_MAX], tick_t[PHASE_EDGES_MAX], btime_t[PHASE_EDGES_MAX];
+    int nt = 0, ng = 0, ngt = 0, nb = 0;
+    for (int i = 0; i < sd->edge_count; i++) {
+        const phase_edge_t *e = &sd->edges[(sd->edge_head - sd->edge_count + i + PHASE_EDGES_MAX) % PHASE_EDGES_MAX];
+        if (e->t_ms < now_ms - PHASE_JUMP_WINDOW_MS) continue;
+        float o = edge_offset(sd, e);
+        if (e->kind == SYNC_EDGE_TICK) { tick_t[nt] = e->t_ms; ticks[nt++] = o; }
+        else { btime_t[nb] = e->t_ms; btimes[nb++] = o; }
+        if (e->t_ms < now_ms - PHASE_WINDOW_MS || fabsf(o) > PHASE_GATE_MS) continue;
+        gated[ng++] = o;
+        if (e->kind == SYNC_EDGE_TICK) gated_ticks[ngt++] = o;
+    }
+
+    /* A tick cluster off the held phase: a jump of unknown whole seconds */
+    if (nt >= PHASE_JUMP_MIN_TICKS) {
+        int best = 0, near = 0;
+        float best_at = 0.0f;
+        for (int i = 0; i < nt; i++) {
+            if (fabsf(ticks[i]) <= PHASE_JUMP_GATE_MS) { near++; continue; }
+            int n = 0;
+            for (int j = 0; j < nt; j++)
+                if (fabsf(second_wrap(ticks[j] - ticks[i])) <= PHASE_JUMP_RADIUS_MS) n++;
+            if (n > best) { best = n; best_at = ticks[i]; }
+        }
+        float background = (float)nt * 2.0f * PHASE_JUMP_RADIUS_MS / 1000.0f;
+        if (best >= PHASE_JUMP_MIN_TICKS && (float)best >= PHASE_JUMP_BG_RATIO * background &&
+            best > 2 * near) {
+            /* The BCD pulse starts must agree, each within PHASE_GATE_MS of its
+             * predicted second under one phase or the other: a burst of false
+             * ticks in a tick fade otherwise moves a right phase */
+            /* from the cluster's first tick: before it the edges were on the
+             * held phase whichever is right */
+            float since = now_ms;
+            for (int j = 0; j < nt; j++)
+                if (fabsf(second_wrap(ticks[j] - best_at)) <= PHASE_JUMP_RADIUS_MS && tick_t[j] < since)
+                    since = tick_t[j];
+            int bt_new = 0, bt_old = 0;
+            for (int i = 0; i < nb; i++) {
+                if (btime_t[i] < since) continue;
+                if (fabsf(btimes[i]) <= PHASE_GATE_MS) bt_old++;
+                if (fabsf(second_wrap(btimes[i] - best_at)) <= PHASE_GATE_MS) bt_new++;
+            }
+            char why[96];
+            snprintf(why, sizeof why, "%d ticks at %+.0f ms, %d near it; BCD starts %d there, %d on the phase",
+                     best, best_at, near, bt_new, bt_old);
+            sd->phase_stats.jumps++;
+            if (bt_old >= PHASE_MIN_EDGES && bt_old > 2 * bt_new) {
+                /* the BCD starts hold the phase: the cluster is false */
+                printf("[SYNC] Tick cluster ignored (%s)\n", why);
+                sd->phase_stats.jumps_ignored++;
+                return;
+            }
+            bool bcd_agrees = bt_new >= PHASE_MIN_EDGES && bt_new > 2 * bt_old;
+            /* Samples lost upstream only make the edges early. An early cluster
+             * while the phase had support PHASE_SNAP_SUPPORT_MS ago is the loss
+             * since then; anything else is ambiguous. */
+            if (bcd_agrees && best_at < 0.0f && sd->phase_support_ms > 0.0f &&
+                now_ms - sd->phase_support_ms <= PHASE_SNAP_SUPPORT_MS) {
+                note_phase_move(sd, sd->last_confirmed_ms, sd->last_confirmed_ms + best_at, "edge jump");
+                sd->last_confirmed_ms += best_at;
+                sd->minute_anchor_ms += best_at;
+                sd->phase_stats.snaps++;
+                sd->phase_support_ms = now_ms;
+                return;
+            }
+            enter_phase_unknown(sd, now_ms, why);
+            return;
+        }
+    }
+
+    /* Slew: the median offset of the in-gate edges, ticks alone when enough */
+    float *use = ngt >= PHASE_MIN_EDGES ? gated_ticks : gated;
+    int n = ngt >= PHASE_MIN_EDGES ? ngt : ng;
+    if (n < PHASE_MIN_EDGES) return;
+    sd->phase_support_ms = now_ms;
+    float e = median_of(use, n);
+    if (fabsf(e) <= (use == gated_ticks ? PHASE_DEADBAND_MS : PHASE_DEADBAND_BTIME_MS)) return;
+    float c = PHASE_GAIN * e;
+    sd->last_confirmed_ms += c;
+    sd->minute_anchor_ms += c;
+    sd->phase_stats.slews++;
+    sd->phase_stats.slewed_ms += c;
+}
+
+void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edge_kind_t kind) {
+    if (!sd || sd->state != SYNC_LOCKED || sd->last_confirmed_ms <= 0.0f) return;
+    sd->edges[sd->edge_head] = (phase_edge_t){ timestamp_ms, (uint8_t)kind };
+    sd->edge_head = (sd->edge_head + 1) % PHASE_EDGES_MAX;
+    if (sd->edge_count < PHASE_EDGES_MAX) sd->edge_count++;
+    if (timestamp_ms - sd->last_phase_eval_ms < PHASE_EVAL_MS) return;
+    sd->last_phase_eval_ms = timestamp_ms;
+    track_phase(sd, timestamp_ms);
+}
+
+int sync_detector_get_phase_resets(sync_detector_t *sd) {
+    return sd ? sd->phase_resets : 0;
+}
+
+int sync_detector_get_phase_epoch(sync_detector_t *sd) {
+    return sd ? sd->phase_epoch : 0;
+}
+
+sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd) {
+    sync_phase_stats_t z = {0};
+    return sd ? sd->phase_stats : z;
+}
+
 void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
                                    float duration_ms) {
     if (!sd) return;
@@ -801,6 +1081,7 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
                 sd->recovery.recovery_tick_seen = false;
                 sd->recovery.recovery_marker_seen = false;
                 sd->recovery.recovery_p_marker_seen = false;
+                sd->recovery.phase_unknown = false;
 
                 transition_state(sd, SYNC_RECOVERING);
             }
@@ -822,6 +1103,8 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
             printf("[SYNC] Recovery validated after %.0fs - returning to LOCKED\n",
                    time_in_recovery / 1000.0f);
             sd->minute_anchor_ms = sd->last_confirmed_ms;
+            sd->recovery.phase_unknown = false;
+            sd->edge_count = 0;
             if (sd->confidence < sd->confidence_locked_threshold)
                 sd->confidence = sd->confidence_locked_threshold;
             transition_state(sd, SYNC_LOCKED);

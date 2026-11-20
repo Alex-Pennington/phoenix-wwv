@@ -231,6 +231,10 @@ int main(int argc, char **argv) {
            "candidates tick=%d marker=%d console=%d\n",
            sync_state_name(sync_detector_get_state(sd)), sync_detector_get_confidence(sd),
            ft.current_second, n_tick, n_tmark, n_mark, n_bt, n_bf, n_tmarkw, n_markw, n_cands);
+    sync_phase_stats_t ps = sync_detector_get_phase_stats(sd);
+    printf("PHASE slews=%d slewed_ms=%.0f jumps=%d snaps=%d ignored=%d candidate_seconds=%d breaks=%d epoch=%d\n",
+           ps.slews, ps.slewed_ms, ps.jumps, ps.snaps, ps.jumps_ignored, ps.candidate_seconds, ps.breaks,
+           sync_detector_get_phase_epoch(sd));
     wwv_detector_manager_destroy(mgr);
     wwv_chain_log_destroy(log);
     return 0;

@@ -77,6 +77,10 @@ typedef struct {
                                    window and ended in this one; the offset is that
                                    event's start (before -100 ms), and the width is
                                    taken from its end */
+    int phase_epoch;            /* sync_detector_get_phase_epoch() of the window: a
+                                   frame holding two epochs spans a phase break */
+    int phase_resets;           /* sync_detector_get_phase_resets() of the window: a
+                                   change drops the decoder's chain */
 } bcd_symbol_event_t;
 
 typedef void (*bcd_corr_symbol_callback_fn)(const bcd_symbol_event_t *event, void *user_data);

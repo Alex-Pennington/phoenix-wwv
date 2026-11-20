@@ -225,7 +225,22 @@ void wwv_time_decoder_set_callback(wwv_time_decoder_t *td, wwv_td_callback_fn cb
 void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int second,
                              char symbol, float pulse_offset_ms);
 
-/** Adapter for bcd_correlator_set_callback(): user_data is the decoder. */
+/**
+ * Drop the open frame without decoding it: its symbols span a sync phase break
+ * (some were binned under a phase since found wrong). The chain is kept.
+ */
+void wwv_time_decoder_discard_frame(wwv_time_decoder_t *td);
+
+/**
+ * Drop the open frame and the chain: sync found its phase a whole second off
+ * (sync_detector_get_phase_resets), so frames closed before that was seen may
+ * hold every symbol in the wrong second. Decoding starts again from the next
+ * frame.
+ */
+void wwv_time_decoder_reset(wwv_time_decoder_t *td);
+
+/** Adapter for bcd_correlator_set_callback(): user_data is the decoder. A symbol
+ *  of a different phase epoch from the open frame's discards that frame. */
 void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *event, void *user_data);
 
 /**

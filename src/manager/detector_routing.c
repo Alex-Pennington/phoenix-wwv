@@ -19,9 +19,12 @@ void wwv_routing_on_tick_event(const tick_event_t *event, void *user_data) {
 
     if (mgr->observer.on_tick) mgr->observer.on_tick(event, mgr->observer.user);
 
-    /* Ticks are not fed to the sync detector (sync_detector_tick_event): the chain
-     * scored on air never fed them. tick_correlator requires full tick information
-     * (12 parameters) which is only available in tick_detector internals. */
+    /* Ticks keep the held sub-second phase while sync is LOCKED. They are not
+     * fed as lock evidence (sync_detector_tick_event): alone they locked sync on
+     * a false marker. tick_correlator requires full tick information (12
+     * parameters) which is only available in tick_detector internals. */
+    if (mgr->sync_detector)
+        sync_detector_second_edge(mgr->sync_detector, event->timestamp_ms, SYNC_EDGE_TICK);
 
     /* Forward to external callback */
     if (mgr->tick_callback) {
@@ -154,6 +157,9 @@ void wwv_routing_on_bcd_time_event(const bcd_time_event_t *event, void *user_dat
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_bcd_time) mgr->observer.on_bcd_time(event, mgr->observer.user);
+    /* The pulse's leading edge (not its width) keeps the held sub-second phase */
+    if (mgr->sync_detector)
+        sync_detector_second_edge(mgr->sync_detector, event->timestamp_ms, SYNC_EDGE_BTIME);
     if (mgr->bcd_correlator) {
         bcd_correlator_time_event(mgr->bcd_correlator, event->timestamp_ms,
                                   event->duration_ms, event->peak_energy);

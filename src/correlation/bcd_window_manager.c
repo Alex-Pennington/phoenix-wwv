@@ -60,6 +60,8 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->window_start_ms = bcd_window_get_start(anchor_ms, index);
     corr->window_anchor_ms = anchor_ms;
     corr->window_partial = false;
+    corr->window_epoch = corr->sync_source ? sync_detector_get_phase_epoch(corr->sync_source) : 0;
+    corr->window_resets = corr->sync_source ? sync_detector_get_phase_resets(corr->sync_source) : 0;
 
     /* Reset accumulators */
     corr->time_energy_sum = 0.0f;
@@ -236,13 +238,29 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .second = corr->current_second,
             .minute_start_ms = corr->window_anchor_ms +
                                60000.0f * (float)((corr->window_index - corr->current_second) / 60),
-            .pulse_offset_ms = pulse_offset_ms
+            .pulse_offset_ms = pulse_offset_ms,
+            .phase_epoch = corr->window_epoch,
+            .phase_resets = corr->window_resets
         };
         corr->callback(&event, corr->callback_user_data);
     }
 
     /* Close window */
     corr->window_open = false;
+}
+
+/* The held phase broke (moved 100 ms or more, or was lost) while the window
+ * was open: its events were binned under two phases, so it is not emitted.
+ * Trailing edges noted under the old phase go with it. */
+static void discard_on_break(bcd_correlator_t *corr) {
+    if (!corr->window_open || !corr->sync_source) return;
+    int epoch = sync_detector_get_phase_epoch(corr->sync_source);
+    if (epoch == corr->window_epoch) return;
+    printf("[BCD] Sec %02d discarded: sync phase break inside the window\n", corr->current_second);
+    corr->window_open = false;
+    corr->edge_valid = false;
+    corr->edge_pending = false;
+    corr->broken_windows++;
 }
 
 /* Follow the sync anchor. When it moved by a whole number of minutes (within
@@ -266,6 +284,8 @@ static void follow_anchor(bcd_correlator_t *corr, float anchor_ms) {
 
 bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
     if (!corr) return false;
+
+    discard_on_break(corr);
 
     /* Get current sync state */
     float anchor_ms = bcd_window_get_minute_anchor(corr);
@@ -325,6 +345,7 @@ bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
 
 void bcd_window_periodic(bcd_correlator_t *corr, float now_ms) {
     if (!corr) return;
+    discard_on_break(corr);
     float anchor_ms = bcd_window_get_minute_anchor(corr);
     if (anchor_ms < 0) {
         if (corr->window_open) {
