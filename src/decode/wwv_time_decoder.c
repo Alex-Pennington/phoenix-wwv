@@ -17,8 +17,9 @@
  * 365/366 days), joined where the history crosses 00:00 UTC. Status bits (DUT1,
  * DST, leap second warning) are summed per bit over the frames of the newest
  * frame's UTC day. The search runs twice: under the nominal model, and under the
- * pessimistic one (p01_pessimistic, p10_pessimistic), which trusts both a 1 and a
- * 0 less; CONFIRMED needs both to agree.
+ * pessimistic one, which trusts both a 1 and a 0 less: its rates are at least
+ * p01_pessimistic and p10_pessimistic, and rise with the chain's own reserved
+ * seconds and marker seconds (pessimistic_weights()). CONFIRMED needs both to agree.
  */
 
 #include "wwv_time_decoder.h"
@@ -64,8 +65,11 @@ typedef struct {
     bool boundary[60];
     float w[2][60];             /* LLR(bit = 1 : bit = 0) from this second's symbol,
                                    under the nominal [0] and pessimistic [1] model */
-    float p01[2];
+    signed char obs[60];        /* evidence: +1 a 1, -1 a 0, 0 none (P second, mid-second,
+                                   erased, frame not admitted, 1 in an impossible field) */
+    float p01[2], p10[2];
     int markers_seen, markers_contradicted, reserved_ones, reserved_zeros, bcd_violations;
+    int p_long, p_short;        /* P seconds read at the second as P, and as 1 or 0 */
     bool admitted, hard_valid;
 } frame_t;
 
@@ -220,6 +224,13 @@ static void frame_reset(frame_t *f, float start_ms) {
     for (int s = 0; s < 60; s++) f->sym[s] = SYM_MISSING;
 }
 
+static void set_weights(frame_t *f, int model) {
+    float w1 = logf((1.0f - f->p10[model]) / f->p01[model]);
+    float w0 = logf(f->p10[model] / (1.0f - f->p01[model]));
+    for (int s = 0; s < 60; s++)
+        f->w[model][s] = f->obs[s] > 0 ? w1 : f->obs[s] < 0 ? w0 : 0.0f;
+}
+
 /* Integrity checks WWV allows without parity, and the frame's evidence weights. */
 static void frame_finish(const wwv_time_decoder_t *td, frame_t *f) {
     for (int i = 0; i < 6; i++) {
@@ -229,6 +240,12 @@ static void frame_finish(const wwv_time_decoder_t *td, frame_t *f) {
     }
     for (int s = 1; s < 60; s++)
         if (!is_p_second(s) && f->sym[s] == SYM_P) f->markers_contradicted++;
+    for (int i = 0; i < 6; i++) {
+        int s = P_SECONDS[i];
+        if (!f->boundary[s]) continue;
+        if (f->sym[s] == SYM_P) f->p_long++;
+        else if (f->sym[s] == SYM_ZERO || f->sym[s] == SYM_ONE) f->p_short++;
+    }
     for (int i = 0; i < 15; i++) {
         int s = RESERVED_SECONDS[i];
         if (!f->boundary[s]) continue;
@@ -263,32 +280,25 @@ static void frame_finish(const wwv_time_decoder_t *td, frame_t *f) {
         for (int i = 0; i < FIELDS[k].n; i++) drop_one[FIELDS[k].sec[i]] = true;
     }
 
-    /* This frame's 0 -> 1 rate, from its reserved bits: they are all sent as 0,
-     * so they sample the rate without bias. (An impossible field is chosen for
-     * holding an error, so it does not.) The posterior mean under a Beta prior of
-     * the model's p01 and weight p01_prior_weight. 15 clean reserved bits cannot
-     * show a rate below a few percent, so the pessimistic model keeps at least its
-     * prior mean; a frame whose reserved bits read 1 raises both. */
+    for (int s = 0; s < 60; s++) {
+        f->obs[s] = 0;
+        if (!f->admitted || !f->boundary[s] || is_p_second(s)) continue;
+        if (f->sym[s] == SYM_ONE && !drop_one[s]) f->obs[s] = 1;
+        else if (f->sym[s] == SYM_ZERO) f->obs[s] = -1;
+    }
+
+    /* Nominal model: this frame's 0 -> 1 rate, from its reserved bits: they are
+     * all sent as 0, so they sample the rate without bias. (An impossible field is
+     * chosen for holding an error, so it does not.) The posterior mean under a
+     * Beta prior of mean p01 and weight p01_prior_weight. The pessimistic model's
+     * rates are set per chain in pessimistic_weights(). */
     float nres = (float)(f->reserved_ones + f->reserved_zeros), W = td->cfg.p01_prior_weight;
-    for (int model = 0; model < 2; model++) {
-        float m = model ? td->cfg.p01_pessimistic : td->cfg.p01;
-        float p01 = ((float)f->reserved_ones + W * m) / (nres + W);
-        if (model && p01 < m) p01 = m;
-        if (p01 < 0.001f) p01 = 0.001f;
-        if (p01 > 0.9f) p01 = 0.9f;
-        f->p01[model] = p01;
-    }
-    for (int model = 0; model < 2; model++) {
-        float p10 = model ? td->cfg.p10_pessimistic : td->cfg.p10;
-        float w1 = logf((1.0f - p10) / f->p01[model]);
-        float w0 = logf(p10 / (1.0f - f->p01[model]));
-        for (int s = 0; s < 60; s++) {
-            f->w[model][s] = 0.0f;
-            if (!f->admitted || !f->boundary[s] || is_p_second(s)) continue;
-            if (f->sym[s] == SYM_ONE) f->w[model][s] = drop_one[s] ? 0.0f : w1;
-            else if (f->sym[s] == SYM_ZERO) f->w[model][s] = w0;
-        }
-    }
+    float p01 = ((float)f->reserved_ones + W * td->cfg.p01) / (nres + W);
+    if (p01 < 0.001f) p01 = 0.001f;
+    if (p01 > 0.9f) p01 = 0.9f;
+    f->p01[0] = p01;
+    f->p10[0] = td->cfg.p10;
+    set_weights(f, 0);
 
     /* Decodable on its own: every bit observed at its second, reserved bits 0,
      * digits and fields in range, all six markers. Reported, not used. */
@@ -315,6 +325,43 @@ static void frame_finish(const wwv_time_decoder_t *td, frame_t *f) {
         ok = minute <= 59 && hour <= 23 && doy >= 1 && doy <= days_in_year(yy);
     }
     f->hard_valid = ok;
+}
+
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+/* Pessimistic model: rates the chain's own evidence supports, never below the
+ * configured ones. The 0 -> 1 rate is sampled by the reserved seconds (always sent
+ * as 0). The 1 -> 0 rate has no unbiased sample; a P read as 1 or 0 is the same
+ * failure (the pulse read short) on a longer pulse, and reads short at least as
+ * often as a 1 on the live run and on the air runs with enough errors to compare
+ * (tests/air/symbol_rates.py; the header gives the counts). Each rate is
+ * pooled over the admitted frames of the history under a Beta prior of the
+ * configured rate and weight p01_prior_weight; each frame's rate is then its own
+ * counts under a prior of the chain's rate and the same weight, so a frame in a
+ * fade is trusted less than the chain around it. Both stay below 0.45, where a 1
+ * and a 0 still point opposite ways. Called once per minute: the rates of every
+ * frame in the history move with the chain's. */
+static void pessimistic_weights(wwv_time_decoder_t *td) {
+    float m01 = td->cfg.p01_pessimistic, m10 = td->cfg.p10_pessimistic, W = td->cfg.p01_prior_weight;
+    float r1 = 0.0f, rn = 0.0f, ps = 0.0f, pn = 0.0f;
+    for (int k = 0; k < td->nhist; k++) {
+        const frame_t *f = &td->hist[k];
+        if (!f->admitted) continue;
+        r1 += (float)f->reserved_ones;
+        rn += (float)(f->reserved_ones + f->reserved_zeros);
+        ps += (float)f->p_short;
+        pn += (float)(f->p_short + f->p_long);
+    }
+    float c01 = fmaxf(m01, (r1 + W * m01) / (rn + W));
+    float c10 = fmaxf(m10, (ps + W * m10) / (pn + W));
+    for (int k = 0; k < td->nhist; k++) {
+        frame_t *f = &td->hist[k];
+        float nres = (float)(f->reserved_ones + f->reserved_zeros);
+        float np = (float)(f->p_short + f->p_long);
+        f->p01[1] = clampf(fmaxf(m01, ((float)f->reserved_ones + W * c01) / (nres + W)), 0.001f, 0.45f);
+        f->p10[1] = clampf(fmaxf(m10, ((float)f->p_short + W * c10) / (np + W)), 0.001f, 0.45f);
+        set_weights(f, 1);
+    }
 }
 
 /*============================================================================
@@ -698,6 +745,7 @@ static void close_frame(wwv_time_decoder_t *td) {
 
     search_t r, rp;
     search(td, 0, &r);
+    pessimistic_weights(td);
     search(td, 1, &rp);
     wwv_td_result_t out;
     memset(&out, 0, sizeof(out));

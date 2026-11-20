@@ -130,10 +130,19 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   change). DECODED is the unverified state; on air, kiwi plain DUT1 -0.3 at 2.8 nats was
   another such case before the BTIME fix. In the random-chain test, DECODED wrong is 609 of 7200
   minutes at the worst run's rates and three times them.
-- **The pessimistic p01 does not adapt down.** A frame's p01 is the posterior mean of its
-  reserved bits under a Beta prior (weight 50), and the pessimistic model never goes below its
-  prior mean 0.07. On air the reserved bits read 1 once in 37 frames, so the estimate barely
-  moves; a fade that raises the 0 -> 1 rate only in data seconds is not seen by it.
+- **The pessimistic rates adapt up only.** The pessimistic p01 and p10 are pooled over the
+  chain's reserved seconds and P seconds and never go below 0.07 / 0.15, so a clean chain is
+  judged as before (the air runs and the measured-rate simulation are unchanged). The nominal
+  p01 is still per frame. A fade that raises the 0 -> 1 rate only in data seconds is not seen
+  by the reserved seconds; on the live run the two rates agree (14.3% / 14.4%).
+- **The pessimistic p10 rests on a proxy.** A sent 1 has no unbiased sample, so the decoder
+  takes P seconds read as 1 or 0. Whole runs: 20.9% against 1 -> 0 15.0% live, 9.3% / 5.8% saga
+  plain, 0/34 / 1/87 saga agc (the floor covers it). Per 10-minute live block it is below 1 -> 0
+  in 2 of 9, by under a point; P -> 1 alone is below in 6 of 9 (01:10: 14.7% / 23.8%), which is
+  why P -> 0 counts. The price: the live replay CONFIRMS the time of day at 3059 s, against
+  2339 s with P -> 1 alone and 2219 s on the fixed model. A site where a 1 reads short much more
+  often than a P would need another estimate: at twice the live rates with the proxy at 2/3 of
+  p10 the simulation still gave 0 in 5000, but theory puts the effective margin at 7.6 nats.
 - **`confirm_looks` (the margin on K consecutive minutes) is kept at 1.** K = 2 and 3 cut the
   3x false confirms at ln 10^4 from 11 to 7 and 4, at ln 10^5 to 1, for about a minute each. The
   remaining cases are one bit read wrong in most of its looks (a 1 read 0 in 9 of 11 at a 20%
@@ -151,12 +160,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   on saga plain. A live run should re-measure them: `tests/air/decode_score.py` prints the 0/1
   confusion (not P -> 1). The slow ctest (`ctest -C Slow`) holds the gate at 2x and 3x the
   worst run.
-- **The live symbol error rates exceed the slow simulation's gate.** On the 2026-11-20 live RSP2
-  run (replayed with holdover, 85 frames), symbols at the second read sent 0 as 1 in 303/2110
-  (14.4%) and sent 1 as 0 in 105/698 (15.0%): 12.7% / 12.4% in the minutes the chain was locked
-  on main, 15.2% / 16.4% in the minutes only holdover reaches. The slow ctest holds the gate at
-  3x the worst capture (p01 0.10, p10 0.20), and the pessimistic model's p01 prior is 0.07. There
-  were 0 false confirms on this run; it is one run, past the envelope the gate was proven in.
+- **The live run's rates, and what the fixed model did with them.** 2026-11-20 00:30-02:00 UTC,
+  replayed with holdover (85 frames; `tests/air/symbol_rates.py`): erase 9.3%, mid-second 30.4%,
+  0 -> 1 14.4%, 1 -> 0 15.0%, P -> 1 14.8%, P -> 0 6.1%; per 10-minute block 0 -> 1 10.7-21.4%,
+  1 -> 0 7.3-23.8%, erase 4.1-18.5%, mid 23.1-35.4%. With the fixed 0.07 / 0.15 the simulation
+  (5000 chains of 60 minutes) confirmed wrong in 0 chains at these rates, 12 at 1.5x and 41 at
+  2x, mostly status bits; the replay had 0. With the pessimistic rates raised from the chain's
+  evidence it is 0 at all three. The slow ctest now also runs 1x and 2x live.
 - **A frame opens at stream time 0.0 when a run ends.** On saga plain the last symbol carries
   `minute_start_ms` 0 and the decoder emits a `BCDS,FRAME` and `BCDS,UTC` line for a frame starting
   at 0.0, which `decode_score.py` scores as 12:10 (all NONE). Not traced.
@@ -203,6 +213,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - `wwv_td_config_t` gained `p01_pessimistic`, `p01_prior_weight` and `confirm_looks`. A caller
   that fills the struct by hand must set them; `wwv_td_default_config()` does. `BCDS,FRAME`'s
   p01 is the nominal model's.
+- `p01_pessimistic` and `p10_pessimistic` are now floors and prior means: the pessimistic rates
+  rise with the chain's reserved seconds and P seconds, and `p01_prior_weight` weights both
+  priors. No field was added.
 - `struct bcd_time_detector` (`include/detection/bcd_internal.h`) gained `pulse_energy_sum`,
   `pulse_energy_frames`, `pulse_level` and `last_valid_frame`. BTIME events now start and end at
   half the pulse amplitude (`BCD_TIME_EDGE_FRACTION`, `BCD_TIME_LEVEL_ALPHA`,
