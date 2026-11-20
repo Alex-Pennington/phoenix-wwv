@@ -76,6 +76,24 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - The sync detector gets no per-tick events (`sync_detector_tick_event()`): neither the manager
   nor the harness ever fed them, so tick-hole evidence never arrives. Kept that way so the scored
   chain did not change.
+  - **Measured on the holdover branch, still not fed.** With ticks fed, no tick hole is detected in
+    the four captures or the 90-minute live run (a hole needs 20 consecutive 950-1050 ms ticks
+    first). The 0.05-per-tick confidence instead locks sync on one marker: kiwi agc locks at
+    11:34:44 on the false 11:34:20 tick-path marker and reads 544/584 symbols right against
+    447/450. Ticks carry no minute phase; feeding them needs a lock rule that does not count them
+    toward LOCKED.
+- **`sync_detector_get_frame_time()` takes the current second from `tick_gap.last_tick_ms`**, which
+  stays 0 because ticks are not fed. wwv_live's STATUS line prints `sec=1` in all 40 LOCKED lines
+  of the 2026-11-20 live run. Display only; the correlator does not use it.
+- `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
+  (recovery re-locks on a marker on the held phase alone).
+- **Stream times are `float` milliseconds** through sync, the correlator and the decoder. The step
+  is 0.5 ms at 90 minutes, 8 ms after 18.6 hours and 16 ms after 37 hours. With holdover, a live
+  run can stay LOCKED that long; nothing re-bases the clock.
+- **A marker within 5 s of a whole number of minutes is accepted and moves the anchor**
+  (`confirm_marker()`'s +-5 s interval test), in every state. On air every accepted marker is
+  within -45..+61 ms of :00, so it has not mattered. Under holdover a single such marker 1-5 s off
+  would move a held, correct phase.
 - **BFREQ still sets the width of a window with no BTIME event, and can set its pulse offset.**
   Its durations (164-983 ms over the four runs) do not cluster at 200/500/800 ms; BFREQ-only
   windows gave 7 wrong symbols at b2ede79 (not re-measured). When a window holds both, the
@@ -133,6 +151,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   on saga plain. A live run should re-measure them: `tests/air/decode_score.py` prints the 0/1
   confusion (not P -> 1). The slow ctest (`ctest -C Slow`) holds the gate at 2x and 3x the
   worst run.
+- **The live symbol error rates exceed the slow simulation's gate.** On the 2026-11-20 live RSP2
+  run (replayed with holdover, 85 frames), symbols at the second read sent 0 as 1 in 303/2110
+  (14.4%) and sent 1 as 0 in 105/698 (15.0%): 12.7% / 12.4% in the minutes the chain was locked
+  on main, 15.2% / 16.4% in the minutes only holdover reaches. The slow ctest holds the gate at
+  3x the worst capture (p01 0.10, p10 0.20), and the pessimistic model's p01 prior is 0.07. There
+  were 0 false confirms on this run; it is one run, past the envelope the gate was proven in.
 - **A frame opens at stream time 0.0 when a run ends.** On saga plain the last symbol carries
   `minute_start_ms` 0 and the decoder emits a `BCDS,FRAME` and `BCDS,UTC` line for a frame starting
   at 0.0, which `decode_score.py` scores as 12:10 (all NONE). Not traced.
@@ -173,6 +197,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   `wwv_detector_config_t` gained `enable_bcd`, `enable_time_decoder`, `enable_agc`, `verbose`;
   `output_dir` NULL writes no CSVs. New: observer struct, component getters, `wwv_chain_log`,
   `iq_frontend`, `telem_set_tap()`, telemetry line `CONS,ANCHOR`.
+- The sync detector holds LOCKED for 20 minutes without a marker (was 90 s), and RECOVERING re-locks
+  on one marker on the held phase (it never re-locked before). Its STATE telemetry and callback see
+  far fewer transitions.
 - `wwv_td_config_t` gained `p01_pessimistic`, `p01_prior_weight` and `confirm_looks`. A caller
   that fills the struct by hand must set them; `wwv_td_default_config()` does. `BCDS,FRAME`'s
   p01 is the nominal model's.
@@ -192,6 +219,10 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   dB-Hz in the 12:09 UTC capture with the same settings. The 165 s smoke test found 0 markers and
   never left ACQUIRING. A live run needs a time of day with propagation (the scored capture was at
   dawn).
+- **The 90-minute live run (2026-11-20 00:30-02:00 UTC) lost lock 9 times before the holdover
+  fix.** `tests/air/replay_events` reproduces its SYNC, symbol and frame lines from its
+  `--log`, so a sync, correlator or decoder change can be measured on it without IQ. The log is
+  in `~/wwv-live/run90/`, outside the repo.
 - **A raw recording of a 90-minute run does not fit on saga's root filesystem**: 2 MS/s CS16 is
   8 MB/s, 43 GB for 90 minutes, and 39 GB was free. `--record` refuses when `--secs` is given and
   the space is short; without `--secs` it only warns.
