@@ -91,6 +91,7 @@ struct wwv_time_decoder {
     wwv_td_config_t cfg;
     frame_t cur;
     bool cur_open;
+    int cur_epoch;                          /* phase epoch of the open frame's symbols */
     frame_t hist[WWV_TD_MAX_FRAMES];
     int nhist;
     wwv_td_result_t last;
@@ -803,9 +804,20 @@ void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int 
     if (second == 59) close_frame(td);
 }
 
+void wwv_time_decoder_discard_frame(wwv_time_decoder_t *td) {
+    if (!td || !td->cur_open) return;
+    printf("[TD] Frame from %.1f ms discarded: it spans a sync phase break\n", td->cur.start_ms);
+    td->cur_open = false;
+}
+
 void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *e, void *user_data) {
-    wwv_time_decoder_symbol((wwv_time_decoder_t *)user_data, e->minute_start_ms, e->second,
+    wwv_time_decoder_t *td = (wwv_time_decoder_t *)user_data;
+    /* Symbols binned under a phase that has since broken do not share a frame
+     * with the ones after the break */
+    if (td->cur_open && e->phase_epoch != td->cur_epoch) wwv_time_decoder_discard_frame(td);
+    wwv_time_decoder_symbol(td, e->minute_start_ms, e->second,
                             bcd_corr_symbol_char(e->symbol), e->pulse_offset_ms);
+    td->cur_epoch = e->phase_epoch;
 }
 
 void wwv_time_decoder_periodic(wwv_time_decoder_t *td, float now_ms) {

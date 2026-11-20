@@ -125,5 +125,6 @@ void wwv_chain_log_end(wwv_chain_log_t *log, long samples) {
             sync_state_name(sync_detector_get_state(sync)), sync_detector_get_confidence(sync), ft.current_second,
             wwv_detector_manager_get_tick_count(mgr), wwv_detector_manager_get_marker_count(mgr),
             bcd_correlator_get_symbol_count(bcd));
-    fprintf(log->out, "BCDWIN silent=%d late_events=%d\n", bcd->silent_windows, bcd->late_events);
+    fprintf(log->out, "BCDWIN silent=%d late_events=%d broken=%d\n", bcd->silent_windows, bcd->late_events,
+            bcd->broken_windows);
 }
