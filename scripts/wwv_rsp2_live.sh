@@ -280,6 +280,11 @@ scan() {
   [ -n "$BAND" ] || say "the band scan found no band (exit $src)"
 }
 
+# END is set before the first scan: scan() calls past_end, and under set -u an
+# unset END aborted every --wwv-khz auto run. The wall clock starts with the scan.
+END=
+[ "$SECS" != 0 ] && END=$(python3 -I -c "import math, time; print(math.ceil(time.time() + $SECS))")
+
 if [ -n "$AUTO" ]; then
   scan
   [ -n "$BAND" ] || { say "not going live"; exit 3; }
@@ -287,8 +292,6 @@ if [ -n "$AUTO" ]; then
   say "going live on the scan's band: $WWV_KHZ kHz"
 fi
 
-END=
-[ "$SECS" != 0 ] && END=$(python3 -I -c "import math, time; print(math.ceil(time.time() + $SECS))")
 rc=0
 REOPENS=0
 while :; do
