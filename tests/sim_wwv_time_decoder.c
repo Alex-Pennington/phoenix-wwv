@@ -3,6 +3,7 @@
  *   sim_wwv_time_decoder [key=value ...]
  *
  * Signal (true rates): p01 (sent 0 read 1), p10 (sent 1 read 0), pP1 (sent P read 1),
+ * pP0 (sent P read 0),
  * erase (no symbol at a locked second), mid (a mid-second detection: not evidence),
  * bad (fraction of minutes in a fade) and mult (rate multiplier in a fade, each rate
  * capped at 0.5). chains, minutes, seed. The first minute of every chain starts at
@@ -95,7 +96,7 @@ static void pct(int *v, int n, int cap, char *out, size_t len) {
 }
 
 int main(int argc, char **argv) {
-    double p01 = 0.008, p10 = 0.021, pP1 = 0.064, erase = 0.08, mid = 0.07, bad = 0.0, mult = 1.0;
+    double p01 = 0.008, p10 = 0.021, pP1 = 0.064, pP0 = 0.0, erase = 0.08, mid = 0.07, bad = 0.0, mult = 1.0;
     int chains = 1000, minutes = 30;
     unsigned long long seed = 1;
     wwv_td_config_t cfg;
@@ -110,6 +111,7 @@ int main(int argc, char **argv) {
         if (!strcmp(k, "p01")) p01 = v;
         else if (!strcmp(k, "p10")) p10 = v;
         else if (!strcmp(k, "pP1")) pP1 = v;
+        else if (!strcmp(k, "pP0")) pP0 = v;
         else if (!strcmp(k, "erase")) erase = v;
         else if (!strcmp(k, "mid")) mid = v;
         else if (!strcmp(k, "bad")) bad = v;
@@ -157,6 +159,7 @@ int main(int argc, char **argv) {
                           g_status.dst55, g_status.dst2, g_status.lsw, f);
             double m = (urand() < bad) ? mult : 1.0;
             double q01 = fmin(0.5, p01 * m), q10 = fmin(0.5, p10 * m), qP1 = fmin(0.5, pP1 * m);
+            double qP0 = fmin(0.5 - qP1, pP0 * m);
             float start = 5000.0f + 60000.0f * k;
             g_nmin = k < 64 ? k + 1 : 64;
             if (k < 64) { memcpy(g_sent[k], f, 61); memset(g_got[k], '_', 60); g_got[k][60] = 0; }
@@ -178,6 +181,7 @@ int main(int argc, char **argv) {
                 if (sym == '0' && u < q01) sym = '1';
                 else if (sym == '1' && u < q10) sym = '0';
                 else if (sym == 'P' && u < qP1) sym = '1';
+                else if (sym == 'P' && u < qP1 + qP0) sym = '0';
                 if (k < 64) g_got[k][s] = sym;
                 wwv_time_decoder_symbol(td, start, s, sym, 45.0f);
             }
@@ -197,11 +201,11 @@ int main(int argc, char **argv) {
     char a[64], b[64];
     pct(t_tod, chains, minutes, a, sizeof a);
     pct(t_date, chains, minutes, b, sizeof b);
-    printf("%s | true p01 %.3f p10 %.3f pP1 %.3f erase %.2f mid %.2f bad %.2f x%.0f | "
+    printf("%s | true p01 %.3f p10 %.3f pP1 %.3f pP0 %.3f erase %.2f mid %.2f bad %.2f x%.0f | "
            "model %.3f/%.3f pess %.3f/%.3f conf %.2f looks %d | %d chains x %d min | tod CONF: %s | date CONF: %s | "
            "CONFIRMED wrong: %d chains (%.2f per 1000), %d minutes | PREDICTED wrong: %d chains | "
            "DECODED wrong: %d of %d minutes\n",
-           label, p01, p10, pP1, erase, mid, bad, mult, cfg.p01, cfg.p10,
+           label, p01, p10, pP1, pP0, erase, mid, bad, mult, cfg.p01, cfg.p10,
 #ifdef WWV_TD_DEFAULT_P01_PESSIMISTIC
            cfg.p01_pessimistic,
 #else
