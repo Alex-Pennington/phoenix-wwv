@@ -335,8 +335,40 @@ static void test_wwvb(int marker0) {
     wwv_time_decoder_destroy(td);
 }
 
+/* A frame chains to the previous one only when its start is a whole number of
+ * minutes after it to within less than 900 ms; a frame a whole second off
+ * starts a new chain. */
+static void test_chain_tolerance(void) {
+    const float off[4] = { 0.0f, 700.0f, -899.0f, 1000.0f };
+    const int want[4] = { 1, 1, 1, 0 };
+    int pass = 1;
+    char f[61];
+    for (int i = 0; i < 4; i++) {
+        wwv_time_decoder_t *td = wwv_time_decoder_create(NULL);
+        wwv_time_decoder_set_callback(td, on_result, NULL);
+        reset_capture("chain tolerance");
+        g_status = (status_t){-1, 0, 0, 0};
+        g_truth = (utc_t){2026, 323, 12, 19};
+        wwv_td_encode(2026, 323, 12, 19, -1, 0, 0, 0, f);
+        feed(td, 5000.0f, f);
+        g_truth = (utc_t){2026, 323, 12, 20};
+        wwv_td_encode(2026, 323, 12, 20, -1, 0, 0, 0, f);
+        feed(td, 65000.0f + off[i], f);
+        int chained = g_last.chain_minute == 1 && g_last.chain_frames == 2;
+        if (chained != want[i]) {
+            pass = 0;
+            printf("     offset %+.0f ms: chain_minute %d frames %d, want %s\n", off[i],
+                   g_last.chain_minute, g_last.chain_frames, want[i] ? "chained" : "a new chain");
+        }
+        wwv_time_decoder_destroy(td);
+    }
+    printf("%-4s %-58s\n", pass ? "ok" : "FAIL", "chain: 0/+700/-899 ms chain, +1000 ms starts anew");
+    if (!pass) fails++;
+}
+
 int main(void) {
     test_encoder();
+    test_chain_tolerance();
     status_t nov = {-1, 0, 0, 0};
     clean_run("2026-323 12:10 on, as on air", (utc_t){2026, 323, 12, 10}, 10, nov);
     clean_run("day-of-year rollover 323 -> 324", (utc_t){2026, 323, 23, 55}, 16, nov);

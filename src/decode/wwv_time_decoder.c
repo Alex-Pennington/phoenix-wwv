@@ -30,7 +30,14 @@
 #include <stdio.h>
 
 #define MINUTE_MS           60000.0f
-#define CHAIN_TOLERANCE_MS  1000.0f     /* minute starts must be this close to whole minutes */
+/* A frame chains when its start is a whole number of minutes after the previous
+ * one, to strictly less than this. A move of 1 s is a whole second: the symbols
+ * may sit in the wrong seconds. 900 ms is sync's PHASE_WRONG_MS, so the decoder
+ * chains only moves sync takes as sub-second. On the live replays and the air
+ * captures the residuals are under 100 ms in 417 of 433 pairs; the largest that
+ * chain with right values are 704 ms (run90g seg2, lost samples) and 530 ms
+ * (run3h), and none lies in 705-1045 ms. */
+#define CHAIN_TOLERANCE_MS  900.0f
 #define SAME_FRAME_MS       30000.0f    /* a symbol within this of the frame start is its */
 #define FRAME_CLOSE_MS      62000.0f    /* window 59 closes by start + 61 s (correlator) */
 #define MIN_PER_DAY         1440
@@ -728,7 +735,7 @@ static void close_frame(wwv_time_decoder_t *td) {
         const frame_t *p = &td->hist[td->nhist - 1];
         float d = f->start_ms - p->start_ms;
         int n = (int)lroundf(d / MINUTE_MS);
-        if (n >= 1 && fabsf(d - n * MINUTE_MS) <= CHAIN_TOLERANCE_MS) f->index = p->index + n;
+        if (n >= 1 && fabsf(d - n * MINUTE_MS) < CHAIN_TOLERANCE_MS) f->index = p->index + n;
         else reset_chain(td);
     }
     if (td->nhist == 0) f->index = 0;
