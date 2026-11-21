@@ -176,6 +176,26 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     from 6 to 2 on the captures.
 - **The tick timing gate is never enabled in the chain.** `tick_detector_set_gate_enabled()` has
   no caller; the manager sets only the epoch. All four captures ran with the gate off.
+  - **Evaluated (fix/wwv-tick-marker-cleanup), not enabled: the call belongs in the manager.**
+    A harness copy that, every 50 ms, sets the epoch to the sync detector's `second_start_ms`
+    and enables the gate while LOCKED (off otherwise) gives, against the no-cooldown change
+    (kiwi plain / kiwi agc / saga plain / saga agc): ticks matched 89.3 / 87.0 / 62.9 / 70.9%
+    -> 94.8 / 91.5 / 86.5 / 82.4%, off-second ticks 63 / 68 / 318 / 180 -> 14 / 17 / 101 / 55
+    (the rest come before LOCKED), tick-path markers at :00 10 / 10 / 9 / 9 -> 10 / 10 / 10 / 9.
+    FALSE CONFIRM 0. Time of day decodes 7 / 7 / 7 / 7 (kiwi agc was 6: the noise run behind its
+    phase loss no longer starts).
+  - **The gate now opens 20 ms before the epoch (`TICK_GATE_START_MS`).** It opened at the epoch,
+    and on kiwi plain the held phase ran 12-20 ms late from 11:43, which shut out every tick run
+    start: 11:43-11:44 matched 21/57 and 17/41 gated, 45/57 and 34/41 ungated, and the capture
+    85.1% against 94.8% with the early opening. Opening 30 ms early is no better; 50 ms early
+    lets more noise in (saga plain 77.9%). The gate is off in the chain, so the captures do not
+    change. `tests/test_tick_gate.c` checks a phase 15 ms late.
+  - **What stops enabling it: saga agc loses LOCKED for 6 s with the gate on** (time of day 5/5,
+    was 7/7). A gated run starts at a tick, so a tick followed by noise makes a 256 ms gap-zone
+    run whose start lead is 3 s off the held phase, to within 20 ms, and the sync detector's whole-second
+    candidate rule drops the phase. It is the same mechanism as kiwi agc's loss under the
+    no-cooldown change: an off-phase CANDT that starts on a tick is noise by construction, not
+    evidence of a lost second. Enabling the gate needs that rule changed first.
 - **Two marker-detector misses on the captures are near misses**: saga agc 12:12 and 12:18 peaked
   at 2.74 and 2.83 times baseline against the 3.0 threshold, with no run at all. A second,
   lower threshold reported only as a candidate (phase-gated by sync, like the short runs) would

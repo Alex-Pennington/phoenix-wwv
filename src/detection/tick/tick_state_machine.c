@@ -31,11 +31,12 @@ bool tick_state_is_gate_open(tick_detector_t *td, float current_ms) {
         return true;  /* Recovery mode - bypass gate */
     }
 
-    /* Calculate position within current second */
-    float ms_into_second = fmodf(current_ms - td->gate.epoch_ms, 1000.0f);
+    /* Position within the current second, in [TICK_GATE_START_MS, 1000 + TICK_GATE_START_MS) */
+    float ms_into_second = fmodf(current_ms - td->gate.epoch_ms - TICK_GATE_START_MS, 1000.0f);
     if (ms_into_second < 0.0f) ms_into_second += 1000.0f;
+    ms_into_second += TICK_GATE_START_MS;
 
-    return (ms_into_second >= TICK_GATE_START_MS && ms_into_second <= TICK_GATE_END_MS);
+    return (ms_into_second <= TICK_GATE_END_MS);
 }
 
 /*============================================================================

@@ -40,6 +40,10 @@ add_executable(test_tick_noise_run test_tick_noise_run.c)
 target_link_libraries(test_tick_noise_run PRIVATE phoenix_wwv m)
 add_test(NAME tick_noise_run COMMAND test_tick_noise_run)
 
+add_executable(test_tick_gate test_tick_gate.c)
+target_link_libraries(test_tick_gate PRIVATE phoenix_wwv m)
+add_test(NAME tick_gate COMMAND test_tick_gate)
+
 add_executable(test_marker test_marker.c)
 target_link_libraries(test_marker PRIVATE phoenix_wwv)
 add_test(NAME marker COMMAND test_marker)
