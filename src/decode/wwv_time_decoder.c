@@ -30,7 +30,14 @@
 #include <stdio.h>
 
 #define MINUTE_MS           60000.0f
-#define CHAIN_TOLERANCE_MS  1000.0f     /* minute starts must be this close to whole minutes */
+/* A frame chains when its start is a whole number of minutes after the previous
+ * one, to strictly less than this. A move of 1 s is a whole second: the symbols
+ * may sit in the wrong seconds. 900 ms is sync's PHASE_WRONG_MS, so the decoder
+ * chains only moves sync takes as sub-second. On the live replays and the air
+ * captures the residuals are under 100 ms in 417 of 433 pairs; the largest that
+ * chain with right values are 704 ms (run90g seg2, lost samples) and 530 ms
+ * (run3h), and none lies in 705-1045 ms. */
+#define CHAIN_TOLERANCE_MS  900.0f
 #define SAME_FRAME_MS       30000.0f    /* a symbol within this of the frame start is its */
 #define FRAME_CLOSE_MS      62000.0f    /* window 59 closes by start + 61 s (correlator) */
 #define MIN_PER_DAY         1440
@@ -674,6 +681,11 @@ static void decide(wwv_time_decoder_t *td, const search_t *r, const search_t *rp
                                  prev ? prev->lsw_state : WWV_TD_NONE, pv_lsw,
                                  frames_ok && rp->lsw == r->lsw && rp->lsw_margin >= conf,
                                  index, tod_now_confirmed, &vals[2]);
+    out->tod_pmargin = rp->tod == r->tod ? rp->tod_margin : -rp->tod_margin;
+    out->date_pmargin = rp->yy == r->yy && rp->doy == r->doy ? rp->date_margin : -rp->date_margin;
+    out->dut1_pmargin = rp->dut1 == r->dut1 ? rp->dut1_margin : -rp->dut1_margin;
+    out->dst_pmargin = rp->dst == r->dst ? rp->dst_margin : -rp->dst_margin;
+    out->lsw_pmargin = rp->lsw == r->lsw ? rp->lsw_margin : -rp->lsw_margin;
     out->dut1_tenths = (int)vals[0];
     out->dst55 = vals[1] >= 0 ? (int)(vals[1] >> 1) : -1;
     out->dst2 = vals[1] >= 0 ? (int)(vals[1] & 1) : -1;
@@ -706,14 +718,16 @@ static void emit(const wwv_time_decoder_t *td, const wwv_td_result_t *r) {
     if (r->dut1_state != WWV_TD_NONE) snprintf(dut1, sizeof dut1, "%+.1f", r->dut1_tenths / 10.0);
     if (r->dst_state != WWV_TD_NONE) snprintf(dst, sizeof dst, "%d%d", r->dst55, r->dst2);
     if (r->lsw_state != WWV_TD_NONE) snprintf(lsw, sizeof lsw, "%d", r->lsw);
-    telem_sendf(TELEM_BCDS, "UTC,%.1f,%s,%s,%.1f,%s,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%d,%d,%d",
+    telem_sendf(TELEM_BCDS, "UTC,%.1f,%s,%s,%.1f,%s,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%d,%d,%d,"
+                            "%.1f,%.1f,%.1f,%.1f,%.1f",
                 r->frame_start_ms,
                 wwv_td_state_name(r->tod_state), tod, r->tod_margin,
                 wwv_td_state_name(r->date_state), date, doy, r->date_margin,
                 wwv_td_state_name(r->dut1_state), dut1, r->dut1_margin,
                 wwv_td_state_name(r->dst_state), dst, r->dst_margin,
                 wwv_td_state_name(r->lsw_state), lsw, r->lsw_margin,
-                r->chain_frames, r->observations, r->conflicts);
+                r->chain_frames, r->observations, r->conflicts,
+                r->tod_pmargin, r->date_pmargin, r->dut1_pmargin, r->dst_pmargin, r->lsw_pmargin);
     (void)td;
 }
 
@@ -728,7 +742,7 @@ static void close_frame(wwv_time_decoder_t *td) {
         const frame_t *p = &td->hist[td->nhist - 1];
         float d = f->start_ms - p->start_ms;
         int n = (int)lroundf(d / MINUTE_MS);
-        if (n >= 1 && fabsf(d - n * MINUTE_MS) <= CHAIN_TOLERANCE_MS) f->index = p->index + n;
+        if (n >= 1 && fabsf(d - n * MINUTE_MS) < CHAIN_TOLERANCE_MS) f->index = p->index + n;
         else reset_chain(td);
     }
     if (td->nhist == 0) f->index = 0;
@@ -789,6 +803,10 @@ static void close_frame(wwv_time_decoder_t *td) {
 void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int second,
                              char symbol, float pulse_offset_ms) {
     if (!td || second < 0 || second > 59) return;
+    /* No minute anchor: sync never anchors at or before stream time 0. The
+     * correlator's old destroy path closed its last window with minute_start_ms
+     * 0, which closed the open frame early and opened one at 0.0 (saga). */
+    if (!(minute_start_ms > 0.0f)) return;
     if (td->cur_open && fabsf(minute_start_ms - td->cur.start_ms) >= SAME_FRAME_MS) close_frame(td);
     if (!td->cur_open) {
         frame_reset(&td->cur, minute_start_ms);

@@ -150,9 +150,15 @@
 #define CONFIDENCE_LOCKED_THRESHOLD  0.70f
 #define CONFIDENCE_MIN_RETAIN        0.05f
 #define CONFIDENCE_TENTATIVE_INIT    0.30f
-/* Changed from 0.995f (95% decay in 60s) to 0.9999f (6% decay in 60s) - allows accumulation */
+/* Decay factors per CONFIDENCE_DECAY_STEP_MS of stream time, applied for the
+ * time elapsed between periodic checks: 0.9999 is 5.8% a minute. The factor
+ * was once applied per check, and the manager checks every 50 ms, so it was
+ * 11.3% a minute; three markers with one missed minute between the second
+ * and third then reached only 0.69, short of LOCKED (run90g seg1 never locked,
+ * seg2 locked a marker late). */
 #define CONFIDENCE_DECAY_NORMAL      0.9999f
 #define CONFIDENCE_DECAY_RECOVERING  0.980f
+#define CONFIDENCE_DECAY_STEP_MS     100.0f
 
 /* Validation tolerances */
 #define TICK_PHASE_TOLERANCE_MS      100.0f
@@ -214,6 +220,7 @@ struct sync_detector {
     /* Enhanced state */
     sync_state_t state;
     float confidence;
+    float last_decay_ms;            /* stream time of the last periodic check, < 0 = none yet */
     uint32_t evidence_mask;
     float minute_anchor_ms;         /* Authoritative minute boundary */
 
@@ -250,8 +257,8 @@ struct sync_detector {
     float confidence_locked_threshold;      /* Threshold to reach LOCKED (0.5-0.9, default 0.70) */
     float confidence_min_retain;            /* Minimum to keep state (0.01-0.2, default 0.05) */
     float confidence_tentative_init;        /* Initial tentative confidence (0.1-0.5, default 0.30) */
-    float confidence_decay_normal;          /* Normal decay rate (0.99-0.9999, default 0.9999) */
-    float confidence_decay_recovering;      /* Recovery mode decay (0.90-0.99, default 0.980) */
+    float confidence_decay_normal;          /* Normal decay per 100 ms (0.99-0.9999, default 0.9999) */
+    float confidence_decay_recovering;      /* Recovery decay per 100 ms (0.90-0.99, default 0.980) */
     float tick_phase_tolerance_ms;          /* Tick timing tolerance (50.0-200.0, default 100.0) */
     float marker_tolerance_ms;              /* Marker timing tolerance (200.0-800.0, default 500.0) */
     float p_marker_tolerance_ms;            /* P-marker timing tolerance (100.0-400.0, default 200.0) */
@@ -643,6 +650,7 @@ sync_detector_t *sync_detector_create(const char *csv_path) {
 
     sd->state = SYNC_ACQUIRING;
     sd->start_time = time(NULL);
+    sd->last_decay_ms = -1.0f;
 
     /* Initialize tunable parameters to defaults */
     sd->weight_tick = WEIGHT_TICK;                                      /* 0.05 */
@@ -1066,10 +1074,12 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
      * the next marker event happens to arrive a minute later. */
     check_timeout(sd, current_ms);
 
-    /* Confidence decay */
+    /* Confidence decay, for the stream time since the last check */
     float decay_rate = (sd->state == SYNC_RECOVERING) ?
                        sd->confidence_decay_recovering : sd->confidence_decay_normal;
-    sd->confidence *= decay_rate;
+    if (sd->last_decay_ms >= 0.0f && current_ms > sd->last_decay_ms)
+        sd->confidence *= powf(decay_rate, (current_ms - sd->last_decay_ms) / CONFIDENCE_DECAY_STEP_MS);
+    if (current_ms > sd->last_decay_ms) sd->last_decay_ms = current_ms;
 
     /* Signal loss detection (only when LOCKED) - marker-based authority */
     if (sd->state == SYNC_LOCKED) {
@@ -1135,16 +1145,17 @@ frame_time_t sync_detector_get_frame_time(sync_detector_t *sd) {
         return ft;
     }
 
-    /* Calculate current second from anchor */
-    float since_anchor = sd->tick_gap.last_tick_ms - sd->minute_anchor_ms;
-    while (since_anchor < 0) since_anchor += 60000.0f;
-    while (since_anchor >= 60000.0f) since_anchor -= 60000.0f;
-
-    ft.current_second = (int)(since_anchor / 1000.0f + 0.5f);
+    /* The second under way at the last periodic check, on the held phase.
+     * (Ticks are not fed, so the last tick time was always 0 and this read
+     * -anchor mod 60 s: 142 of 162 LOCKED STATUS lines on run3h said sec=54.) */
+    float now = sd->last_decay_ms > 0.0f ? sd->last_decay_ms : sd->minute_anchor_ms;
+    float minutes = floorf((now - sd->minute_anchor_ms) / 60000.0f);
+    float minute_start = sd->minute_anchor_ms + minutes * 60000.0f;
+    ft.current_second = (int)floorf((now - minute_start) / 1000.0f);
     if (ft.current_second < 0) ft.current_second = 0;
     if (ft.current_second > 59) ft.current_second = 59;
 
-    ft.second_start_ms = sd->minute_anchor_ms + (ft.current_second * 1000.0f);
+    ft.second_start_ms = minute_start + (ft.current_second * 1000.0f);
     ft.confidence = sd->confidence;
     ft.evidence_mask = sd->evidence_mask;
     ft.state = sd->state;
