@@ -140,9 +140,13 @@ if(TARGET wwv_live)
 endif()
 
 # The live wrapper (scripts/wwv_rsp2_live.sh) and rsp2_stream.py against stubs: no radio,
-# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 527 s
-# for 40 cases, the full nice -n 19 ctest -L live, measured on saga 2026-11-21, against the
-# TIMEOUT of 600 s; keep it under 540 s. ctest -L live runs it alone.
+# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). One
+# entry, live_stubs_NAME, per `group NAME` line in run_stub_tests.sh; each case has its own
+# directory, fake unit and TMPDIR, and each entry its own WORK_DIR, so the entries run in
+# parallel. Rule: keep every entry under about 200 s (TIMEOUT 300); a group that grows past
+# it is split into a new group line. Measured on saga 2026-11-21, nice -n 19 ctest -L live -j4,
+# 41 cases, 3 runs: 171-175 s wall; wrapper (17 cases) 135-139 s, stream (6) 115 s,
+# scan (5) 109-110 s, gap (3) 99-100 s, auto (10) 72-74 s.
 if(TARGET wwv_live)
     set(_stub_sh ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_stub_sh})
