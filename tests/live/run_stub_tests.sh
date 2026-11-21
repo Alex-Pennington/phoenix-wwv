@@ -24,6 +24,10 @@
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
+#   gap_chain     wwv_live on synthetic WWV with a 1.05 s loss after LOCKED: filled (zeros), the
+#                 held phase stays (no break, no re-anchor) and every event overlapping the span is
+#                 held back from sync (recounted from the log); dropped (unfilled), it breaks.
+#                 The replay of the filled log honours its GAP line and holds back the same events.
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
@@ -91,7 +95,7 @@ live() {
 want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
 CASES=("$@")
 [ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
-                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw)
+                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw gap_chain)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -212,6 +216,57 @@ bad = [(k, f) for k in a for f in ('tick_contrasts_db', 'bcd_contrasts_db', 'cn0
        if a[k].get(f) != b.get(k, {}).get(f)]
 print('replay check:', 'same' if not bad else f'differs: {bad}')
 sys.exit(1 if bad or not a else 0)
+PY
+    end_case ;;
+  gap_chain)
+    begin "$c"
+    for m in fill drop; do
+      python3 -I "$HERE/wwv_synth.py" 330 --gap "250.3:1.05:$m" |
+        "$BUILD/wwv_live" -r 50000 -p 0 --no-tones -S 60 -T 1795000000 --log "$D/$m.log" > "$D/$m.con" 2>&1 ||
+        fail "wwv_live on the $m stream failed"
+      "$BUILD/tests/replay_events" "$D/$m.log" > "$D/$m.rep" 2>&1 || fail "replay of $m failed"
+    done
+    cat "$D/fill.con" "$D/fill.rep" > "$D/console.txt"
+    has 'GAP      ' ; has 'GAPEND   stream 250.3 s, 1050 ms'
+    grep -q 'TENTATIVE -> LOCKED' "$D/fill.con" || fail 'never LOCKED before the gap'
+    grep -qE '^PHASE .* breaks=0 epoch=0$' "$D/fill.rep" || fail "filled: the phase broke: $(grep ^PHASE "$D/fill.rep")"
+    grep -qE '^PHASE .* breaks=[1-9]' "$D/drop.rep" || fail "dropped: no break, so the test shows nothing: $(grep ^PHASE "$D/drop.rep")"
+    grep -q '^GAP ' "$D/drop.log" && fail 'a GAP line in the unfilled stream'
+    python3 -I - "$D/fill.log" "$D/fill.rep" "$REPO/include/wwv_detector_manager.h" >> "$D/console.txt" 2>&1 <<'PY' || fail 'held-back events differ from the overlap rule'
+import re, sys
+log, rep, hdr = sys.argv[1:4]
+k = {m.group(1): float(m.group(2)) for m in re.finditer(r'#define (WWV_GAP_\w+)\s+([\d.]+)', open(hdr).read())}
+gaps, ends, ev = [], [], []
+order_ok = True
+for l in open(log):
+    f = dict(re.findall(r'(\w+)=([-\d.]+)', l))
+    w = l.split(' ', 1)[0]
+    if w == 'GAP': gaps.append((float(f['start']), float(f['len'])))
+    elif w == 'GAPEND': ends.append({x: int(f[x]) for x in ('tick', 'tmark', 'mark', 'cand', 'btime', 'bfreq')})
+    elif w in ('TICK', 'TMARK', 'MARK', 'CANDT', 'CANDM', 'BTIME', 'BFREQ'):
+        g = {k2: float(v) for k2, v in f.items()}
+        lo, hi = {'TICK': (g.get('t', 0) - g.get('dur', 0) - 20, g.get('t', 0) + 20),
+                  'TMARK': (g.get('lead'), g.get('trail')), 'MARK': (g.get('lead'), g.get('t')),
+                  'CANDT': (g.get('start'), g.get('end')), 'CANDM': (g.get('lead'), g.get('t')),
+                  'BTIME': (g.get('t', 0) - 20, g.get('t', 0) + g.get('dur', 0) + 20),
+                  'BFREQ': (g.get('t', 0) - 20, g.get('t', 0) + g.get('dur', 0) + 20)}[w]
+        lo, hi = min(lo, hi), max(lo, hi)
+        ev.append((w, lo, hi, len(gaps)))
+key = {'TICK': 'tick', 'TMARK': 'tmark', 'MARK': 'mark', 'CANDT': 'cand', 'CANDM': 'cand', 'BTIME': 'btime', 'BFREQ': 'bfreq'}
+want = dict.fromkeys(key.values(), 0); inside = 0
+for w, lo, hi, ngap in ev:
+    for s, ln in gaps[:ngap]:      # only spans marked before the event's line
+        settle = min(k['WWV_GAP_SETTLE_MS'], k['WWV_GAP_SETTLE_MIN_MS'] + ln)
+        if hi >= s - k['WWV_GAP_GUARD_MS'] and lo <= s + ln + settle:
+            want[key[w]] += 1; break
+    for i, (s, ln) in enumerate(gaps):
+        if lo >= s and hi <= s + ln and i >= ngap:
+            inside += 1           # an event inside a span, logged before the span's GAP line
+got = {x: sum(e[x] for e in ends) for x in want}
+rd = dict(re.findall(r'(\w+)=(\d+)', next((l for l in open(rep) if l.startswith('GAPDROPS')), '')))
+rd = {x: int(rd.get(x, -1)) for x in want}
+print('gap_chain: gaps', gaps, 'overlap rule', want, 'live GAPEND', got, 'replay', rd, 'inside before GAP', inside)
+sys.exit(0 if gaps and want == got == rd and sum(want.values()) > 0 and inside == 0 else 1)
 PY
     end_case ;;
   *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;
