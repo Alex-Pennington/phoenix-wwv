@@ -21,6 +21,14 @@
 #   auto_switch   auto: no LOCKED within --lock-mins, re-scan with --avoid, switch, end
 #   auto_rescan_end  auto: --secs runs out during the re-scan, which is stopped
 #   auto_none     auto: the scan finds no band: exit 3, not live
+#   scan_hang     auto: the scan is stuck past --scan-timeout and deaf to SIGTERM: killed,
+#                 the unit restarted, the retry is stuck too: exit 3, not live, within the bound
+#   scan_apifail  auto: every scan exits 5 (API failing): restart, retry once, exit 3, not live
+#   scan_apifail_retry  auto: the first scan exits 5, the retry after the restart finds a band
+#   scan_py_api   wwv_band_scan.py on a failing API (fake module): activateStream fails and a
+#                 read would block for an hour; the same with a 0 return; ServiceNotResponding;
+#                 reads stuck in the driver; reads that only time out. Each exits 5 within its
+#                 bound and writes best_khz null
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
@@ -103,7 +111,8 @@ live() {
 want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
 CASES=("$@")
 [ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
-                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw gap_chain gap76
+                                 auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
+                                 stream_stall stream_lag scan_keep_raw gap_chain gap76
                                  stream_gaps stream_ramp stream_toobig)
 
 for c in "${CASES[@]}"; do
@@ -195,6 +204,64 @@ for c in "${CASES[@]}"; do
     begin "$c"
     live STUB_SCAN_BANDS=none -- --wwv-khz auto --secs 30
     rc_is 3; has 'the band scan found no band'; has 'not going live'; streams_is 0; unit_off
+    end_case ;;
+  scan_hang)
+    begin "$c"
+    live STUB_SCAN_BANDS=hang -- --wwv-khz auto --secs 300 --scan-timeout 3
+    rc_is 3; has 'SCAN: the band scan ran past its 3 s bound; stopping it'
+    has 'wwv_band_scan.sh did not stop in 10 s after SIGTERM; killing it'
+    has 'outlived its wrapper; killing it'
+    has 'SCAN: restarting sdrplay.service and scanning once more'
+    has 'SCAN: failed again after the restart: the band scan ran past its 3 s bound'
+    has 'not going live'; streams_is 0; unit_off
+    [ "$(cat "$D/scans" 2>/dev/null | wc -l)" = 2 ] || fail "$(cat "$D/scans" 2>/dev/null | wc -l) scans, want 2"
+    # the unit was stopped and started again between the two scans
+    [ "$(grep -cE 'systemctl (start|stop) sdrplay' "$D/calls")" -ge 4 ] || fail 'no restart of the unit between the scans'
+    [ $((SECONDS - T0)) -lt 60 ] || fail "took $((SECONDS - T0)) s: the stuck scans were not ended within the bound"
+    for p in $(cat "$D/hang.pids" 2>/dev/null); do kill -0 "$p" 2>/dev/null && { fail "stuck scan process $p still running"; kill -KILL "$p"; }; done
+    end_case ;;
+  scan_apifail)
+    begin "$c"
+    live STUB_SCAN_BANDS=apifail -- --wwv-khz auto --secs 300
+    rc_is 3; has 'SCAN: restarting sdrplay.service and scanning once more'
+    has 'SCAN: failed again after the restart: the band scan reports the sdrplay API failing (exit 5)'
+    has 'not going live'; hasnt 'the band scan found no band'; streams_is 0; unit_off
+    [ "$(cat "$D/scans" 2>/dev/null | wc -l)" = 2 ] || fail "$(cat "$D/scans" 2>/dev/null | wc -l) scans, want 2"
+    [ $((SECONDS - T0)) -lt 30 ] || fail "took $((SECONDS - T0)) s"
+    end_case ;;
+  scan_apifail_retry)
+    begin "$c"
+    live STUB_MODE=ok STUB_SCAN_BANDS=apifail,5000 -- --wwv-khz auto --lock-mins 0 --secs 8
+    rc_is 0; has 'SCAN: restarting sdrplay.service and scanning once more'
+    hasnt 'failed again'; has "going live on the scan's band: 5000 kHz"; ended_in 1 5000
+    streams_is 1; unit_off
+    end_case ;;
+  scan_py_api)
+    begin "$c"
+    : > "$D/console.txt"
+    # mode, bound s: the bands are 3 reads of 2 s; a read is bounded at 1 + 2 + 10 s, and a
+    # read stuck in the driver at 10 s past that
+    for spec in 'actfail:sdrplay_api_Fail 8' 'actfail0:sdrplay_api_Fail 8' 'actfail:sdrplay_api_ServiceNotResponding 8' \
+                'stuck 30' 'dead 35'; do
+      set -- $spec
+      t=$SECONDS
+      env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/wwv_band_scan.py" "$1" -- \
+          --bands 2500,5000,10000 --secs 2 --json "$D/api.json" > "$D/api.out" 2>> "$D/console.txt"
+      r=$?
+      dt=$((SECONDS - t))
+      echo "[scan_py_api] $1: exit $r after $dt s" >> "$D/console.txt"
+      [ "$r" = 5 ] || fail "$1: exit $r, want 5"
+      [ "$dt" -le "$2" ] || fail "$1: took $dt s, bound $2 s"
+      grep -qF 'BEST none (API failure)' "$D/api.out" || fail "$1: no 'BEST none (API failure)'"
+      python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d['best_khz'] is None and d['api_failure'] else 1)" \
+          "$D/api.json" || fail "$1: --json lacks best_khz null and api_failure"
+      /bin/rm -f "$D/api.json"
+    done
+    has 'activateStream failed (returned -1): band not read'
+    has 'activateStream failed (returned 0): band not read'
+    has 'API FAILURE: the module logged sdrplay_api_ServiceNotResponding'
+    has 'read stuck in the driver 10 s past its wall-clock bound'
+    has 'read ended at its wall-clock bound (13 s) with 0 of 4000000 samples'
     end_case ;;
   stream_stall)
     begin "$c"
