@@ -26,6 +26,8 @@ extern "C" {
  *============================================================================*/
 
 #define FRAME_DURATION_MS   ((float)MARKER_FFT_SIZE * 1000.0f / MARKER_SAMPLE_RATE)
+#define MARKER_FRAMES_TO_MS(f) wwv_frames_to_ms((f), MARKER_FFT_SIZE, MARKER_SAMPLE_RATE)  /* stream time */
+#define MARKER_MS_TO_FRAMES_EXACT(ms) ((ms) * (double)MARKER_SAMPLE_RATE / (1000.0 * MARKER_FFT_SIZE))
 #define HZ_PER_BIN          ((float)MARKER_SAMPLE_RATE / MARKER_FFT_SIZE)
 
 /* Detection thresholds - proven values from v133 */
@@ -157,7 +159,7 @@ struct marker_detector {
 void marker_state_machine_run(marker_detector_t *md);
 
 /* Helper functions (remain in marker_detector.c) */
-void marker_get_wall_time_str(marker_detector_t *md, float timestamp_ms, char *buf, size_t buflen);
+void marker_get_wall_time_str(marker_detector_t *md, wwv_time_ms_t timestamp_ms, char *buf, size_t buflen);
 
 #ifdef __cplusplus
 }

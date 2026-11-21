@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "wwv_time.h"
 
 /* Forward declaration */
 typedef struct sync_detector sync_detector_t;
@@ -61,12 +62,12 @@ typedef enum {
 /* Symbol event for callback */
 typedef struct {
     bcd_corr_symbol_t symbol;
-    float timestamp_ms;
+    wwv_time_ms_t timestamp_ms;
     float duration_ms;
     float confidence;           /* 0-1, higher if both detectors contributed */
     const char *source;         /* "BOTH", "TIME", "FREQ", "EDGE" or "NONE" */
     int second;                 /* WWV second in the minute (0-59), from the sync anchor */
-    float minute_start_ms;      /* start of the minute this second belongs to: the
+    wwv_time_ms_t minute_start_ms; /* start of the minute this second belongs to: the
                                    sync anchor plus whole minutes */
     float pulse_offset_ms;      /* start of the window's first event from the start of
                                    its second (-100..+900 ms); NAN when it held none.
@@ -128,7 +129,7 @@ void bcd_correlator_set_callback(bcd_correlator_t *corr,
  * @param peak_energy  Peak energy during pulse
  */
 void bcd_correlator_time_event(bcd_correlator_t *corr,
-                               float timestamp_ms,
+                               wwv_time_ms_t timestamp_ms,
                                float duration_ms,
                                float peak_energy);
 
@@ -141,7 +142,7 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
  * @param accum_energy    Accumulated energy
  */
 void bcd_correlator_freq_event(bcd_correlator_t *corr,
-                               float timestamp_ms,
+                               wwv_time_ms_t timestamp_ms,
                                float duration_ms,
                                float accum_energy);
 
@@ -154,7 +155,7 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
  * A second with no symbol at all was not locked. Without this call, windows
  * close only when a later event arrives, and silent seconds are not emitted.
  */
-void bcd_correlator_periodic_check(bcd_correlator_t *corr, float now_ms);
+void bcd_correlator_periodic_check(bcd_correlator_t *corr, wwv_time_ms_t now_ms);
 
 /**
  * Get current state
@@ -174,7 +175,7 @@ char bcd_corr_symbol_char(bcd_corr_symbol_t sym);
 /**
  * Get timestamp of last emitted symbol
  */
-float bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr);
+wwv_time_ms_t bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr);
 
 /**
  * Get count of emitted symbols

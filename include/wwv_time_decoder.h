@@ -148,7 +148,7 @@ typedef enum {
 } wwv_td_state_t;
 
 typedef struct {
-    float frame_start_ms;   /* the minute's start on the detector clock (sync anchor) */
+    wwv_time_ms_t frame_start_ms; /* the minute's start on the detector clock (sync anchor) */
     int chain_minute;       /* minutes since the chain's first frame */
     int chain_frames;       /* frames in the evidence history */
     int observations;       /* 0/1 symbols used as evidence in the history */
@@ -227,7 +227,7 @@ void wwv_time_decoder_set_callback(wwv_time_decoder_t *td, wwv_td_callback_fn cb
  * @param symbol           '0', '1', 'P', or '.' for an erasure
  * @param pulse_offset_ms  start of the pulse from the start of the second; NAN if none
  */
-void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int second,
+void wwv_time_decoder_symbol(wwv_time_decoder_t *td, wwv_time_ms_t minute_start_ms, int second,
                              char symbol, float pulse_offset_ms);
 
 /**
@@ -252,7 +252,7 @@ void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *event, void *user_d
  * Close the current frame once its last window can no longer arrive (frame start
  * + 62 s). Call it from the same loop as bcd_correlator_periodic_check().
  */
-void wwv_time_decoder_periodic(wwv_time_decoder_t *td, float now_ms);
+void wwv_time_decoder_periodic(wwv_time_decoder_t *td, wwv_time_ms_t now_ms);
 
 /** The last minute's result, or NULL before the first frame closes. */
 const wwv_td_result_t *wwv_time_decoder_get_last(const wwv_time_decoder_t *td);

@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "wwv_time.h"
 #include "external/kiss_fft.h"
 
 #ifdef __cplusplus
@@ -40,7 +41,7 @@ typedef struct {
     float energy;           /* Accumulated 1000 Hz energy */
     float snr_db;           /* Signal-to-noise ratio */
     float noise_floor;      /* Current noise estimate */
-    float timestamp_ms;     /* Frame timestamp */
+    wwv_time_ms_t timestamp_ms; /* Frame timestamp */
     bool above_threshold;   /* Energy exceeds detection threshold */
 } slow_marker_frame_t;
 
@@ -56,7 +57,7 @@ void slow_marker_detector_destroy(slow_marker_detector_t *smd);
 /* Feed from display path (called every 85ms effective) */
 void slow_marker_detector_process_fft(slow_marker_detector_t *smd,
                                        const kiss_fft_cpx *fft_out,
-                                       float timestamp_ms);
+                                       wwv_time_ms_t timestamp_ms);
 
 void slow_marker_detector_set_callback(slow_marker_detector_t *smd,
                                         slow_marker_callback_fn cb, void *user_data);

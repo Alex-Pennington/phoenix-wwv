@@ -91,7 +91,7 @@ void bcd_correlator_set_callback(bcd_correlator_t *corr,
 }
 
 void bcd_correlator_time_event(bcd_correlator_t *corr,
-                               float timestamp_ms,
+                               wwv_time_ms_t timestamp_ms,
                                float duration_ms,
                                float peak_energy) {
     if (!corr) return;
@@ -103,7 +103,7 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
     /* Its end may be a later window's trailing edge, even when its own window
      * is already emitted */
     bcd_window_note_edge(corr, timestamp_ms, timestamp_ms + duration_ms);
-    float prev_end_ms = corr->time_prev_end_ms;
+    wwv_time_ms_t prev_end_ms = corr->time_prev_end_ms;
     corr->time_prev_end_ms = timestamp_ms + duration_ms;
     if (!accepted) return;
 
@@ -120,7 +120,7 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
 }
 
 void bcd_correlator_freq_event(bcd_correlator_t *corr,
-                               float timestamp_ms,
+                               wwv_time_ms_t timestamp_ms,
                                float duration_ms,
                                float accum_energy) {
     if (!corr) return;
@@ -140,7 +140,7 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
     corr->freq_event_count++;
 }
 
-void bcd_correlator_periodic_check(bcd_correlator_t *corr, float now_ms) {
+void bcd_correlator_periodic_check(bcd_correlator_t *corr, wwv_time_ms_t now_ms) {
     bcd_window_periodic(corr, now_ms);
 }
 
@@ -166,8 +166,8 @@ char bcd_corr_symbol_char(bcd_corr_symbol_t sym) {
     }
 }
 
-float bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr) {
-    return corr ? corr->last_symbol_ms : 0.0f;
+wwv_time_ms_t bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr) {
+    return corr ? corr->last_symbol_ms : 0.0;
 }
 
 int bcd_correlator_get_symbol_count(bcd_correlator_t *corr) {

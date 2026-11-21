@@ -176,16 +176,16 @@
 
 typedef struct {
     int consecutive_tick_count;
-    float last_tick_ms;
-    float prev_hole_ms;
-    float last_hole_ms;
+    wwv_time_ms_t last_tick_ms;
+    wwv_time_ms_t prev_hole_ms;
+    wwv_time_ms_t last_hole_ms;
     int hole_count;
 } tick_gap_tracker_t;
 
 typedef struct {
-    float retained_anchor_ms;
-    float signal_lost_ms;
-    float recovery_start_ms;
+    wwv_time_ms_t retained_anchor_ms;
+    wwv_time_ms_t signal_lost_ms;
+    wwv_time_ms_t recovery_start_ms;
     bool has_retained_state;
     bool recovery_tick_seen;
     bool recovery_marker_seen;
@@ -194,25 +194,25 @@ typedef struct {
 } recovery_state_t;
 
 typedef struct {
-    float t_ms;
+    wwv_time_ms_t t_ms;
     uint8_t kind;                   /* sync_edge_kind_t */
 } phase_edge_t;
 
 struct sync_detector {
     /* Legacy pending events (backward compat) */
-    float pending_tick_ms;
+    wwv_time_ms_t pending_tick_ms;
     float pending_tick_duration_ms;
     float pending_tick_corr_ratio;
     bool tick_pending;
-    float pending_marker_ms;
+    wwv_time_ms_t pending_marker_ms;
     float pending_marker_energy;
     float pending_marker_duration_ms;
     bool marker_pending;
 
     /* Confirmed markers */
-    float last_confirmed_ms;
-    float prev_confirmed_ms;
-    float last_rejected_ms;         /* Most recent rejected marker, 0 = none */
+    wwv_time_ms_t last_confirmed_ms;
+    wwv_time_ms_t prev_confirmed_ms;
+    wwv_time_ms_t last_rejected_ms;         /* Most recent rejected marker, 0 = none */
     bool last_confirm_weak;         /* The last confirmation was a candidate's */
     int confirmed_count;
     int good_intervals;
@@ -220,9 +220,9 @@ struct sync_detector {
     /* Enhanced state */
     sync_state_t state;
     float confidence;
-    float last_decay_ms;            /* stream time of the last periodic check, < 0 = none yet */
+    wwv_time_ms_t last_decay_ms;            /* stream time of the last periodic check, < 0 = none yet */
     uint32_t evidence_mask;
-    float minute_anchor_ms;         /* Authoritative minute boundary */
+    wwv_time_ms_t minute_anchor_ms;         /* Authoritative minute boundary */
 
     /* Tick gap tracking */
     tick_gap_tracker_t tick_gap;
@@ -233,16 +233,16 @@ struct sync_detector {
     /* Second-phase tracking */
     phase_edge_t edges[PHASE_EDGES_MAX];
     int edge_head, edge_count;
-    float last_phase_eval_ms;
+    wwv_time_ms_t last_phase_eval_ms;
     int phase_epoch;
     int phase_resets;               /* the phase was found wrong: see sync_detector_get_phase_resets */
-    float phase_support_ms;         /* last time the held phase had edge or marker support */
+    wwv_time_ms_t phase_support_ms;         /* last time the held phase had edge or marker support */
     sync_phase_stats_t phase_stats;
 
     /* Signal loss detection */
     int signal_weak_count;
     bool expecting_marker_soon;
-    float expected_marker_ms;
+    wwv_time_ms_t expected_marker_ms;
 
     /* Optional integrations */
     wwv_clock_t *wwv_clock;
@@ -283,17 +283,17 @@ struct sync_detector {
 static void transition_state(sync_detector_t *sd, sync_state_t new_state);
 static void apply_evidence(sync_detector_t *sd, uint32_t evidence_type, float weight);
 static float get_evidence_weight(sync_detector_t *sd, uint32_t evidence_type);
-static void sync_detector_hole_detected(sync_detector_t *sd, float hole_timestamp_ms);
+static void sync_detector_hole_detected(sync_detector_t *sd, wwv_time_ms_t hole_timestamp_ms);
 static void sync_detector_full_reset(sync_detector_t *sd);
 
-static void get_wall_time_str(sync_detector_t *sd, float timestamp_ms, char *buf, size_t buflen) {
-    time_t event_time = sd->start_time + (time_t)(timestamp_ms / 1000.0f);
+static void get_wall_time_str(sync_detector_t *sd, wwv_time_ms_t timestamp_ms, char *buf, size_t buflen) {
+    time_t event_time = sd->start_time + (time_t)(timestamp_ms / 1000.0);
     struct tm *tm_info = localtime(&event_time);
     strftime(buf, buflen, "%H:%M:%S", tm_info);
 }
 
-static void log_confirmed_marker(sync_detector_t *sd, float timestamp_ms,
-                                  float interval_ms, float delta_ms,
+static void log_confirmed_marker(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
+                                  double interval_ms, float delta_ms,
                                   const char *source) {
     if (!sd->csv_file) return;
 
@@ -305,7 +305,7 @@ static void log_confirmed_marker(sync_detector_t *sd, float timestamp_ms,
             timestamp_ms,
             sd->confirmed_count,
             sync_state_name(sd->state),
-            interval_ms / 1000.0f,
+            interval_ms / 1000.0,
             delta_ms,
             sd->pending_tick_duration_ms,
             sd->pending_marker_duration_ms);
@@ -315,19 +315,20 @@ static void log_confirmed_marker(sync_detector_t *sd, float timestamp_ms,
     telem_sendf(TELEM_SYNC, "%s,%.1f,%d,%s,%d,%.1f,%.0f,%.1f,%.1f,%.1f",
                 time_str, timestamp_ms, sd->confirmed_count,
                 sync_state_name(sd->state), sd->good_intervals,
-                interval_ms / 1000.0f, delta_ms,
+                interval_ms / 1000.0, delta_ms,
                 sd->pending_tick_duration_ms, sd->pending_marker_duration_ms,
                 sd->last_confirmed_ms);
 }
 
-/* Sub-minute part of a phase change, in (-30 s, +30 s] */
-static float minute_wrap(float d) {
-    return d - roundf(d / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS;
+/* Sub-minute part of a phase change, in (-30 s, +30 s]. Takes the difference of
+ * two stream times, which can be hours, so it wraps in double. */
+static float minute_wrap(double d) {
+    return (float)(d - round(d / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS);
 }
 
 /* A move of the held phase by at least PHASE_BREAK_MS starts a new phase epoch */
-static void note_phase_move(sync_detector_t *sd, float old_ms, float new_ms, const char *why) {
-    if (old_ms <= 0.0f) return;
+static void note_phase_move(sync_detector_t *sd, wwv_time_ms_t old_ms, wwv_time_ms_t new_ms, const char *why) {
+    if (old_ms <= 0.0) return;
     float d = minute_wrap(new_ms - old_ms);
     if (fabsf(d) < PHASE_BREAK_MS) return;
     sd->phase_epoch++;
@@ -336,11 +337,11 @@ static void note_phase_move(sync_detector_t *sd, float old_ms, float new_ms, con
     printf("[SYNC] Phase break #%d (%s): held phase moved %+.0f ms\n", sd->phase_epoch, why, d);
 }
 
-static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_ms, const char *source) {
+static void confirm_marker(sync_detector_t *sd, wwv_time_ms_t marker_time, float delta_ms, const char *source) {
     /* The marker of a minute a candidate already confirmed: it is measured, the
      * candidate's time was the held phase, so take its time; count it once. */
     if (sd->last_confirm_weak && sd->last_confirmed_ms > 0 &&
-        fabsf(marker_time - sd->last_confirmed_ms) < CORRELATION_WINDOW_MS) {
+        fabs(marker_time - sd->last_confirmed_ms) < CORRELATION_WINDOW_MS) {
         printf("[SYNC] Marker (%s) of the minute a candidate confirmed: anchor %.1fms -> %.1fms\n",
                source, sd->last_confirmed_ms, marker_time);
         note_phase_move(sd, sd->last_confirmed_ms, marker_time, "marker of a candidate's minute");
@@ -354,16 +355,16 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
     sd->last_confirm_weak = false;
 
     /* Calculate interval from previous marker */
-    float interval_ms = (sd->last_confirmed_ms > 0) ?
-        (marker_time - sd->last_confirmed_ms) : 0.0f;
+    double interval_ms = (sd->last_confirmed_ms > 0) ?
+        (marker_time - sd->last_confirmed_ms) : 0.0;
 
     /* Check if interval is a valid multiple of ~60 seconds (allows for missed markers) */
     bool good_interval = (sd->last_confirmed_ms == 0);
     if (!good_interval && interval_ms >= MARKER_INTERVAL_MIN_MS) {
         /* Find how many 60-second periods fit */
         int periods = (int)((interval_ms + MARKER_NOMINAL_MS/2) / MARKER_NOMINAL_MS);
-        float expected_ms = periods * MARKER_NOMINAL_MS;
-        float error_ms = fabsf(interval_ms - expected_ms);
+        double expected_ms = periods * (double)MARKER_NOMINAL_MS;
+        double error_ms = fabs(interval_ms - expected_ms);
         /* Accept if within ±5 seconds of a multiple of 60s */
         good_interval = (error_ms <= 5000.0f);
     }
@@ -374,12 +375,12 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
      * A lone false marker never re-anchors: any accepted marker clears the
      * rejected candidate. */
     if (!good_interval && sd->last_rejected_ms > 0) {
-        float since_rejected = marker_time - sd->last_rejected_ms;
+        double since_rejected = marker_time - sd->last_rejected_ms;
         if (since_rejected >= MARKER_INTERVAL_MIN_MS &&
             since_rejected <= MARKER_INTERVAL_MAX_MS) {
             printf("[SYNC] Re-anchor: markers at %.1fms and %.1fms are %.1fs apart; "
                    "dropping anchor %.1fms\n", sd->last_rejected_ms, marker_time,
-                   since_rejected / 1000.0f, sd->last_confirmed_ms);
+                   since_rejected / 1000.0, sd->last_confirmed_ms);
             note_phase_move(sd, sd->last_confirmed_ms, sd->last_rejected_ms, "re-anchor");
             sd->last_confirmed_ms = sd->last_rejected_ms;
             sd->good_intervals = 0;
@@ -409,7 +410,7 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
 
         /* Check if marker confirms :59 tick hole */
         if (sd->expecting_marker_soon) {
-            float delta_from_expected = fabsf(marker_time - sd->expected_marker_ms);
+            double delta_from_expected = fabs(marker_time - sd->expected_marker_ms);
             if (delta_from_expected < 200.0f) {
                 printf("[SYNC] Marker confirms :59 tick hole - high confidence\n");
                 weight = WEIGHT_COMBINED_HOLE_MARKER;
@@ -441,11 +442,11 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
 
         /* Console output */
         printf("[SYNC] *** CONFIRMED MARKER #%d *** src=%s delta=%.0fms interval=%.1fs state=%s conf=%.2f\n",
-               sd->confirmed_count, source, delta_ms, interval_ms / 1000.0f,
+               sd->confirmed_count, source, delta_ms, interval_ms / 1000.0,
                sync_state_name(sd->state), sd->confidence);
     } else {
         printf("[SYNC] Marker rejected (%s): interval=%.1fs (out of range)\n",
-               source, interval_ms / 1000.0f);
+               source, interval_ms / 1000.0);
         sd->last_rejected_ms = marker_time;
     }
 
@@ -454,12 +455,12 @@ static void confirm_marker(sync_detector_t *sd, float marker_time, float delta_m
     sd->marker_pending = false;
 }
 
-static void try_correlate(sync_detector_t *sd, float current_ms) {
+static void try_correlate(sync_detector_t *sd, wwv_time_ms_t current_ms) {
     /* Accept EITHER detector firing - no longer require both */
 
     /* If both are pending, check correlation and use the better source */
     if (sd->tick_pending && sd->marker_pending) {
-        float delta = fabsf(sd->pending_marker_ms - sd->pending_tick_ms);
+        float delta = (float)fabs(sd->pending_marker_ms - sd->pending_tick_ms);
         if (delta < CORRELATION_WINDOW_MS) {
             /* Both detectors agree - use tick detector timestamp (more precise) */
             confirm_marker(sd, sd->pending_tick_ms, delta, "BOTH");
@@ -478,7 +479,7 @@ static void try_correlate(sync_detector_t *sd, float current_ms) {
     /* The timeout handler will confirm if partner doesn't arrive */
 }
 
-static void check_timeout(sync_detector_t *sd, float current_ms) {
+static void check_timeout(sync_detector_t *sd, wwv_time_ms_t current_ms) {
     /* If a single detector fired and partner didn't arrive, confirm from single source */
     if (sd->tick_pending && !sd->marker_pending &&
         (current_ms - sd->pending_tick_ms) > PENDING_TIMEOUT_MS) {
@@ -565,23 +566,23 @@ static void transition_state(sync_detector_t *sd, sync_state_t new_state) {
     }
 }
 
-static void sync_detector_hole_detected(sync_detector_t *sd, float hole_timestamp_ms) {
+static void sync_detector_hole_detected(sync_detector_t *sd, wwv_time_ms_t hole_timestamp_ms) {
     int probable_second = -1;
 
     /* Determine position if locked */
     if (sd->state == SYNC_LOCKED && sd->minute_anchor_ms > 0) {
-        float since_anchor = hole_timestamp_ms - sd->minute_anchor_ms;
-        while (since_anchor < 0) since_anchor += 60000.0f;
-        while (since_anchor >= 60000.0f) since_anchor -= 60000.0f;
+        double since_anchor = fmod(hole_timestamp_ms - sd->minute_anchor_ms, 60000.0);
+        if (since_anchor < 0) since_anchor += 60000.0;
+        if (since_anchor >= 60000.0) since_anchor -= 60000.0;
 
-        int position = (int)(since_anchor / 1000.0f + 0.5f);
+        int position = (int)(since_anchor / 1000.0 + 0.5);
 
         if (abs(position - 29) <= 1) {
             probable_second = 29;
         } else if (abs(position - 59) <= 1 || position <= 1) {
             probable_second = 59;
             sd->expecting_marker_soon = true;
-            sd->expected_marker_ms = hole_timestamp_ms + 1000.0f;
+            sd->expected_marker_ms = hole_timestamp_ms + 1000.0;
         }
     }
 
@@ -594,10 +595,10 @@ static void sync_detector_hole_detected(sync_detector_t *sd, float hole_timestam
         /* During acquisition, look for double-hole pattern */
         sd->tick_gap.hole_count++;
         if (sd->tick_gap.hole_count >= 2 && sd->tick_gap.prev_hole_ms > 0) {
-            float hole_interval = hole_timestamp_ms - sd->tick_gap.prev_hole_ms;
-            if (fabsf(hole_interval - 30000.0f) < 500.0f) {
+            double hole_interval = hole_timestamp_ms - sd->tick_gap.prev_hole_ms;
+            if (fabs(hole_interval - 30000.0) < 500.0) {
                 printf("[SYNC] Double tick-hole pattern confirmed (%.1fs apart)\n",
-                       hole_interval / 1000.0f);
+                       hole_interval / 1000.0);
                 apply_evidence(sd, EVIDENCE_TICK_HOLE, weight * 1.5f);
             }
         }
@@ -623,7 +624,7 @@ static void sync_detector_full_reset(sync_detector_t *sd) {
 
 /* The held phase is off by an unknown number of whole seconds: frames stop
  * (RECOVERING) and the next marker within +-5 s of the minute re-locks. */
-static void enter_phase_unknown(sync_detector_t *sd, float now_ms, const char *why) {
+static void enter_phase_unknown(sync_detector_t *sd, wwv_time_ms_t now_ms, const char *why) {
     if (sd->state != SYNC_LOCKED) return;
     printf("[SYNC] Held phase lost (%s) - whole seconds unknown, waiting for a marker\n", why);
     sd->phase_epoch++;
@@ -697,7 +698,7 @@ void sync_detector_destroy(sync_detector_t *sd) {
     free(sd);
 }
 
-void sync_detector_tick_marker(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_tick_marker(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                 float duration_ms, float corr_ratio) {
     if (!sd) return;
 
@@ -716,7 +717,7 @@ void sync_detector_tick_marker(sync_detector_t *sd, float timestamp_ms,
     try_correlate(sd, timestamp_ms);
 }
 
-void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_marker_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                  float accum_energy, float duration_ms) {
     if (!sd) return;
 
@@ -736,24 +737,25 @@ void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
     try_correlate(sd, timestamp_ms);
 }
 
-void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float lead_b_ms,
+void sync_detector_marker_candidate(sync_detector_t *sd, wwv_time_ms_t lead_a_ms, wwv_time_ms_t lead_b_ms,
                                     const char *source) {
     if (!sd) return;
     /* No phase to test it against: a candidate never starts one */
-    if (sd->state == SYNC_ACQUIRING || sd->minute_anchor_ms <= 0.0f) return;
+    if (sd->state == SYNC_ACQUIRING || sd->minute_anchor_ms <= 0.0) return;
     /* After a jump the held phase is not known to the second */
     if (sd->state == SYNC_RECOVERING && sd->recovery.phase_unknown) return;
     /* A detector already reported this minute's marker; it decides */
     if (sd->tick_pending || sd->marker_pending) return;
 
-    const float leads[2] = { lead_a_ms, lead_b_ms };
-    float best_off = 0.0f, predicted = 0.0f;
+    const wwv_time_ms_t leads[2] = { lead_a_ms, lead_b_ms };
+    float best_off = 0.0f;
+    wwv_time_ms_t predicted = 0.0;
     bool on_phase = false;
     for (int i = 0; i < 2; i++) {
-        float since = leads[i] - sd->minute_anchor_ms;
-        float n = roundf(since / MARKER_NOMINAL_MS);
-        float off = since - n * MARKER_NOMINAL_MS;
-        if (n >= 1.0f && fabsf(off) <= CANDIDATE_TOLERANCE_MS &&
+        double since = leads[i] - sd->minute_anchor_ms;
+        double n = round(since / MARKER_NOMINAL_MS);
+        float off = (float)(since - n * MARKER_NOMINAL_MS);
+        if (n >= 1.0 && fabsf(off) <= CANDIDATE_TOLERANCE_MS &&
             (!on_phase || fabsf(off) < fabsf(best_off))) {
             on_phase = true;
             best_off = off;
@@ -773,8 +775,8 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
          * RECOVERING for 6 s). A hidden-start marker that ends on time, the case
          * this is for, carries the loss in its end reading. */
         if (sd->state == SYNC_LOCKED) {
-            float since = lead_b_ms - sd->minute_anchor_ms;
-            if (roundf(since / MARKER_NOMINAL_MS) >= 1.0f) {
+            double since = lead_b_ms - sd->minute_anchor_ms;
+            if (round(since / MARKER_NOMINAL_MS) >= 1.0) {
                 float off = minute_wrap(since);
                 float k = roundf(off / 1000.0f);
                 if (fabsf(k) >= 1.0f && fabsf(k) <= 5.0f &&
@@ -791,7 +793,7 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
         return;
     }
     /* This minute is already confirmed */
-    if (sd->last_confirmed_ms > 0.0f && fabsf(predicted - sd->last_confirmed_ms) < MARKER_INTERVAL_MIN_MS)
+    if (sd->last_confirmed_ms > 0.0 && fabs(predicted - sd->last_confirmed_ms) < MARKER_INTERVAL_MIN_MS)
         return;
 
     printf("[SYNC] Candidate (%s) on the held phase, %+.0fms: confirms %.1fms\n",
@@ -814,8 +816,8 @@ const char *sync_state_name(sync_state_t state) {
     }
 }
 
-float sync_detector_get_last_marker_ms(sync_detector_t *sd) {
-    return sd ? sd->last_confirmed_ms : 0.0f;
+wwv_time_ms_t sync_detector_get_last_marker_ms(sync_detector_t *sd) {
+    return sd ? sd->last_confirmed_ms : 0.0;
 }
 
 int sync_detector_get_confirmed_count(sync_detector_t *sd) {
@@ -847,7 +849,7 @@ void sync_detector_broadcast_state(sync_detector_t *sd) {
     /* Broadcast current state - use 0 for interval/delta when no history */
     float interval_sec = 0.0f;
     if (sd->prev_confirmed_ms > 0 && sd->last_confirmed_ms > 0) {
-        interval_sec = (sd->last_confirmed_ms - sd->prev_confirmed_ms) / 1000.0f;
+        interval_sec = (float)((sd->last_confirmed_ms - sd->prev_confirmed_ms) / 1000.0);
     }
 
     telem_sendf(TELEM_SYNC, "%s,%.1f,%d,%s,%d,%.1f,0,%.1f,%.1f,%.1f",
@@ -862,13 +864,13 @@ void sync_detector_broadcast_state(sync_detector_t *sd) {
  * Enhanced API Implementation
  *============================================================================*/
 
-void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms) {
+void sync_detector_tick_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms) {
     if (!sd) return;
 
     tick_gap_tracker_t *tg = &sd->tick_gap;
 
     if (tg->last_tick_ms > 0) {
-        float gap_ms = timestamp_ms - tg->last_tick_ms;
+        double gap_ms = timestamp_ms - tg->last_tick_ms;
 
         if (gap_ms >= TICK_INTERVAL_MIN_MS && gap_ms <= TICK_INTERVAL_MAX_MS) {
             /* Normal tick interval */
@@ -881,7 +883,7 @@ void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms) {
         } else if (gap_ms >= TICK_HOLE_MIN_GAP_MS && gap_ms <= TICK_HOLE_MAX_GAP_MS) {
             /* Tick hole detected */
             if (tg->consecutive_tick_count >= MIN_TICKS_FOR_HOLE) {
-                sync_detector_hole_detected(sd, tg->last_tick_ms + 1000.0f);
+                sync_detector_hole_detected(sd, tg->last_tick_ms + 1000.0);
             }
             tg->consecutive_tick_count = 1;
 
@@ -906,8 +908,10 @@ void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms) {
     }
 }
 
-static float second_wrap(float d) {
-    return d - roundf(d / 1000.0f) * 1000.0f;
+/* Sub-second part, in (-500 ms, +500 ms]. Takes the difference of two stream
+ * times, which can be hours, so it wraps in double. */
+static float second_wrap(double d) {
+    return (float)(d - round(d / 1000.0) * 1000.0);
 }
 
 static int cmp_float(const void *a, const void *b) {
@@ -926,9 +930,10 @@ static float edge_offset(const sync_detector_t *sd, const phase_edge_t *e) {
     return second_wrap(e->t_ms - sd->last_confirmed_ms - lead);
 }
 
-static void track_phase(sync_detector_t *sd, float now_ms) {
+static void track_phase(sync_detector_t *sd, wwv_time_ms_t now_ms) {
     float ticks[PHASE_EDGES_MAX], gated[PHASE_EDGES_MAX], gated_ticks[PHASE_EDGES_MAX];
-    float btimes[PHASE_EDGES_MAX], tick_t[PHASE_EDGES_MAX], btime_t[PHASE_EDGES_MAX];
+    float btimes[PHASE_EDGES_MAX];
+    wwv_time_ms_t tick_t[PHASE_EDGES_MAX], btime_t[PHASE_EDGES_MAX];
     int nt = 0, ng = 0, ngt = 0, nb = 0;
     for (int i = 0; i < sd->edge_count; i++) {
         const phase_edge_t *e = &sd->edges[(sd->edge_head - sd->edge_count + i + PHASE_EDGES_MAX) % PHASE_EDGES_MAX];
@@ -960,7 +965,7 @@ static void track_phase(sync_detector_t *sd, float now_ms) {
              * ticks in a tick fade otherwise moves a right phase */
             /* from the cluster's first tick: before it the edges were on the
              * held phase whichever is right */
-            float since = now_ms;
+            wwv_time_ms_t since = now_ms;
             for (int j = 0; j < nt; j++)
                 if (fabsf(second_wrap(ticks[j] - best_at)) <= PHASE_JUMP_RADIUS_MS && tick_t[j] < since)
                     since = tick_t[j];
@@ -984,7 +989,7 @@ static void track_phase(sync_detector_t *sd, float now_ms) {
             /* Samples lost upstream only make the edges early. An early cluster
              * while the phase had support PHASE_SNAP_SUPPORT_MS ago is the loss
              * since then; anything else is ambiguous. */
-            if (bcd_agrees && best_at < 0.0f && sd->phase_support_ms > 0.0f &&
+            if (bcd_agrees && best_at < 0.0f && sd->phase_support_ms > 0.0 &&
                 now_ms - sd->phase_support_ms <= PHASE_SNAP_SUPPORT_MS) {
                 note_phase_move(sd, sd->last_confirmed_ms, sd->last_confirmed_ms + best_at, "edge jump");
                 sd->last_confirmed_ms += best_at;
@@ -1012,8 +1017,8 @@ static void track_phase(sync_detector_t *sd, float now_ms) {
     sd->phase_stats.slewed_ms += c;
 }
 
-void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edge_kind_t kind) {
-    if (!sd || sd->state != SYNC_LOCKED || sd->last_confirmed_ms <= 0.0f) return;
+void sync_detector_second_edge(sync_detector_t *sd, wwv_time_ms_t timestamp_ms, sync_edge_kind_t kind) {
+    if (!sd || sd->state != SYNC_LOCKED || sd->last_confirmed_ms <= 0.0) return;
     sd->edges[sd->edge_head] = (phase_edge_t){ timestamp_ms, (uint8_t)kind };
     sd->edge_head = (sd->edge_head + 1) % PHASE_EDGES_MAX;
     if (sd->edge_count < PHASE_EDGES_MAX) sd->edge_count++;
@@ -1035,7 +1040,7 @@ sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd) {
     return sd ? sd->phase_stats : z;
 }
 
-void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_p_marker_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                    float duration_ms) {
     if (!sd) return;
 
@@ -1049,11 +1054,11 @@ void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
 
     /* Recovery validation */
     if (sd->state == SYNC_RECOVERING && sd->recovery.has_retained_state) {
-        float since_anchor = timestamp_ms - sd->recovery.retained_anchor_ms;
-        while (since_anchor < 0) since_anchor += 60000.0f;
-        while (since_anchor >= 60000.0f) since_anchor -= 60000.0f;
+        double since_anchor = fmod(timestamp_ms - sd->recovery.retained_anchor_ms, 60000.0);
+        if (since_anchor < 0) since_anchor += 60000.0;
+        if (since_anchor >= 60000.0) since_anchor -= 60000.0;
 
-        int position = (int)(since_anchor / 1000.0f + 0.5f);
+        int position = (int)(since_anchor / 1000.0 + 0.5);
 
         /* Check if at valid P position */
         static const int valid_p[] = {0, 9, 19, 29, 39, 49, 59};
@@ -1067,7 +1072,7 @@ void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
     }
 }
 
-void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
+void sync_detector_periodic_check(sync_detector_t *sd, wwv_time_ms_t current_ms) {
     if (!sd) return;
 
     /* A lone pending marker is confirmed PENDING_TIMEOUT_MS after it, not when
@@ -1077,13 +1082,13 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
     /* Confidence decay, for the stream time since the last check */
     float decay_rate = (sd->state == SYNC_RECOVERING) ?
                        sd->confidence_decay_recovering : sd->confidence_decay_normal;
-    if (sd->last_decay_ms >= 0.0f && current_ms > sd->last_decay_ms)
-        sd->confidence *= powf(decay_rate, (current_ms - sd->last_decay_ms) / CONFIDENCE_DECAY_STEP_MS);
+    if (sd->last_decay_ms >= 0.0 && current_ms > sd->last_decay_ms)
+        sd->confidence *= powf(decay_rate, (float)(current_ms - sd->last_decay_ms) / CONFIDENCE_DECAY_STEP_MS);
     if (current_ms > sd->last_decay_ms) sd->last_decay_ms = current_ms;
 
     /* Signal loss detection (only when LOCKED) - marker-based authority */
     if (sd->state == SYNC_LOCKED) {
-        float since_last_marker = current_ms - sd->last_confirmed_ms;
+        double since_last_marker = current_ms - sd->last_confirmed_ms;
 
         if (since_last_marker > SYNC_HOLDOVER_MS) {
             sd->signal_weak_count++;
@@ -1107,8 +1112,8 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
 
     /* Recovery state processing */
     if (sd->state == SYNC_RECOVERING) {
-        float time_since_loss = current_ms - sd->recovery.signal_lost_ms;
-        float time_in_recovery = current_ms - sd->recovery.recovery_start_ms;
+        double time_since_loss = current_ms - sd->recovery.signal_lost_ms;
+        double time_in_recovery = current_ms - sd->recovery.recovery_start_ms;
 
         /* A marker on the retained phase re-locks (confirm_marker() sets
          * recovery_marker_seen). Ticks are not required: the chain does not
@@ -1116,7 +1121,7 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
          * retained, so only the retention window ends recovery. */
         if (sd->recovery.recovery_marker_seen) {
             printf("[SYNC] Recovery validated after %.0fs - returning to LOCKED\n",
-                   time_in_recovery / 1000.0f);
+                   time_in_recovery / 1000.0);
             sd->minute_anchor_ms = sd->last_confirmed_ms;
             sd->recovery.phase_unknown = false;
             sd->edge_count = 0;
@@ -1124,7 +1129,7 @@ void sync_detector_periodic_check(sync_detector_t *sd, float current_ms) {
                 sd->confidence = sd->confidence_locked_threshold;
             transition_state(sd, SYNC_LOCKED);
         } else if (time_since_loss > SYNC_RETENTION_WINDOW_MS) {
-            printf("[SYNC] Retention expired (%.0fs) - full reset\n", time_since_loss / 1000.0f);
+            printf("[SYNC] Retention expired (%.0fs) - full reset\n", time_since_loss / 1000.0);
             sync_detector_full_reset(sd);
             return;
         }
@@ -1148,14 +1153,14 @@ frame_time_t sync_detector_get_frame_time(sync_detector_t *sd) {
     /* The second under way at the last periodic check, on the held phase.
      * (Ticks are not fed, so the last tick time was always 0 and this read
      * -anchor mod 60 s: 142 of 162 LOCKED STATUS lines on run3h said sec=54.) */
-    float now = sd->last_decay_ms > 0.0f ? sd->last_decay_ms : sd->minute_anchor_ms;
-    float minutes = floorf((now - sd->minute_anchor_ms) / 60000.0f);
-    float minute_start = sd->minute_anchor_ms + minutes * 60000.0f;
-    ft.current_second = (int)floorf((now - minute_start) / 1000.0f);
+    wwv_time_ms_t now = sd->last_decay_ms > 0.0 ? sd->last_decay_ms : sd->minute_anchor_ms;
+    double minutes = floor((now - sd->minute_anchor_ms) / 60000.0);
+    wwv_time_ms_t minute_start = sd->minute_anchor_ms + minutes * 60000.0;
+    ft.current_second = (int)floor((now - minute_start) / 1000.0);
     if (ft.current_second < 0) ft.current_second = 0;
     if (ft.current_second > 59) ft.current_second = 59;
 
-    ft.second_start_ms = minute_start + (ft.current_second * 1000.0f);
+    ft.second_start_ms = minute_start + (ft.current_second * 1000.0);
     ft.confidence = sd->confidence;
     ft.evidence_mask = sd->evidence_mask;
     ft.state = sd->state;
@@ -1188,7 +1193,7 @@ void sync_detector_set_state_callback(sync_detector_t *sd,
     }
 }
 
-bool sync_detector_get_pending_tick(sync_detector_t *sd, float *timestamp_ms, float *duration_ms) {
+bool sync_detector_get_pending_tick(sync_detector_t *sd, wwv_time_ms_t *timestamp_ms, float *duration_ms) {
     if (!sd || !sd->tick_pending) {
         return false;
     }

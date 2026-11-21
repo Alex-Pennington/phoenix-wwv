@@ -69,16 +69,16 @@ struct wwv_detector_manager {
     /* Statistics */
     uint64_t detector_samples;
     uint64_t display_samples;
-    double now_ms;              /* time of the detector sample being processed */
+    wwv_time_ms_t now_ms;       /* time of the detector sample being processed */
 
     /* Filled gaps (wwv_detector_manager_mark_gap): a ring of spans, detector ms */
-    struct { double start_ms, end_ms; } gaps[WWV_GAP_SPANS];
+    struct { wwv_time_ms_t start_ms, end_ms; } gaps[WWV_GAP_SPANS];
     int n_gaps, gap_next;
     wwv_gap_drops_t gap_drops;
 };
 
 /** True when [lo_ms, hi_ms] overlaps a gap span widened by its guard and settle time */
-bool wwv_gap_covers(const wwv_detector_manager_t *mgr, double lo_ms, double hi_ms);
+bool wwv_gap_covers(const wwv_detector_manager_t *mgr, wwv_time_ms_t lo_ms, wwv_time_ms_t hi_ms);
 
 /*============================================================================
  * Lifecycle Functions

@@ -393,16 +393,52 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     lead, not against UTC.
 - `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
   (recovery re-locks on a marker on the held phase alone).
-- **Stream times are `float` milliseconds** through the detectors, sync, the correlator and the
-  decoder. The step is 1 ms from 2.33 h, 2 ms from 4.66 h, 4 ms from 9.3 h, 8 ms from 18.6 h and 16
-  ms from 37 h; with holdover, a live run can stay LOCKED that long and nothing re-bases the clock.
-  Not changed (fix/wwv-sync-decoder-cleanup): the longest run is run3h (3 h, step 1 ms against
-  sync's 8 ms tick dead band), and the times are float where they are made (tick, marker and BCD
-  detector events, the correlator's interface), so sync or the decoder in double would not remove
-  the step. Where it bites first: a slew (half the median edge offset, 4-20 ms) added to the held
-  anchor rounds to the step, so from 18.6 h a 4-8 ms slew moves the phase 0 or 8 ms. The decoder's
-  900 ms chain tolerance and the decay's elapsed-time step tolerate a step of tens of ms. A fix is
-  one time type through every module, and the producer re-basing it.
+- **Stream times are one type, `wwv_time_ms_t`, a double of milliseconds (fix/wwv-time-type),**
+  from the tick, marker and BCD detector events through the manager and its routing, sync, the BCD
+  and marker correlators and the time decoder (`include/wwv_time.h`). As float the step was 1 ms
+  from 2.33 h, 8 ms from 18.6 h and 16 ms from 37 h, and a LOCKED run with holdover can last that
+  long with nothing re-basing the clock. A double's step at 40 h is 3e-8 ms.
+  - **Why double ms, not an int64 sample index:** every consumer works in ms and mixes stream
+    times with ms constants and float offsets, so double keeps each expression as it was and the
+    change mechanical. A sample index would need a conversion at every comparison with a ms
+    constant. A double holds integers exactly to 2^53, far beyond any run.
+  - **Detectors stamp an event from the frame count** with `wwv_frames_to_ms()`: an integer
+    multiply and one divide. `frame_count * FRAME_DURATION_MS` drifted with run length, because
+    5.12f is 2.2e-8 off (3 ms at 40 h).
+  - **Durations and offsets inside a second or a minute stay float** (pulse widths, edge offsets,
+    `pulse_offset_ms`). Their difference is taken in double first. `minute_wrap()` and
+    `second_wrap()` in sync take a double, because during holdover an edge's offset from the held
+    anchor is the difference of two stream times hours apart.
+  - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
+    routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
+    minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
+    tracker's counts) are identical. The float chain fails it at the third line: a minute start
+    7.9 ms off.
+  - **Measured against the float chain, at short run times:** on the four captures the symbol
+    sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
+    ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
+    phase is up to 4 ms apart for a minute, until the next marker. FALSE CONFIRM is 0 in both. In the
+    17 scored live replays, FALSE CONFIRM is 0 in both and the first CONFIRMED time of every part is
+    the same (85 of 85). 10 of about 43,400 symbols differ, in run3h, run90, run90d, run90f, run90g
+    and runF seg6, and TOD is CONFIRMED in two more minutes on run90d, right both times. Of the
+    three traced, in run90d:
+    - Two are the hidden-start rule's gap test at its 210 ms bound. The log's 0.1 ms times put the
+      gap at 210.0 and 210.1. The float chain read them at its 0.125-0.25 ms step, as 209.875 and
+      210.0. The double chain reads them as 210.000003 (the width's float error) and 210.1. Inference:
+      from IQ an event time is a whole number of 5.12 ms frames, and 210 ms is 41.02 frames, so the
+      first tie comes from the log's rounding.
+    - One is a window boundary: the two anchors are 7.5 ms apart after different slews. A BTIME
+      start falls 5.5 ms before one window start and 2.0 ms after the other.
+
+    A slew's median offset near the 8 ms dead band can cross it on a different evaluation, so slew
+    counts differ by up to 4 per run (run90d 140 against 144). Jumps, snaps and breaks are the
+    same. Not traced further.
+  - **Left as float (not on the chain):** `tick_correlator` (created, never fed),
+    `wwv_clock_set_anchor` (never called), `bcd_envelope`, `subcarrier_detector` and `bcd_decoder`
+    (never created). Also left: the `--frames` record's `t_ms`, a float32 column of a fixed binary
+    format (`apps/wwv_live.c:326-340`, `tests/air/btime_frames.c`), and the float locals that
+    hold times in the older unit tests.
+  - **Not done: re-basing at the producer.** At a double's step no run needs it.
 - **A marker within 5 s of a whole number of minutes is accepted and moves the anchor**
   (`confirm_marker()`'s +-5 s interval test), in every state. Not changed
   (fix/wwv-sync-decoder-cleanup): with no gap-fill upstream it is the only correction for whole

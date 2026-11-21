@@ -56,13 +56,13 @@ static void update_accumulator(marker_detector_t *md, float energy) {
  * solves D for L; it is ill-conditioned as f nears 0.5 and is for reporting only.
  */
 static void marker_estimate_pulse(const marker_detector_t *md, uint64_t end_frame,
-                                  float *start_ms, float *length_ms) {
+                                  wwv_time_ms_t *start_ms, float *length_ms) {
     const float W = MARKER_WINDOW_FRAMES * FRAME_DURATION_MS;
-    float up = md->marker_start_frame * FRAME_DURATION_MS;
-    float down = end_frame * FRAME_DURATION_MS;
-    float D = down - up;
+    wwv_time_ms_t up = MARKER_FRAMES_TO_MS(md->marker_start_frame);
+    wwv_time_ms_t down = MARKER_FRAMES_TO_MS(end_frame);
+    float D = (float)(down - up);
 
-    *start_ms = 0.5f * (up + down) - 0.5f * (W + MARKER_PULSE_MS);
+    *start_ms = 0.5 * (up + down) - 0.5 * (W + MARKER_PULSE_MS);
 
     float plateau = md->marker_peak_energy - md->baseline_energy;
     float f = (plateau > 0.0f) ? (md->threshold - md->baseline_energy) / plateau : 0.5f;
@@ -91,9 +91,9 @@ static void track_purity_background(marker_detector_t *md, float rate) {
  * estimated 800 ms pulse. About 0.04 for a pure 1000 Hz tone at any SNR (Hann
  * leakage two bins out), about 1.0 for broadband audio such as voice.
  */
-static float marker_flank_ratio(const marker_detector_t *md, uint64_t end_frame, float pulse_start_ms) {
+static float marker_flank_ratio(const marker_detector_t *md, uint64_t end_frame, wwv_time_ms_t pulse_start_ms) {
     long n = (long)(MARKER_PULSE_MS / FRAME_DURATION_MS + 0.5f);
-    long first = (long)(pulse_start_ms / FRAME_DURATION_MS + 0.5f);
+    long first = (long)(MARKER_MS_TO_FRAMES_EXACT(pulse_start_ms) + 0.5);
     long oldest = (long)end_frame - MARKER_PURITY_RING + 1;
     if (first < oldest) first = oldest;
     if (first < 0) first = 0;
@@ -129,11 +129,11 @@ void marker_state_machine_run(marker_detector_t *md) {
     /* Debug logging - every 20th frame (~100ms) */
     if (md->debug_file && (frame % 20 == 0)) {
         char time_str[16];
-        marker_get_wall_time_str(md, frame * FRAME_DURATION_MS, time_str, sizeof(time_str));
+        marker_get_wall_time_str(md, MARKER_FRAMES_TO_MS(frame), time_str, sizeof(time_str));
         const char *state_names[] = {"IDLE", "IN_MARKER", "COOLDOWN"};
         float ratio = (md->baseline_energy > 0.001f) ? md->accumulated_energy / md->baseline_energy : 0.0f;
         fprintf(md->debug_file, "%s,%.1f,%s,%.1f,%.1f,%.1f,%.4f,%.2f\n",
-                time_str, frame * FRAME_DURATION_MS, state_names[md->state],
+                time_str, MARKER_FRAMES_TO_MS(frame), state_names[md->state],
                 md->accumulated_energy, md->baseline_energy, md->threshold,
                 energy, ratio);
         fflush(md->debug_file);
@@ -154,7 +154,7 @@ void marker_state_machine_run(marker_detector_t *md) {
     }
 
     /* No markers in first few seconds - baseline still stabilizing */
-    float timestamp_ms = md->frame_count * FRAME_DURATION_MS;
+    wwv_time_ms_t timestamp_ms = MARKER_FRAMES_TO_MS(md->frame_count);
     if (timestamp_ms < MARKER_MIN_STARTUP_MS) {
         md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
         md->threshold = md->baseline_energy * md->threshold_multiplier;
@@ -173,8 +173,8 @@ void marker_state_machine_run(marker_detector_t *md) {
     }
     if ((frame - md->block_start_frame) * FRAME_DURATION_MS >= MARKER_PEAK_LOG_MS) {
         printf("[%7.1fs] MARKER block peak: sum/baseline %.2f at %.1fms (threshold %.2f) state=%d\n",
-               frame * FRAME_DURATION_MS / 1000.0f, md->block_peak_ratio,
-               md->block_peak_frame * FRAME_DURATION_MS, md->threshold_multiplier, (int)md->state);
+               MARKER_FRAMES_TO_MS(frame) / 1000.0, md->block_peak_ratio,
+               MARKER_FRAMES_TO_MS(md->block_peak_frame), md->threshold_multiplier, (int)md->state);
         md->block_peak_ratio = 0.0f;
         md->block_start_frame = frame;
     }
@@ -209,7 +209,8 @@ void marker_state_machine_run(marker_detector_t *md) {
             bool timed_out = (duration_ms > MARKER_MAX_DURATION_MS);
 
             if (md->accumulated_energy < md->threshold || timed_out) {
-                float pulse_start_ms, pulse_ms;
+                wwv_time_ms_t pulse_start_ms;
+                float pulse_ms;
                 marker_estimate_pulse(md, frame, &pulse_start_ms, &pulse_ms);
                 bool long_enough = (duration_ms >= md->min_duration_ms && duration_ms < MARKER_MAX_DURATION_MS);
                 md->last_flank_ratio = long_enough ?
@@ -221,11 +222,12 @@ void marker_state_machine_run(marker_detector_t *md) {
                      * follows within seconds is still seen. */
                     printf("[%7.1fs] MARKER rejected: not a tone, flank/centre excess %.2f > %.2f "
                            "(window run %.0fms, start=%.1fms)\n",
-                           frame * FRAME_DURATION_MS / 1000.0f, md->last_flank_ratio,
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
+ md->last_flank_ratio,
                            MARKER_MAX_FLANK_RATIO, duration_ms, pulse_start_ms);
                     /* The chain log takes it from here (wwv_chain_log_telem) */
                     telem_sendf(TELEM_MARKERS, "PURITY,%.1f,%.1f,%.0f,%.2f,%.2f",
-                                frame * FRAME_DURATION_MS, pulse_start_ms, duration_ms,
+                                MARKER_FRAMES_TO_MS(frame), pulse_start_ms, duration_ms,
                                 md->last_flank_ratio, md->marker_peak_energy / md->baseline_energy);
                     md->state = STATE_IDLE;
                     break;
@@ -236,7 +238,7 @@ void marker_state_machine_run(marker_detector_t *md) {
                     md->markers_detected++;
                     md->flash_frames_remaining = MARKER_FLASH_FRAMES;
 
-                    float timestamp_ms = frame * FRAME_DURATION_MS;
+                    wwv_time_ms_t timestamp_ms = MARKER_FRAMES_TO_MS(frame);
                     float since_last = (md->last_marker_frame > 0) ?
                         (md->marker_start_frame - md->last_marker_frame) * FRAME_DURATION_MS / 1000.0f : 0.0f;
 
@@ -290,13 +292,14 @@ void marker_state_machine_run(marker_detector_t *md) {
                     bool tone = (flank <= MARKER_MAX_FLANK_RATIO);
                     printf("[%7.1fs] MARKER short run: window run %.0fms < %.0fms, start=%.1fms "
                            "peak/baseline %.2f flank %.2f%s\n",
-                           frame * FRAME_DURATION_MS / 1000.0f, duration_ms, md->min_duration_ms,
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
+ duration_ms, md->min_duration_ms,
                            pulse_start_ms, md->marker_peak_energy / md->baseline_energy, flank,
                            tone ? " (candidate)" : "");
                     if (tone && md->candidate_callback) {
                         marker_event_t event = {
                             .marker_number = 0,
-                            .timestamp_ms = frame * FRAME_DURATION_MS,
+                            .timestamp_ms = MARKER_FRAMES_TO_MS(frame),
                             .accumulated_energy = md->marker_peak_energy,
                             .peak_energy = md->current_energy,
                             .duration_ms = pulse_ms,
@@ -308,7 +311,8 @@ void marker_state_machine_run(marker_detector_t *md) {
                     break;
                 } else {
                     printf("[%7.1fs] MARKER timed out after %.0fms - resetting baseline\n",
-                           frame * FRAME_DURATION_MS / 1000.0f, duration_ms);
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
+ duration_ms);
                     /* Restored from before 7e7805e: without it, sustained in-band
                      * energy keeps the detector cycling IN_MARKER -> timeout. */
                     md->baseline_energy = md->accumulated_energy;
