@@ -427,7 +427,7 @@ value and the best value that differs in that part. Each part has its own state:
 A `DECODED` reading that disagrees with a carried `CONFIRMED` value is a conflict. It is counted,
 the carried value is dropped, and the new reading is reported as `DECODED`.
 
-**Format:** `BCDS,UTC,frame_start_ms,tod_state,HH:MM,tod_margin,date_state,YYYY-MM-DD,DDD,date_margin,dut1_state,dut1_s,dut1_margin,dst_state,dst,dst_margin,lsw_state,lsw,lsw_margin,frames,observations,conflicts`
+**Format:** `BCDS,UTC,frame_start_ms,tod_state,HH:MM,tod_margin,date_state,YYYY-MM-DD,DDD,date_margin,dut1_state,dut1_s,dut1_margin,dst_state,dst,dst_margin,lsw_state,lsw,lsw_margin,frames,observations,conflicts,tod_pmargin,date_pmargin,dut1_pmargin,dst_pmargin,lsw_pmargin`
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -440,10 +440,11 @@ the carried value is dropped, and the new reading is reported as `DECODED`.
 | `frames` | int | Frames in the decoder's history |
 | `observations` | int | 0/1 symbols used as evidence in the history |
 | `conflicts` | int | Conflicts since the decoder started |
+| `tod_pmargin` ... `lsw_pmargin` | float | Each part's margin under the pessimistic model, which `CONFIRMED` also needs. Negative (minus that margin) when the pessimistic model's best value differs from the nominal model's |
 
 **Example:**
 ```
-BCDS,UTC,569950.3,DECODED,12:19,2.9,NONE,----------,---,0.6,NONE,--,1.0,DECODED,00,10.1,NONE,-,2.0,8,216,0
+BCDS,UTC,605725.1,DECODED,23:14,23.1,DECODED,2026-11-20,324,10.5,DECODED,-0.1,20.9,DECODED,00,10.2,DECODED,0,20.9,9,380,0,13.1,5.0,9.4,3.9,9.7
 ```
 
 `BCDS,TIME` is the time-domain pulse detector's line (above); the decoded time is `UTC`.

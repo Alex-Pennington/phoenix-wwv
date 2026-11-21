@@ -131,11 +131,16 @@ static int clean_run(const char *name, utc_t t0, int minutes, status_t st) {
     int all = g_last.tod_state == WWV_TD_CONFIRMED && g_last.date_state == WWV_TD_CONFIRMED &&
               g_last.dut1_state == WWV_TD_CONFIRMED && g_last.dst_state == WWV_TD_CONFIRMED &&
               g_last.lsw_state == WWV_TD_CONFIRMED;
-    int pass = all && g_wrong_any == 0 && g_results == minutes;
+    /* The pessimistic margin is reported, for the same value, and below the nominal one */
+    int pm_ok = g_last.tod_pmargin > 0.0f && g_last.tod_pmargin < g_last.tod_margin &&
+                g_last.date_pmargin > 0.0f && g_last.date_pmargin < g_last.date_margin;
+    int pass = all && pm_ok && g_wrong_any == 0 && g_results == minutes;
     printf("%-4s %-58s time+date CONFIRMED at minute %d, wrong %d\n", pass ? "ok" : "FAIL", name,
            first_conf, g_wrong_any);
     if (!pass) {
         fails++;
+        printf("     pessimistic margins: tod %.1f (nominal %.1f), date %.1f (nominal %.1f)\n",
+               g_last.tod_pmargin, g_last.tod_margin, g_last.date_pmargin, g_last.date_margin);
         printf("     last: tod %s date %s dut1 %s dst %s lsw %s, results %d/%d\n",
                wwv_td_state_name(g_last.tod_state), wwv_td_state_name(g_last.date_state),
                wwv_td_state_name(g_last.dut1_state), wwv_td_state_name(g_last.dst_state),

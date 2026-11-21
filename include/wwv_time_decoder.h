@@ -194,6 +194,11 @@ typedef struct {
     float lsw_margin;
 
     int conflicts;              /* decodes against a carried CONFIRMED value, total */
+
+    /* The pessimistic model's margin for each part: CONFIRMED needs it to be at
+     * least confirmed_nats as well as the nominal margin. Negative (minus its
+     * margin) when that model's best value differs from the nominal one. */
+    float tod_pmargin, date_pmargin, dut1_pmargin, dst_pmargin, lsw_pmargin;
 } wwv_td_result_t;
 
 typedef void (*wwv_td_callback_fn)(const wwv_td_result_t *result, void *user_data);

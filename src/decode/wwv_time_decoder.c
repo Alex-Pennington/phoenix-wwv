@@ -681,6 +681,11 @@ static void decide(wwv_time_decoder_t *td, const search_t *r, const search_t *rp
                                  prev ? prev->lsw_state : WWV_TD_NONE, pv_lsw,
                                  frames_ok && rp->lsw == r->lsw && rp->lsw_margin >= conf,
                                  index, tod_now_confirmed, &vals[2]);
+    out->tod_pmargin = rp->tod == r->tod ? rp->tod_margin : -rp->tod_margin;
+    out->date_pmargin = rp->yy == r->yy && rp->doy == r->doy ? rp->date_margin : -rp->date_margin;
+    out->dut1_pmargin = rp->dut1 == r->dut1 ? rp->dut1_margin : -rp->dut1_margin;
+    out->dst_pmargin = rp->dst == r->dst ? rp->dst_margin : -rp->dst_margin;
+    out->lsw_pmargin = rp->lsw == r->lsw ? rp->lsw_margin : -rp->lsw_margin;
     out->dut1_tenths = (int)vals[0];
     out->dst55 = vals[1] >= 0 ? (int)(vals[1] >> 1) : -1;
     out->dst2 = vals[1] >= 0 ? (int)(vals[1] & 1) : -1;
@@ -713,14 +718,16 @@ static void emit(const wwv_time_decoder_t *td, const wwv_td_result_t *r) {
     if (r->dut1_state != WWV_TD_NONE) snprintf(dut1, sizeof dut1, "%+.1f", r->dut1_tenths / 10.0);
     if (r->dst_state != WWV_TD_NONE) snprintf(dst, sizeof dst, "%d%d", r->dst55, r->dst2);
     if (r->lsw_state != WWV_TD_NONE) snprintf(lsw, sizeof lsw, "%d", r->lsw);
-    telem_sendf(TELEM_BCDS, "UTC,%.1f,%s,%s,%.1f,%s,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%d,%d,%d",
+    telem_sendf(TELEM_BCDS, "UTC,%.1f,%s,%s,%.1f,%s,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%s,%s,%.1f,%d,%d,%d,"
+                            "%.1f,%.1f,%.1f,%.1f,%.1f",
                 r->frame_start_ms,
                 wwv_td_state_name(r->tod_state), tod, r->tod_margin,
                 wwv_td_state_name(r->date_state), date, doy, r->date_margin,
                 wwv_td_state_name(r->dut1_state), dut1, r->dut1_margin,
                 wwv_td_state_name(r->dst_state), dst, r->dst_margin,
                 wwv_td_state_name(r->lsw_state), lsw, r->lsw_margin,
-                r->chain_frames, r->observations, r->conflicts);
+                r->chain_frames, r->observations, r->conflicts,
+                r->tod_pmargin, r->date_pmargin, r->dut1_pmargin, r->dst_pmargin, r->lsw_pmargin);
     (void)td;
 }
 
