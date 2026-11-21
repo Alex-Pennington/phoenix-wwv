@@ -220,7 +220,7 @@ struct sync_detector {
     /* Enhanced state */
     sync_state_t state;
     float confidence;
-    float last_decay_ms;            /* stream time of the last decay, < 0 = none yet */
+    float last_decay_ms;            /* stream time of the last periodic check, < 0 = none yet */
     uint32_t evidence_mask;
     float minute_anchor_ms;         /* Authoritative minute boundary */
 
@@ -1145,16 +1145,17 @@ frame_time_t sync_detector_get_frame_time(sync_detector_t *sd) {
         return ft;
     }
 
-    /* Calculate current second from anchor */
-    float since_anchor = sd->tick_gap.last_tick_ms - sd->minute_anchor_ms;
-    while (since_anchor < 0) since_anchor += 60000.0f;
-    while (since_anchor >= 60000.0f) since_anchor -= 60000.0f;
-
-    ft.current_second = (int)(since_anchor / 1000.0f + 0.5f);
+    /* The second under way at the last periodic check, on the held phase.
+     * (Ticks are not fed, so the last tick time was always 0 and this read
+     * -anchor mod 60 s: 142 of 162 LOCKED STATUS lines on run3h said sec=54.) */
+    float now = sd->last_decay_ms > 0.0f ? sd->last_decay_ms : sd->minute_anchor_ms;
+    float minutes = floorf((now - sd->minute_anchor_ms) / 60000.0f);
+    float minute_start = sd->minute_anchor_ms + minutes * 60000.0f;
+    ft.current_second = (int)floorf((now - minute_start) / 1000.0f);
     if (ft.current_second < 0) ft.current_second = 0;
     if (ft.current_second > 59) ft.current_second = 59;
 
-    ft.second_start_ms = sd->minute_anchor_ms + (ft.current_second * 1000.0f);
+    ft.second_start_ms = minute_start + (ft.current_second * 1000.0f);
     ft.confidence = sd->confidence;
     ft.evidence_mask = sd->evidence_mask;
     ft.state = sd->state;

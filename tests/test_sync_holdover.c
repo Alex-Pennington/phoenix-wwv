@@ -220,6 +220,11 @@ int main(void) {
             sync_detector_periodic_check(sd, now);
         }
         conf_at_end[k] = sync_detector_get_confidence(sd);
+        /* Frame time at the last check (200 s): anchor 180.4 s, so second 19 from 199.4 s */
+        frame_time_t ft = sync_detector_get_frame_time(sd);
+        check(ft.current_second == 19 && fabsf(ft.second_start_ms - 199400.0f) < 1.0f,
+              "frame time: second %.0f from %.0f ms at the last check (want 19 from 199400)",
+              ft.current_second, ft.second_start_ms);
         check(n_lock == 1 && first_lock_ms >= 180400.0f && first_lock_ms <= 185000.0f,
               "decay: one missed minute, LOCKED at the third marker (%.0f ms, checks every %.0f ms)",
               first_lock_ms, step_ms[k]);
