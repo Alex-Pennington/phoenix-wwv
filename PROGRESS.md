@@ -116,7 +116,7 @@
 **runG** (saga, 2026-11-21 09:58-12:38 UTC, 5 MHz; crash and memory figures from the
 coordinator's log reads)
 
-- 0 errno=12 lines and 0 `sdrplay_apiService` core dumps.
+- 0 errno=12 lines; 0 core files in `/var/lib/systemd/coredump` (coredumpctl not installed).
 - Time of day and date CONFIRMED right 146/146; FALSE CONFIRM 0 (NOTES.md, p10 floor item).
 - Order-9/10 free blocks were 0 in about half the minutes from 10:12 UTC, before the copy and
   stick-write confounders began. So the `vm.min_free_kbytes` result is consistent with no crashes,

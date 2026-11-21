@@ -1102,6 +1102,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   setting for Alex: a larger `vm.min_free_kbytes`, `vm.compaction_proactiveness`, or
   periodic compaction while streaming. Check the kernel log for xHCI errors too (none
   logged 05:50-06:31).
+  - 2026-11-21: `vm.min_free_kbytes=262144` (`/etc/sysctl.d/90-sdrplay-min-free.conf`) was set
+    before runG (saga, 09:58-12:38 UTC, 5 MHz). runG had 0 errno=12 in 2 h 40 min, while
+    order-9/10 free blocks were 0 in about half the minutes from 10:12 UTC. A 77 GB copy and a
+    24 GB USB-stick write loaded saga's memory and I/O from about 10:39 UTC. Consistent with no
+    crashes; not shown to be the fix, since the RSP2 then moved to gangleri.
 - **Fragmentation survey, read-only, measured on saga 2026-11-21.** In `/proc/pagetypeinfo`'s
   Normal zone, Unmovable and Reclaimable had 0 free order-9 and 0 free order-10 blocks, while
   Movable had 48 free order-10 blocks. `compact_fail` was 97.9% of `compact_stall`. In
