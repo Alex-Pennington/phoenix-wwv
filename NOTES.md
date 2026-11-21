@@ -133,10 +133,29 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   1798 TICK intervals of 512-650 ms). Its threshold, twice a floor that falls
   fast and rises slowly, sits inside the noise; a 5 ms crossing that fails the correlation test
   is dropped without a log line but still takes the 500 ms cooldown. This is what starts the
-  minute marker's run late (fix/wwv-marker-rate: 99 of 268 live minutes). Not fixed in the
-  detector, where it moves every tick metric; the sync detector now recovers those markers from
-  their end (marker candidates). Giving a dropped run no cooldown is the detector-side fix to
-  measure next.
+  minute marker's run late (fix/wwv-marker-rate: 99 of 268 live minutes).
+  - **Measured on the captures (fix/wwv-tick-marker-cleanup).** Of the ticks main misses, the
+    pulse fell in the cooldown after a dropped run in 58/143, 52/149, 174/336 and 87/238 (kiwi
+    plain, kiwi agc, saga plain, saga agc); below threshold, idle, in only 1, 1, 17 and 34. The
+    gap-zone runs under 100 ms (too short for a marker candidate) do the same: saga agc's
+    12:14 marker started late behind a 51 ms one.
+  - **Fixed: a run too short for a marker candidate that is not a tick (a tick-length run that
+    fails the correlation test, or a gap-zone run under `TICK_CANDIDATE_MIN_MS`) takes no
+    cooldown.** The gap-zone floor reset still runs. Ticks matched 76.3/75.1/42.6/59.9% ->
+    89.3/87.0/62.9/70.9%; tick-path markers at :00 9/9/6/8 -> 10/10/9/9; late-started markers
+    (gap-zone runs ending :00.5-:01.0) 0/0/4/2 -> 0/0/1/1. Off-second ticks 58/70/264/163 ->
+    63/68/318/180, and saga plain has 2 ticks at :29 (+44, +62 ms): more noise runs are
+    tested, and the off-second rate puts 1.2 in the twenty :29/:59 windows by chance.
+    `tests/test_tick_noise_run.c` drives the state machine with both run kinds.
+  - **Two downstream changes, traced, not in this code.** kiwi agc: a 128 ms gap-zone noise run
+    at 11:41:56.06 gives a CANDT whose start lead is 4 s + 59 ms off the held phase, and the
+    sync detector's whole-second rule (within `CANDIDATE_SECOND_TOL_MS`, 60 ms) drops the phase
+    for 6 s; time of day decodes 6/6, was 7/7, and symbols 446/445, were 452/451. On main the
+    floor was higher there (0.049 against 0.033) and no run started. saga plain: 12:12's anchor
+    is now the tick-path marker (149951.5 ms) instead of the marker detector's (149933.4 ms),
+    and :01's window sees only a 497 ms event, so a 0 reads 1 (correct 444 -> 443).
+  - **Live cannot show this.** The live logs hold detector events, not tick energies, so a replay
+    gives the old tick events; only the next live run will.
 - **The tick-path floor reset fires on every late-started marker.** Its run lands in the 50-600 ms
   gap zone, and `tick_state_reset_floor()` takes the marker's mean energy as the new floor (run90:
   66 resets, the floor rising 1.6-13.8 times). Ticks in the seconds after :00 then need that much more

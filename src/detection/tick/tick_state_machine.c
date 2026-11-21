@@ -150,6 +150,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                     td->corr_peak / td->corr_noise_floor : 0.0f;
 
                 bool valid_correlation = (td->corr_peak > td->corr_noise_floor * CORR_THRESHOLD_MULT);
+                bool noise_run = false;
 
                 /* Check for minute marker first (600-900ms duration, 55+ seconds since last) */
                 bool is_marker_duration = (duration_ms >= MARKER_MIN_DURATION_MS &&
@@ -292,6 +293,10 @@ void tick_state_machine_run(tick_detector_t *td) {
                 } else {
                     /* Rejected - duration in the gap zone (50-600ms) or failed other checks */
                     td->ticks_rejected++;
+                    /* Too short to be a marker candidate: a tick-length run that
+                     * failed the correlation test, or a gap-zone run under
+                     * TICK_CANDIDATE_MIN_MS. Noise; nothing is reported. */
+                    noise_run = (duration_ms < TICK_CANDIDATE_MIN_MS);
                     bool candidate = (duration_ms > TICK_MAX_DURATION_MS && duration_ms < MARKER_MIN_DURATION_MS &&
                                       duration_ms >= TICK_CANDIDATE_MIN_MS) ||
                                      (is_marker_duration && !valid_marker_interval);
@@ -327,8 +332,15 @@ void tick_state_machine_run(tick_detector_t *td) {
                 }
 
                 td->last_run_end_frame = frame;
-                td->state = STATE_COOLDOWN;
-                td->cooldown_frames = MS_TO_FRAMES(TICK_COOLDOWN_MS);
+                if (noise_run) {
+                    /* No cooldown after a noise run: it would only hide the next
+                     * tick or the marker's start (NOTES.md, Detection). */
+                    td->state = STATE_IDLE;
+                    td->idle_since_frame = frame + 1;
+                } else {
+                    td->state = STATE_COOLDOWN;
+                    td->cooldown_frames = MS_TO_FRAMES(TICK_COOLDOWN_MS);
+                }
 
             } else if (td->tick_duration_frames * FRAME_DURATION_MS > MARKER_MAX_DURATION_MS) {
                 /* Pulse WAY too long (>1s) - something is wrong, bail out */
