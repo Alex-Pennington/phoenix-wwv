@@ -1,4 +1,10 @@
 #!/bin/bash
-# Stub sudo for tests/live: runs the command as is, so `sudo systemctl` reaches the stub.
+# Stub sudo for tests/live: runs the command as is, so `sudo systemctl` reaches the stub. The
+# wrapper's memory compaction (sh -c '... /proc/sys/vm/compact_memory') is not run: it is
+# logged to $STUB_DIR/compactions instead, so the tests make no kernel write.
 [ "$1" = -n ] && shift
+if [ "$1" = sh ] && [[ ${3:-} == *compact_memory* ]]; then
+  echo "$(date +%T) compact" >> "${STUB_DIR:?STUB_DIR not set: refusing to run outside the stub tests}/compactions"
+  exit 0
+fi
 exec "$@"

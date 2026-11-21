@@ -765,6 +765,23 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   setting for Alex: a larger `vm.min_free_kbytes`, `vm.compaction_proactiveness`, or
   periodic compaction while streaming. Check the kernel log for xHCI errors too (none
   logged 05:50-06:31).
+- **Fragmentation survey, read-only, measured on saga 2026-11-21.** In `/proc/pagetypeinfo`'s
+  Normal zone, Unmovable and Reclaimable had 0 free order-9 and 0 free order-10 blocks, while
+  Movable had 48 free order-10 blocks. `compact_fail` was 97.9% of `compact_stall`. In
+  01:30-06:31 UTC every core dump of `sdrplay_apiService` followed a burst of up to 18 libusb
+  errno=12 lines. systemd restarted the service within about 1 s, so from 06:01 the crashes
+  looped in clusters every 1-3 min. The wrapper's compact-before-open did not prevent them. The
+  buffer order the service needs cannot be determined, because the service is closed-source.
+- **The order-9 Unmovable + Reclaimable wait is falsified (2026-11-21).** At 11:20 UTC, read with
+  `sudo -n cat /proc/pagetypeinfo`, the Normal zone's Unmovable and Reclaimable rows together had
+  0 free blocks at order 9 or above (46 at order 5 or above). Meanwhile wwv-runG ran from 09:58
+  with 0 errno=12 lines. So the service does not need an unmovable order-9 block, and a wait for
+  one is only delay. That the URB buffers are unmovable allocations was an inference and was
+  never measured. **The needed order is NOT DETERMINABLE until MEM lines from a crash exist.**
+  The wrapper now logs one MEM line (free blocks per order in the Unmovable, Reclaimable and
+  Movable rows) at every start, reopen and ERRNO12 burst. The wait is off by default
+  (`--mem-wait-secs 0`) and stays available as an option. The reopen backoff stays on
+  (docs/WWV_LIVE.md, *Memory compaction*). None of it is tested on the radio.
 
 ## Documentation
 

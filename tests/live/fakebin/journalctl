@@ -1,0 +1,29 @@
+#!/bin/bash
+# Stub journalctl for tests/live: the fake sdrplay.service's journal is $STUB_DIR/journal, one
+# entry per line as `journalctl -o short-iso --utc` prints it. A cursor (--cursor-file) is a
+# line count; -n N prints the last N lines. Without either it prints every line. As the real
+# one, it writes the cursor only when it printed something. It never reads the real journal.
+D=${STUB_DIR:?STUB_DIR not set: refusing to run outside the stub tests}
+echo "$(date +%T) journalctl $*" >> "$D/calls"
+J=$D/journal
+[ -f "$J" ] || : > "$J"
+cf=; n=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --cursor-file) cf=$2; shift 2 ;;
+    -n) n=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+total=$(wc -l < "$J")
+if [ -n "$n" ]; then
+  from=$((total - n)); [ "$from" -lt 0 ] && from=0
+elif [ -n "$cf" ] && [ -s "$cf" ]; then
+  from=$(cat "$cf")
+else
+  from=0
+fi
+[ "$total" -gt "$from" ] || exit 0
+tail -n +$((from + 1)) "$J" | head -n $((total - from))
+[ -n "$cf" ] && echo "$total" > "$cf"
+exit 0
