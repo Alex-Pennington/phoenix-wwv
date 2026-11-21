@@ -201,6 +201,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   lower threshold reported only as a candidate (phase-gated by sync, like the short runs) would
   take them. Not done: the live share of no-run minutes is unknown until a run logs the `MARKER
   block peak` lines.
+  - **Measured, and declined (fix/wwv-tick-marker-cleanup).** run3h logs the block peaks: of 33
+    minutes with no marker-detector MARK, 9 peaked at 2.53-2.91 times baseline at +0.81 s
+    (near misses) and 9 at 3.07-3.39 (short runs, already candidates); 3 of 341 other idle
+    10 s blocks reached 2.5 (run90g, daytime: 8 of 335). Every one of the 9 live near-miss
+    minutes already has a tick-path TMARK or CANDT within 13 ms of :00, and so do saga agc
+    12:12 and 12:18. A second threshold at 2.5x, reported as a candidate with the purity test
+    and no cooldown, was built and run: on the captures it passes only those two (the 9 other
+    weak runs fail purity), their leads read -123 and -207 ms (the second outside sync's
+    150 ms candidate tolerance), and no metric moves. It adds a path that finds nothing the
+    tick path has not, so it is not kept.
 
 ## Sync and correlator
 
