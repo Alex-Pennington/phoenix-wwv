@@ -483,7 +483,7 @@ figure compared.
 | smoke, raw, 11-19 17:42 and 17:51        | 5 MHz  | 0%         | -0.5 to 0.6 dB; BCD score 0%   | 0 of 12                       | never left ACQUIRING |
 | run90f frames, 11-20 13:18-13:48         | 5 MHz  | 50% (scan) | p10 9.3, median 14.1 dB        | 60 of 71 (85%)                | 1->0 27.5%, P->1 13.2%, mid 10.2%, erase 6.6% |
 | run90g seg 1 frames, 13:51-13:59         | 10 MHz | 0% (scan)  | p10 6.2, median 8.3 dB         | 7 of 19 (37%)                 | never LOCKED in 8 min |
-| run90g seg 2 frames, 14:02-14:54         | 15 MHz | 30% (scan) | median 5.4, p90 14.1 dB        | 39 of 124 (31%)               | 1->0 48.6%, P->1 35.0%, mid 37.0%, erase 27.7%; date never right |
+| run90g seg 2 frames, 14:02-14:54         | 15 MHz | 30% (scan) | median 5.4, p90 14.1 dB        | 39 of 124 (31%)               | 1->0 48.6%, P->1 35.0%, mid 37.0%, erase 27.7%; date never right (live log). Current chain, loss-corrected: 1->0 37.9%, P->1 21.3% (NOTES.md, "15 MHz BCD quality on run90g seg2") |
 
 The symbol rates are from `tests/air/symbol_rates.py` on each run's log.
 
