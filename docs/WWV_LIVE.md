@@ -138,7 +138,7 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
   The reasons read `rsp2_stream had no samples for N s` and `rsp2_stream heartbeat is N s old:
   the stream is hung`. The `--lock-mins` timer starts again in a reopened segment. A reopened
   segment's files take the `.segK` names, as after a band switch.
-- **`--reopen-max N`** (default 5). After N reopens the run ends with exit status 4.
+- **`--reopen-max N`** (default 20). After N reopens the run ends with exit status 4. The vendor service can crash several times within seconds (three reopens at 2026-11-21 02:55 UTC), so 5 was too few.
 - **Bounded stops.** Every stop is SIGTERM, then SIGKILL if the process has not exited in 10 s
   (rsp2_stream, the band scan), 5 s (`wwv_live`) or 2 s (the output filter). A kill is
   logged: `rsp2_stream did not stop in 10 s after SIGTERM; killing it`.
@@ -166,6 +166,15 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
 
   It appends what it did to the wrapper's stderr, as `[wwv_rsp2_live guard]` lines ending
   with the unit's state. The wrapper's own cleanup stops the guard last.
+
+### Memory compaction
+
+Before it starts `sdrplay.service`, and before each reopen, the wrapper asks the kernel to
+compact memory (`echo 1 > /proc/sys/vm/compact_memory` under sudo). On saga the API service
+crashed on libusb `errno=12` (ENOMEM) during isochronous transfer submission, with
+`usbfs_memory_mb` already 0, while free high-order pages were scarce. Four crashes in
+01:37-05:38 UTC on 2026-11-21. It logs `compacted memory before opening the RSP2`, or
+`memory compaction failed (continuing)`. `SDRPLAY_COMPACT=0` skips it.
 
 ### Lost samples: the gap fill
 
