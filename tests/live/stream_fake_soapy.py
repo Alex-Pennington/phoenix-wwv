@@ -3,6 +3,10 @@
 MODE: stall_after:S  data for S s, then timeouts forever
       lossy:F        data at F x real rate
       dead           timeouts from the start
+      actfail:MSG    activateStream logs "error in activateStream() - Init() failed: MSG" and
+                     returns -1; a readStream after it blocks for an hour (a driver hang)
+      actfail0:MSG   the same log line, but activateStream returns 0; reads time out
+      stuck          activateStream returns 0; readStream blocks for an hour (a driver hang)
       ok             data at the real rate
       true:SPEC      data at the real rate whose samples carry their true index k
                      (I = k & 0x7fff, Q = (k >> 15 & 0x3fff) + 1, never 0), with losses
@@ -96,7 +100,17 @@ class Dev:
         bufs[0][0:2 * ret:2] = (k & 0x7fff).astype(np.int16)
         bufs[0][1:2 * ret:2] = ((k >> 15) & 0x3fff).astype(np.int16) + 1
         return SR(ret)
+    def activateStream(s, *a):
+        if kind in ('actfail', 'actfail0'):
+            LOG[0](3, f'error in activateStream() - Init() failed: {val}')
+            return -1 if kind == 'actfail' else 0
+        return 0
     def readStream(s, st, bufs, n, timeoutUs=0):
+        if kind in ('actfail', 'stuck'):
+            time.sleep(3600)                  # blocked in the driver: no return, no signal check
+        if kind == 'actfail0':
+            time.sleep(timeoutUs / 1e6 / 5)
+            return SR(S.SOAPY_SDR_TIMEOUT)
         if kind == 'timelog':
             return s.read_timelog(bufs, n, timeoutUs)
         if kind == 'true':
@@ -116,7 +130,9 @@ class Dev:
         return SR(n)
 RNG = np.random.default_rng(1)
 S.Device = Dev
-S.registerLogHandler = lambda f: None
+LOG = [lambda level, msg: None]
+def _reg(f): LOG[0] = f
+S.registerLogHandler = _reg
 sys.modules['SoapySDR'] = S
 sys.argv = [script] + args
 t = time.time()

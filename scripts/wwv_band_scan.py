@@ -65,11 +65,21 @@ band wins only by more than the margin. When the tier's best is 0, the ranking o
 decides. --avoid drops a band from the choice when another band of the tier is in the
 running (wwv_rsp2_live.sh avoids the band that failed to lock).
 
+Failures: each band's read is bounded by the wall clock (1 s settle + the read + READ_MARGIN_S),
+however few samples come. A band whose activateStream fails (an error return, an exception, or
+an "activateStream" error logged by the module) or that gives 0 samples is not measured. When
+two bands in a row fail that way, or the module logs sdrplay_api_ServiceNotResponding, the API
+service is failing: the scan stops at once with exit status EXIT_API (5), writes --json with
+best_khz null and api_failure set, and does not release the device (ReleaseDevice on a dead
+service aborts the process). A read still stuck in the driver HANG_MARGIN_S past its bound
+ends the scan the same way, from a watchdog thread. wwv_rsp2_live.sh restarts sdrplay.service
+on that status.
+
 Extension: when two or more bands of the choice's tier score above 0 within its margin of
 the best, each of them is read for --extend-secs more and the choice is made again on all
 their seconds. --extend-secs 0 turns it off.
 """
-import os, sys, json, time, argparse, signal
+import os, sys, json, time, argparse, signal, threading
 import numpy as np
 from scipy.signal import butter, sosfilt, sosfiltfilt
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +101,9 @@ BCD_USABLE_PCT = 50.0       # BCD score at or over this is usable: the median se
 BCD_MARGIN_PCT = 20.0       # a higher band must beat a lower one's BCD score by more than this
 CLIP = 32700
 CARRIER_DBHZ = 30.0         # below this the "carrier" is the strongest of ~500 noise bins (11-14 dB-Hz)
+READ_MARGIN_S = 10.0        # a band's read ends this long after its due end, samples or not
+HANG_MARGIN_S = 10.0        # a read stuck in the driver past its bound + this: the API is failing
+EXIT_API = 5                # exit status: the sdrplay API service is failing (restart it)
 
 
 def log(msg):
@@ -387,6 +400,7 @@ def main():
     signal.signal(signal.SIGTERM, _stop)
 
     OVL = []           # (time_ns, 'WWVCAP_OVERLOAD_DETECTED' | '..._CORRECTED')
+    API = dict(activate_errors=0, not_responding=False)   # from the module's log
     OVL_PLUGIN = False
     dev = st = None
     mtu = 0
@@ -399,6 +413,10 @@ def main():
                 OVL.append((time.time_ns(), msg.strip()))
             else:
                 log(f'soapy {level}: {msg}')
+                if 'activateStream' in msg:
+                    API['activate_errors'] += 1
+                if 'ServiceNotResponding' in msg:
+                    API['not_responding'] = True
         SoapySDR.registerLogHandler(_soapy_log)
         OVL_PLUGIN = (bool(os.environ.get('SOAPY_SDR_PLUGIN_PATH'))
                       and os.environ.get('SOAPY_SDR_ROOT') == '/nonexistent')
@@ -482,8 +500,19 @@ def main():
         info = dict(khz=khz, lna=lna, ifgr=ifgr, tuner_hz=dev.getFrequency(SOAPY_SDR_RX, ch),
                     lna_readback=dev.getGain(SOAPY_SDR_RX, ch, 'RFGR'),
                     ifgr_readback=dev.getGain(SOAPY_SDR_RX, ch, 'IFGR'))
-        dev.activateStream(st)
+        errs0 = API['activate_errors']
+        try:
+            ar = dev.activateStream(st)
+        except RuntimeError as e:
+            log(f'{khz / 1000:g} MHz: activateStream raised {e}')
+            ar = -1
+        if ar != 0 or API['activate_errors'] != errs0:
+            log(f'{khz / 1000:g} MHz: activateStream failed (returned {ar}): band not read')
+            info.update(samples=0, overflows=0, timeouts=0, overload_events=0, overloaded_at_start=False,
+                        activate_failed=True)
+            return 0, None, info
         t_settle = time.time() + 1.0          # retune and gain settling
+        t_bound = t_settle + secs + READ_MARGIN_S   # wall-clock end of this read, samples or not
         tmp = np.empty(2 * mtu, np.int16)
         while time.time() < t_settle and not stop[0]:
             dev.readStream(st, [tmp], mtu, timeoutUs=1000000)
@@ -491,6 +520,10 @@ def main():
         n = 0; overflows = 0; timeouts = 0; t0 = None
         TLOG.clear()
         while n < nwant and not stop[0]:
+            if time.time() >= t_bound:
+                log(f'{khz / 1000:g} MHz: read ended at its wall-clock bound ({secs + 1 + READ_MARGIN_S:g} s) '
+                    f'with {n} of {nwant} samples, {timeouts} timeouts')
+                break
             want = min(mtu, nwant - n)
             sr = dev.readStream(st, [raw[2 * n:]], want, timeoutUs=1000000)
             tn = time.time_ns()
@@ -522,7 +555,12 @@ def main():
             log(f'{khz / 1000:g} MHz: tuner {(khz - a.offset_khz) / 1000:g} MHz, LNA {lna}, IFGR {ifgr}, '
                 f'reading {secs:g} s')
             tu = time.strftime('%H:%M:%S', time.gmtime())
-            n, t0, info = capture(khz, secs)
+            WATCH['deadline'] = time.time() + 1.0 + secs + READ_MARGIN_S + HANG_MARGIN_S
+            WATCH['khz'] = khz
+            try:
+                n, t0, info = capture(khz, secs)
+            finally:
+                WATCH['deadline'] = None
         info['utc'] = tu
         if a.keep_raw and not prefix and n:
             keep_raw(khz, n, info)
@@ -530,6 +568,34 @@ def main():
             log(f'{khz / 1000:g} MHz: only {n} samples, not measured')
             return info, False
         return measure(raw, n, t0, khz, info, a.ppm, a.offset_khz, a.rate), True
+
+    def api_fail(why):
+        """The API service is failing: say so, write --json, and exit EXIT_API without
+        releasing the device (ReleaseDevice on a dead service aborts the process)."""
+        log(f'API FAILURE: {why}; exit {EXIT_API} (restart sdrplay.service)')
+        if a.json:
+            try:
+                json.dump(dict(utc_start=utc_start, secs=a.secs, rows=rows, best_khz=None, best_usable=False,
+                               api_failure=why, choice=f'API failure: {why}'), open(a.json, 'w'), indent=1)
+            except Exception as e:          # the exit status still says it
+                log(f'could not write {a.json}: {e}')
+        print('BEST none (API failure)')
+        sys.stdout.flush(); sys.stderr.flush()
+        os._exit(EXIT_API)
+
+    WATCH = dict(deadline=None, khz=None)
+
+    def watchdog():
+        """A read stuck in the driver (readStream or deactivateStream on a failed API) never
+        returns to the loop's bound: end the scan from here."""
+        while True:
+            time.sleep(0.5)
+            d = WATCH['deadline']
+            if d is not None and time.time() > d:
+                api_fail(f'{WATCH["khz"] / 1000:g} MHz read stuck in the driver {HANG_MARGIN_S:g} s past '
+                         f'its wall-clock bound')
+    if not a.replay:
+        threading.Thread(target=watchdog, daemon=True).start()
 
     rows = []
     T_SCAN = time.time()
@@ -539,12 +605,22 @@ def main():
             f'API overload events {"logged" if OVL_PLUGIN else "not available (stock SoapySDRPlay3 module)"}')
     jobs = [(it.rsplit(':', 1)[0], int(float(it.rsplit(':', 1)[1]))) for it in a.replay] or [(None, k) for k in bands]
     extended = []
+    dead_run = 0       # bands in a row whose activate failed or that gave 0 samples
     try:
         for prefix, khz in jobs:
             if stop[0]:
                 break
             info, ok = read_band(prefix, khz, a.secs)
             info['prefix'] = prefix
+            if prefix is None and not stop[0]:
+                dead = bool(info.get('activate_failed') or not info.get('samples'))
+                dead_run = dead_run + 1 if dead else 0
+                if API['not_responding']:
+                    rows.append(info)
+                    api_fail('the module logged sdrplay_api_ServiceNotResponding')
+                if dead_run >= 2:
+                    rows.append(info)
+                    api_fail(f'{dead_run} bands in a row with a failed activateStream or 0 samples')
             if not ok:
                 info.update(score_pct=None, bcd_pct=None, usable=False, tick_usable=False, bcd_usable=False,
                             adc_overload=False, wwvh_warning=False)
