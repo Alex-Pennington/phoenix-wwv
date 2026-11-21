@@ -153,9 +153,9 @@ void tick_state_machine_run(tick_detector_t *td) {
                 bool valid_correlation = (td->corr_peak > td->corr_noise_floor * CORR_THRESHOLD_MULT);
                 bool noise_run = false;
 
-                /* Check for minute marker first (600-900ms duration, 55+ seconds since last) */
+                /* Check for minute marker first (600-1000 ms duration, 55+ seconds since last) */
                 bool is_marker_duration = (duration_ms >= MARKER_MIN_DURATION_MS &&
-                                           duration_ms <= MARKER_MAX_DURATION_MS_CHECK);
+                                           duration_ms <= MARKER_MAX_DURATION_MS);
 
                 /* Marker interval check with startup/recovery handling:
                  * - First marker (last_marker_frame == 0): always allow

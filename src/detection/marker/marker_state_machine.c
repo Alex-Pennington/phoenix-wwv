@@ -274,8 +274,8 @@ void marker_state_machine_run(marker_detector_t *md) {
                             .marker_number = md->markers_detected,
                             .timestamp_ms = timestamp_ms,
                             .since_last_marker_sec = since_last,
-                            .accumulated_energy = md->accumulated_energy,
-                            .peak_energy = md->marker_peak_energy,
+                            .accumulated_energy = md->marker_peak_energy,
+                            .peak_energy = md->current_energy,
                             .duration_ms = pulse_ms,
                             .start_timestamp_ms = pulse_start_ms
                         };
@@ -297,8 +297,8 @@ void marker_state_machine_run(marker_detector_t *md) {
                         marker_event_t event = {
                             .marker_number = 0,
                             .timestamp_ms = frame * FRAME_DURATION_MS,
-                            .accumulated_energy = md->accumulated_energy,
-                            .peak_energy = md->marker_peak_energy,
+                            .accumulated_energy = md->marker_peak_energy,
+                            .peak_energy = md->current_energy,
                             .duration_ms = pulse_ms,
                             .start_timestamp_ms = pulse_start_ms
                         };

@@ -92,10 +92,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **Tick-path `MARKER_MAX_DURATION_MS` (1000 ms bail-out) contradicts
   `MARKER_MAX_DURATION_MS_CHECK` (1500 ms)** in `include/detection/tick_internal.h:35,52`. A run
   of 1000-1500 ms bails out before the marker check sees it.
+  - **Fixed (fix/wwv-tick-marker-cleanup): the check now uses `MARKER_MAX_DURATION_MS`**, what the
+    bail-out already enforced, and `_CHECK` is gone. Bail-outs: 1 on the captures (saga agc,
+    :49 of a minute, not a marker), 0 in the run90, run90c, run90d, run90f, run90g and run3h
+    consoles; clean marker runs are 804-835 ms. A run of 1000-1005 ms (one frame past the
+    bail-out test) no longer counts as a marker; none is seen. run_air.sh output unchanged.
 - **The breakdown in the `TICK_FILTER_DELAY_MS` comment is stale** (`include/tick_detector.h:71`,
   "0.32ms Butterworth"). The sync filter's group delay at 1000 Hz is now 1.50 ms. The value
   (3.0 ms) was left alone: kiwi plain tick-path marker leading edges measure -1.8..+2.1 ms from
   :00.
+  - **Fixed (fix/wwv-tick-marker-cleanup):** the comment now says the value is empirical.
 - **A third of the live run's seconds are mid-second detections.** Of the locked, non-erased
   seconds the decoder saw, 30.4% (1381/4547) carried a pulse that starts more than 250 ms after
   the second (23.1-35.4% per 10-minute block), against 0.7-12% on the four captures
@@ -304,6 +310,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   output formats coexist (audit F2).
 - `marker_event_t.accumulated_energy` / `peak_energy` carry swapped quantities since 7e7805e. The
   only reader logs them.
+  - **Fixed (fix/wwv-tick-marker-cleanup):** restored as before 7e7805e and commented in
+    `include/marker_detector.h`: `accumulated_energy` is the run's peak window sum (it was the
+    sum at the run's end, just under threshold), `peak_energy` the last frame's bucket energy.
+    The sync console's `Marker event received ... energy=` now reads the peak (kiwi plain
+    1 -> 7, 1 -> 4); nothing else in run_air.sh output changes.
 - **The confidence decay is per periodic check, and the check runs every 50 ms, not 100 ms.**
   `CONFIDENCE_DECAY_NORMAL` 0.9999 is commented as 6% per minute; at 50 ms it is 11.3%. LOCKED
   (0.70) therefore needs three markers close together: three consecutive minutes reach 0.73, a
