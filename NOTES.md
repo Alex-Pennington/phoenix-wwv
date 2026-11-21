@@ -159,8 +159,21 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **The tick-path floor reset fires on every late-started marker.** Its run lands in the 50-600 ms
   gap zone, and `tick_state_reset_floor()` takes the marker's mean energy as the new floor (run90:
   66 resets, the floor rising 1.6-13.8 times). Ticks in the seconds after :00 then need that much more
-  energy until the floor decays (about 3.5 s for a factor 4). The tick loss it causes is not
-  measured.
+  energy until the floor decays (about 3.5 s for a factor 4).
+  - **Measured (fix/wwv-tick-marker-cleanup).** Live, a reset on a run ending :00.5-:01.0 came in
+    40 / 24 / 5 / 15 minutes of run90 / run90c / run90d / run90f. In those minutes ticks at
+    :01-:05 come at 0.24 / 0.36 / 0.36 / 0.23 of the rate at :06-:10 of the same minutes; in the
+    other minutes at 0.65 / 0.83 / 0.73 / 0.52. At the other minutes' ratio that is about 45 /
+    50 / 8 / 6 ticks lost, 1-2 per such minute. On the captures (main) saga plain gets 3/20
+    ticks at :01-:05 after such a reset, 14/30 in the other minutes; saga agc 5/10 and 23/40.
+  - **Declined: the reset is not narrowed.** Each narrowing tried loses more ticks than it saves,
+    on every capture (ticks matched, kiwi plain / kiwi agc / saga plain / saga agc, against
+    89.3 / 87.0 / 62.9 / 70.9% with the reset): no reset on gap-zone runs 60.0 / 71.9 / 35.5 /
+    49.5%; none on runs of 100 ms or more (the marker candidates) 86.5 / 81.4 / 60.9 / 66.6%;
+    half the run's mean as the floor 85.8 / 80.8 / 55.5 / 61.9%. A floor low in the noise
+    lets more noise runs through, and their ticks' cooldowns cost more than the reset does.
+    What cuts the loss is fewer late-started markers: the no-cooldown change above takes them
+    from 6 to 2 on the captures.
 - **The tick timing gate is never enabled in the chain.** `tick_detector_set_gate_enabled()` has
   no caller; the manager sets only the epoch. All four captures ran with the gate off.
 - **Two marker-detector misses on the captures are near misses**: saga agc 12:12 and 12:18 peaked
