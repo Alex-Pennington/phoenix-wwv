@@ -135,9 +135,9 @@ if(TARGET wwv_live)
 endif()
 
 # The live wrapper (scripts/wwv_rsp2_live.sh) and rsp2_stream.py against stubs: no radio,
-# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 513 s
-# for 35 cases measured on saga 2026-11-21 (nice -n 19) against the TIMEOUT of
-# 600 s. ctest -L live runs it alone.
+# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 527 s
+# for 40 cases, the full nice -n 19 ctest -L live, measured on saga 2026-11-21, against the
+# TIMEOUT of 600 s; keep it under 540 s. ctest -L live runs it alone.
 if(TARGET wwv_live)
     add_test(NAME live_wrapper_stubs
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh $<TARGET_FILE_DIR:wwv_live>

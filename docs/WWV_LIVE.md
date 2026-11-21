@@ -489,7 +489,9 @@ and past its bound, the buddyinfo fallback, and the survey's state, where only
 Unmovable decides), the MEM line (at the start, each reopen and each burst), one ERRNO12
 line per burst, and the backoff sequence (doubling, capped), and the band cache (a fresh cache
 used with no start-up scan and the switch's scan after it; a stale, other-antenna or corrupt cache
-ignored and rewritten by the scan; a fixed band leaving it alone).
+ignored and rewritten by the scan; a fixed band leaving it alone; `locked_utc` stamped while
+LOCKED and not while RECOVERING, and a restart after a SIGKILL, 45 minutes after the scan,
+that uses the band at once by its last LOCKED).
 
 ### Band
 
@@ -571,8 +573,9 @@ Options (`auto` only):
 - **`--band-cache FILE`**: the cache. The default is `wwv_band_cache.json` in the directory of
   `--log`. With no `--log` there is no cache unless this option names one. `none` turns the
   cache off.
-- **`--band-cache-mins N`** (default 30): the maximum age of a cache the start may use. With 0
-  the wrapper never uses the cache, but still writes it.
+- **`--band-cache-mins N`** (default 30): the maximum age of a cache the start may use, counted
+  from the later of the scan and the last LOCKED. With 0 the wrapper never uses the cache, but
+  still writes it.
 
 **Write.** After every scan that chose a band, the start-up scan and a switch's re-scan alike,
 the wrapper writes the cache as JSON. It writes a temporary file and renames it, so a crash
@@ -584,7 +587,8 @@ scanned <UTC>`. The fields:
 | `version`     | 1                                                                              |
 | `band_khz`    | the band the scan chose                                                        |
 | `antenna`     | `--antenna` of the run                                                         |
-| `utc`         | when the cache was written, `YYYY-MM-DDTHH:MM:SSZ`; the age counts from it     |
+| `utc`         | when the scan's cache was written, `YYYY-MM-DDTHH:MM:SSZ`                       |
+| `locked_utc`  | the last time the band was seen LOCKED (absent until it is); same format       |
 | `best_usable` | the scan's `best_usable`                                                       |
 | `avoid`       | the band the scan avoided (a switch's re-scan), else empty                     |
 | `scores`      | per band from the scan's `rows`: `khz`, `score_pct`, `bcd_pct`, `usable`       |
@@ -593,20 +597,31 @@ scanned <UTC>`. The fields:
 A scan that fails, or that finds no band, leaves the cache as it was. A fixed `--wwv-khz N`
 neither reads nor writes the cache.
 
-**Read, at the start of an `auto` run.** The wrapper uses the cache only when all of these hold:
-it parses, its band is a WWV band, its `utc` is a time no more than 1 minute in the future, its
-`antenna` is this run's `--antenna`, and it is younger than `--band-cache-mins`. Each outcome
-is logged:
+**Lock refresh.** A band that is LOCKED is direct evidence that it works now, better evidence
+than a scan score. The wrapper keeps the state of `wwv_live`'s last `SYNC` line. While that
+state is LOCKED, it stamps `locked_utc` in the cache with the current time:
+- when a segment first reads LOCKED, a reopened segment included;
+- then at most once a minute while the state stays LOCKED.
 
-- `BANDCACHE: using FILE: <kHz> kHz on <antenna>, scanned <UTC> (<age> min ago, under the
-  <N> min limit); start-up scan skipped`, then `going live on the cached band`. The run streams
-  at once. The next scan is the band switch's, if the band has not reached LOCKED within
+It never stamps while the state is ACQUIRING, TENTATIVE or RECOVERING. The scan's `utc` and
+`scores` stay as written, and a new scan writes a cache without `locked_utc`. Each stamp is
+logged: `BANDCACHE: segment K: <kHz> kHz LOCKED: locked_utc <UTC> in FILE`. A cache that does
+not hold the live band and antenna is left alone, with a warning.
+
+**Read, at the start of an `auto` run.** The wrapper uses the cache only when all of these hold:
+it parses, its band is a WWV band, its `utc` (and `locked_utc`, when present) is a time no more
+than 1 minute in the future, its `antenna` is this run's `--antenna`, and the later of `utc` and
+`locked_utc` is younger than `--band-cache-mins`. Each outcome is logged:
+
+- `BANDCACHE: using FILE: <kHz> kHz on <antenna>, scanned <UTC>[, last LOCKED <UTC>] (<age> min
+  ago, under the <N> min limit); start-up scan skipped`, then `going live on the cached band`.
+  The run streams at once. The next scan is the band switch's, if the band has not reached LOCKED within
   `--lock-mins`. With `--lock-mins 0` the run never scans.
-- `... was scanned <UTC> (<age> min ago), not under the <N> min limit; ignoring it; scanning`
+- `... was scanned <UTC>[, last LOCKED <UTC>] (<age> min ago), not under the <N> min limit; ignoring it; scanning`
 - `... is for antenna '<name>' (scanned <UTC>), this run is on '<antenna>'; ignoring it; scanning`
 - `BANDCACHE: WARNING: FILE is not a band cache (<reason>); ignoring it; scanning`. The reason
   can be a JSON error, a band that is not a WWV band, an antenna that is not a name, a
-  malformed `utc`, or a `utc` in the future.
+  malformed `utc` or `locked_utc`, or one in the future.
 - `no cache at FILE yet; scanning`, and `no cache (--band-cache none, or no --log); scanning`.
 
 **Why 30 minutes.** Two measures set the limit: how fast the best band moves, and what a wrong
@@ -625,7 +640,8 @@ cached band costs.
   therefore 8 minutes on a dead band plus the scan that the cache skipped. A cache that is right
   saves the whole 7.5-minute scan on gangleri.
 - **30 minutes** covers the restarts the cache is for: a crash, a unit restart or a reboot
-  soon after a scan. It is short against the hours over which a band's usability changed
+  soon after a scan or while the band was LOCKED (the lock refresh keeps `locked_utc` within a
+  minute of the crash). It is short against the hours over which a band's usability changed
   between 12:09 and 17:42 on 11-19. It is long against the minutes the dawn scans moved in;
   there, the `--lock-mins` switch is the backstop.
 
@@ -633,9 +649,8 @@ cached band costs.
   measured. Pairs of scans of the same antenna at known intervals, across dawn and dusk, would
   measure it, and would set the limit better.
 
-The cache is written only after a scan. A run that has streamed for more than
-`--band-cache-mins` since its last scan has an expired cache, so a crash late in a long run
-still scans at the restart.
+A run that has not been LOCKED for `--band-cache-mins`, and has not scanned in that time, has an
+expired cache, and its restart scans.
 
 ### Band scan
 

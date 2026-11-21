@@ -77,7 +77,8 @@
 #                 Bogus exits 2 with the list, before streaming or reading a band
 #   cache_fresh   auto, a 5 min old band cache for Antenna A: no start-up scan, live on its band at
 #                 once; no LOCKED within --lock-mins: the switch scans (--avoid the cached band),
-#                 switches, and writes the cache again
+#                 switches, and writes the cache again; the new band (stub wwv_live) LOCKs and
+#                 stamps it
 #   cache_stale   auto, a 45 min old cache (limit 30): ignored, the scan runs and rewrites it
 #   cache_antenna auto, a fresh cache for Hi-Z on an Antenna A run: ignored, the scan runs
 #   cache_corrupt auto, a cache that is not JSON: a warning, ignored, the scan runs and rewrites it
@@ -224,7 +225,7 @@ for c in "${CASES[@]}"; do
   fixed_end)
     begin "$c"
     cache_put 5000 'Antenna A' 1; /bin/cp -p "$D/wwv_band_cache.json" "$D/cache.before"
-    live STUB_MODE=ok -- --wwv-khz 10000 --secs 8
+    live STUB_MODE=ok -- --wwv-khz 10000 --secs 3
     rc_is 0; ended_in 1 10000; hasnt REOPEN; streams_is 1; unit_off
     antennas_are 'Antenna A'
     hasnt BANDCACHE; scans_is 0
@@ -232,7 +233,7 @@ for c in "${CASES[@]}"; do
     end_case ;;
   stall75)
     begin "$c"
-    live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
+    live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 7
     rc_is 0; has 'REOPEN: segment 1: rsp2_stream had no samples for 10 s'
     has 'REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 20)'
     ended_in 2 10000; streams_is 2; hasnt BACKOFF; unit_off
@@ -280,7 +281,7 @@ for c in "${CASES[@]}"; do
     end_case ;;
   auto_end)
     begin "$c"
-    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 8 --scan-json "$D/scan.json"
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3 --scan-json "$D/scan.json"
     rc_is 0; has "going live on the scan's band: 5000 kHz"; ended_in 1 5000
     hasnt 'unbound variable'; hasnt SWITCH
     [ "$(cat "$D/scans" 2>/dev/null | wc -l)" = 1 ] || fail "$(cat "$D/scans" 2>/dev/null | wc -l) scans, want 1"
@@ -304,8 +305,8 @@ for c in "${CASES[@]}"; do
     end_case ;;
   auto_rescan_end)
     begin "$c"
-    live STUB_MODE=ok STUB_SCAN_BANDS=10000 STUB_SCAN_SECS=1,30 -- --wwv-khz auto --lock-mins 0.1 --secs 12
-    rc_is 0; has 'SWITCH: 10000 kHz has not reached LOCKED in 0.1 min; stopping it to re-scan'
+    live STUB_MODE=ok STUB_SCAN_BANDS=10000 STUB_SCAN_SECS=1,30 -- --wwv-khz auto --lock-mins 0.05 --secs 9
+    rc_is 0; has 'SWITCH: 10000 kHz has not reached LOCKED in 0.05 min; stopping it to re-scan'
     has '--secs reached during the re-scan; stopping it'
     has '--secs reached before segment 2 could start'
     [ $((SECONDS - T0)) -lt 25 ] || fail "took $((SECONDS - T0)) s: the re-scan was not stopped at --secs"
@@ -489,7 +490,7 @@ PY
     end_case ;;
   gap76)
     begin "$c"
-    live STUB_MODE=gap76_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
+    live STUB_MODE=gap76_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 7
     rc_is 0; has 'REOPEN: segment 1: rsp2_stream lost more samples than it fills'
     ended_in 2 10000; streams_is 2; unit_off
     end_case ;;
@@ -661,13 +662,14 @@ PY
   cache_fresh)
     begin "$c"
     cache_put 10000 'Antenna A' 5
-    # cached 10 MHz live at once; no LOCKED in 3 s: the switch scans, avoiding it, and 15 MHz
-    # runs until --secs
-    live STUB_MODE=ok STUB_SCAN_BANDS=15000 -- --wwv-khz auto --lock-mins 0.05 --secs 8
+    # cached 10 MHz live at once; no LOCKED in 2 s: the switch scans, avoiding it, and 15 MHz
+    # (the only band the stub wwv_live locks) runs until --secs
+    live STUB_MODE=ok STUB_SCAN_BANDS=15000 STUB_SCAN_SECS=0 STUB_SYNC=0.5:LOCKED STUB_SYNC_KHZ=15000 -- \
+        --build "$FAKEBUILD" --wwv-khz auto --lock-mins 0.03 --secs 7
     rc_is 0
     has 'BANDCACHE: using '"$D"'/wwv_band_cache.json: 10000 kHz on Antenna A, scanned '
     has 'under the 30 min limit); start-up scan skipped'
-    has 'going live on the cached band: 10000 kHz (the band switch scans if it has not reached LOCKED in 0.05 min)'
+    has 'going live on the cached band: 10000 kHz (the band switch scans if it has not reached LOCKED in 0.03 min)'
     hasnt "going live on the scan's band"
     a=$(grep -n 'segment 1: WWV 10000 kHz' "$D/console.txt" | head -1 | cut -d: -f1)
     b=$(grep -n 'scanning the WWV bands' "$D/console.txt" | head -1 | cut -d: -f1)
@@ -677,12 +679,13 @@ PY
     head -1 "$D/scans" | grep -qF -- '--avoid 10000' || fail 'the switch scan did not avoid the cached band'
     has 'BANDCACHE: wrote '"$D"'/wwv_band_cache.json: 15000 kHz on Antenna A, scanned '
     cache_is 15000 'Antenna A' 10000
+    has 'BANDCACHE: segment 2: 15000 kHz LOCKED: locked_utc '; hasnt 'BANDCACHE: segment 1: 10000 kHz LOCKED'
     ended_in 2 15000; streams_is 2; unit_off
     end_case ;;
   cache_stale)
     begin "$c"
     cache_put 10000 'Antenna A' 45
-    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 STUB_SCAN_SECS=0 -- --wwv-khz auto --lock-mins 0 --secs 2
     rc_is 0
     grep -qE 'BANDCACHE: .*wwv_band_cache.json was scanned .* \(4[5-6]\.[0-9] min ago\), not under the 30 min limit; ignoring it; scanning' \
       "$D/console.txt" || fail 'no BANDCACHE line ignoring the 45 min old cache'
@@ -694,7 +697,7 @@ PY
   cache_antenna)
     begin "$c"
     cache_put 10000 Hi-Z 2
-    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 STUB_SCAN_SECS=0 -- --wwv-khz auto --lock-mins 0 --secs 2
     rc_is 0
     has "is for antenna 'Hi-Z' (scanned "; has "this run is on 'Antenna A'; ignoring it; scanning"
     hasnt 'BANDCACHE: using'; hasnt 'cached band'
@@ -705,7 +708,7 @@ PY
   cache_corrupt)
     begin "$c"
     printf '{"band_khz": 10000, "antenna": "Antenna A", "utc": ' > "$D/wwv_band_cache.json"
-    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 STUB_SCAN_SECS=0 -- --wwv-khz auto --lock-mins 0 --secs 2
     rc_is 0
     has 'BANDCACHE: WARNING: '"$D"'/wwv_band_cache.json is not a band cache (JSONDecodeError: '
     hasnt 'BANDCACHE: using'; hasnt 'cached band'
@@ -717,7 +720,7 @@ PY
     begin "$c"
     env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
         WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
-        SOAPY_SDR_PLUGIN_PATH=/nonexistent STUB_SCAN_BANDS=10000 STUB_SYNC=1:LOCKED,6:RECOVERING \
+        SOAPY_SDR_PLUGIN_PATH=/nonexistent STUB_SCAN_BANDS=10000 STUB_SCAN_SECS=0 STUB_SYNC=0.5:LOCKED,4.5:RECOVERING \
         WWV_LOCK_REFRESH_SECS=1 \
         "$SCR/wwv_rsp2_live.sh" --build "$FAKEBUILD" --log "$D/run.log" --wwv-khz auto --lock-mins 0 --secs 120 \
         -- -p 0 > "$D/console.txt" 2>&1 &
@@ -728,7 +731,7 @@ PY
     for _ in $(seq 150); do grep -q 'guard\] .*sdrplay.service:' "$D/console.txt" && break; sleep 0.1; done
     has '-> RECOVERING'; has 'exited without its cleanup'
     n=$(grep -c 'BANDCACHE: segment 1: 10000 kHz LOCKED: locked_utc ' "$D/console.txt")
-    [ "$n" -ge 2 ] || fail "$n locked_utc stamps while LOCKED for 5 s at a 1 s refresh, want 2 or more"
+    [ "$n" -ge 2 ] || fail "$n locked_utc stamps while LOCKED for 4 s at a 1 s refresh, want 2 or more"
     # one stamp may be in flight as the state changes; an ungated refresh would add 2 or more
     r=$(grep -n -- '-> RECOVERING' "$D/console.txt" | head -1 | cut -d: -f1)
     m=$(tail -n +"${r:-1}" "$D/console.txt" | grep -c 'kHz LOCKED: locked_utc ')
@@ -751,8 +754,8 @@ json.dump(d, open(p, 'w'), indent=1)
 PY
     /bin/rm -f "$D/streams" "$D/antennas"
     mv -f "$D/console.txt" "$D/console1.txt"
-    live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 STUB_SCAN_BANDS=5000 STUB_SYNC=1:LOCKED -- \
-        --build "$FAKEBUILD" --wwv-khz auto --lock-mins 0 --secs 8
+    live STUB_MODE=stall75_after:1.5 STUB_ONLY_FIRST=1 STUB_SCAN_BANDS=5000 STUB_SYNC=0.5:LOCKED -- \
+        --build "$FAKEBUILD" --wwv-khz auto --lock-mins 0 --secs 6
     rc_is 0
     grep -qE 'BANDCACHE: using .*: 10000 kHz on Antenna A, scanned [0-9TZ:-]+, last LOCKED [0-9TZ:-]+ \(0\.[0-9] min ago, under the 30 min limit\); start-up scan skipped' \
       "$D/console.txt" || fail 'the restart did not use the cache by its last LOCKED'
