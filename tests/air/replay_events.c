@@ -217,6 +217,9 @@ int main(int argc, char **argv) {
                                  .duration_ms = (float)d, .start_timestamp_ms = (float)l };
             wwv_routing_on_marker_candidate(&e, mgr);
             n_markw++;
+        } else if (strncmp(line, "GAP ", 4) == 0 && field(line, "start", &t) && field(line, "len", &d)) {
+            /* a filled gap: marked where wwv_live marked it, before the span's events */
+            wwv_detector_manager_mark_gap(mgr, t, d);
         } else if (strncmp(line, "END ", 4) == 0) {
             double s;
             if (field(line, "samples", &s)) end_ms = s / 50.0;   /* 50 kHz */
@@ -235,6 +238,10 @@ int main(int argc, char **argv) {
     printf("PHASE slews=%d slewed_ms=%.0f jumps=%d snaps=%d ignored=%d candidate_seconds=%d breaks=%d epoch=%d\n",
            ps.slews, ps.slewed_ms, ps.jumps, ps.snaps, ps.jumps_ignored, ps.candidate_seconds, ps.breaks,
            sync_detector_get_phase_epoch(sd));
+    wwv_gap_drops_t gd = wwv_detector_manager_get_gap_drops(mgr);
+    if (gd.tick || gd.tmark || gd.marker || gd.candidate || gd.btime || gd.bfreq || mgr->n_gaps)
+        printf("GAPDROPS tick=%d tmark=%d mark=%d cand=%d btime=%d bfreq=%d\n",
+               gd.tick, gd.tmark, gd.marker, gd.candidate, gd.btime, gd.bfreq);
     wwv_detector_manager_destroy(mgr);
     wwv_chain_log_destroy(log);
     return 0;

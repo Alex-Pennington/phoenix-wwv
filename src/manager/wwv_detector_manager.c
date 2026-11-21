@@ -123,6 +123,47 @@ void wwv_detector_manager_process_display_fft(wwv_detector_manager_t *mgr,
 }
 
 /*============================================================================
+ * Filled gaps
+ *============================================================================*/
+
+void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms, double len_ms) {
+    if (!mgr || !(len_ms > 0.0)) return;
+    double end_ms = start_ms + len_ms;
+    if (mgr->n_gaps > 0) {
+        /* a span that abuts or overlaps the newest one extends it */
+        int last = (mgr->gap_next + WWV_GAP_SPANS - 1) % WWV_GAP_SPANS;
+        if (start_ms <= mgr->gaps[last].end_ms + 1.0 && end_ms >= mgr->gaps[last].start_ms) {
+            if (start_ms < mgr->gaps[last].start_ms) mgr->gaps[last].start_ms = start_ms;
+            if (end_ms > mgr->gaps[last].end_ms) mgr->gaps[last].end_ms = end_ms;
+            return;
+        }
+    }
+    mgr->gaps[mgr->gap_next].start_ms = start_ms;
+    mgr->gaps[mgr->gap_next].end_ms = end_ms;
+    mgr->gap_next = (mgr->gap_next + 1) % WWV_GAP_SPANS;
+    if (mgr->n_gaps < WWV_GAP_SPANS) mgr->n_gaps++;
+}
+
+bool wwv_gap_covers(const wwv_detector_manager_t *mgr, double lo_ms, double hi_ms) {
+    if (!mgr) return false;
+    if (hi_ms < lo_ms) { double t = lo_ms; lo_ms = hi_ms; hi_ms = t; }
+    for (int k = 0; k < mgr->n_gaps; k++) {
+        double len = mgr->gaps[k].end_ms - mgr->gaps[k].start_ms;
+        double settle = WWV_GAP_SETTLE_MIN_MS + len;
+        if (settle > WWV_GAP_SETTLE_MS) settle = WWV_GAP_SETTLE_MS;
+        if (hi_ms >= mgr->gaps[k].start_ms - WWV_GAP_GUARD_MS &&
+            lo_ms <= mgr->gaps[k].end_ms + settle)
+            return true;
+    }
+    return false;
+}
+
+wwv_gap_drops_t wwv_detector_manager_get_gap_drops(wwv_detector_manager_t *mgr) {
+    wwv_gap_drops_t z = {0};
+    return mgr ? mgr->gap_drops : z;
+}
+
+/*============================================================================
  * Callbacks
  *============================================================================*/
 

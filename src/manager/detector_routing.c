@@ -3,12 +3,17 @@
  * @brief Internal event routing callbacks
  *
  * Routes detector events to the sync detector, the correlators, the time decoder,
- * the observer and the external callbacks. This is the chain's only wiring:
+ * the observer and the external callbacks. An event that overlaps a filled gap
+ * (wwv_detector_manager_mark_gap) reaches the observer only. This is the chain's only wiring:
  * tests/air/harness_iq.c and the hosts use it rather than wiring detectors
  * themselves.
  */
 
 #include "wwv_detector_manager_internal.h"
+
+/* Filled gaps: an event's extent is widened by this much on each side before the
+ * overlap test, for the detectors' filter delays */
+#define WWV_GAP_EDGE_MS 20.0
 
 /*============================================================================
  * Tick Event Routing
@@ -18,6 +23,11 @@ void wwv_routing_on_tick_event(const tick_event_t *event, void *user_data) {
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_tick) mgr->observer.on_tick(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->timestamp_ms - event->duration_ms - WWV_GAP_EDGE_MS,
+                                      event->timestamp_ms + WWV_GAP_EDGE_MS)) {
+        mgr->gap_drops.tick++;
+        return;
+    }
 
     /* Ticks keep the held sub-second phase while sync is LOCKED. They are not
      * fed as lock evidence (sync_detector_tick_event): alone they locked sync on
@@ -46,6 +56,10 @@ void wwv_routing_on_tick_marker_event(const tick_marker_event_t *event, void *us
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_tick_marker) mgr->observer.on_tick_marker(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->start_timestamp_ms, event->timestamp_ms)) {
+        mgr->gap_drops.tmark++;
+        return;
+    }
 
     /* Feed sync detector: it takes the marker's leading edge, not timestamp_ms
      * (the trailing edge, ~0.8 s later) */
@@ -72,6 +86,10 @@ void wwv_routing_on_marker_event(const marker_event_t *event, void *user_data) {
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_marker) mgr->observer.on_marker(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->start_timestamp_ms, event->timestamp_ms)) {
+        mgr->gap_drops.marker++;
+        return;
+    }
 
     /* Feed sync detector with the leading edge */
     if (mgr->sync_detector) {
@@ -113,6 +131,10 @@ void wwv_routing_on_tick_marker_candidate(const tick_marker_candidate_t *c, void
 
     if (mgr->observer.on_tick_marker_candidate)
         mgr->observer.on_tick_marker_candidate(c, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, c->start_ms, c->end_ms)) {
+        mgr->gap_drops.candidate++;
+        return;
+    }
     if (mgr->sync_detector)
         sync_detector_marker_candidate(mgr->sync_detector, c->lead_from_start_ms,
                                        c->lead_from_end_ms, "CANDT");
@@ -122,6 +144,10 @@ void wwv_routing_on_marker_candidate(const marker_event_t *event, void *user_dat
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_marker_candidate) mgr->observer.on_marker_candidate(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->start_timestamp_ms, event->timestamp_ms)) {
+        mgr->gap_drops.candidate++;
+        return;
+    }
     if (mgr->sync_detector)
         sync_detector_marker_candidate(mgr->sync_detector, event->start_timestamp_ms,
                                        event->start_timestamp_ms, "CANDM");
@@ -157,6 +183,11 @@ void wwv_routing_on_bcd_time_event(const bcd_time_event_t *event, void *user_dat
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_bcd_time) mgr->observer.on_bcd_time(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->timestamp_ms - WWV_GAP_EDGE_MS,
+                                      event->timestamp_ms + event->duration_ms + WWV_GAP_EDGE_MS)) {
+        mgr->gap_drops.btime++;
+        return;
+    }
     /* The pulse's leading edge (not its width) keeps the held sub-second phase */
     if (mgr->sync_detector)
         sync_detector_second_edge(mgr->sync_detector, event->timestamp_ms, SYNC_EDGE_BTIME);
@@ -171,6 +202,11 @@ void wwv_routing_on_bcd_freq_event(const bcd_freq_event_t *event, void *user_dat
     wwv_detector_manager_t *mgr = (wwv_detector_manager_t *)user_data;
 
     if (mgr->observer.on_bcd_freq) mgr->observer.on_bcd_freq(event, mgr->observer.user);
+    if (mgr->n_gaps && wwv_gap_covers(mgr, event->timestamp_ms - WWV_GAP_EDGE_MS,
+                                      event->timestamp_ms + event->duration_ms + WWV_GAP_EDGE_MS)) {
+        mgr->gap_drops.bfreq++;
+        return;
+    }
     if (mgr->bcd_correlator) {
         bcd_correlator_freq_event(mgr->bcd_correlator, event->timestamp_ms,
                                   event->duration_ms, event->accumulated_energy);
