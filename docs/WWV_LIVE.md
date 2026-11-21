@@ -342,8 +342,7 @@ after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_strea
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
-8 minutes: 498 s on saga, 2026-11-21, 28 cases; the five memory and backoff cases took
-56 s of that and were then shortened to 37 s). The stubs in `tests/live/fakebin` stand in for
+8 minutes: 485 s on saga, 2026-11-21, 29 cases). The stubs in `tests/live/fakebin` stand in for
 `systemctl`, `sudo` and `journalctl`, and the script refuses to run unless the PATH reaches
 them. The stub `sudo` logs the memory compaction instead of running it, and each case reads
 its own fake buddyinfo (`WWV_BUDDYINFO`). Its cases cover each reopen reason
