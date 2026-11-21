@@ -796,6 +796,10 @@ static void close_frame(wwv_time_decoder_t *td) {
 void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int second,
                              char symbol, float pulse_offset_ms) {
     if (!td || second < 0 || second > 59) return;
+    /* No minute anchor: sync never anchors at or before stream time 0. The
+     * correlator's old destroy path closed its last window with minute_start_ms
+     * 0, which closed the open frame early and opened one at 0.0 (saga). */
+    if (!(minute_start_ms > 0.0f)) return;
     if (td->cur_open && fabsf(minute_start_ms - td->cur.start_ms) >= SAME_FRAME_MS) close_frame(td);
     if (!td->cur_open) {
         frame_reset(&td->cur, minute_start_ms);

@@ -366,9 +366,35 @@ static void test_chain_tolerance(void) {
     if (!pass) fails++;
 }
 
+/* A run's end: the correlator's old destroy path sent its last symbol with
+ * minute_start_ms 0. It must not close the open frame or open one at 0.0. */
+static void test_run_end(void) {
+    wwv_time_decoder_t *td = wwv_time_decoder_create(NULL);
+    wwv_time_decoder_set_callback(td, on_result, NULL);
+    reset_capture("run end");
+    g_status = (status_t){-1, 0, 0, 0};
+    char f[61];
+    g_truth = (utc_t){2026, 323, 12, 19};
+    wwv_td_encode(2026, 323, 12, 19, -1, 0, 0, 0, f);
+    feed(td, 5000.0f, f);
+    g_truth = (utc_t){2026, 323, 12, 20};
+    wwv_td_encode(2026, 323, 12, 20, -1, 0, 0, 0, f);
+    for (int s = 0; s < 40; s++) wwv_time_decoder_symbol(td, 65000.0f, s, f[s], 20.0f);
+    wwv_time_decoder_symbol(td, 0.0f, 59, 'P', 0.0f);
+    int after_zero = g_results;
+    for (int s = 40; s < 60; s++) wwv_time_decoder_symbol(td, 65000.0f, s, f[s], 20.0f);
+    int pass = after_zero == 1 && g_results == 2 && g_last.frame_start_ms == 65000.0f &&
+               g_last.chain_minute == 1 && g_wrong_any == 0;
+    printf("%-4s %-58s results %d after the 0.0 symbol, then %d, last frame at %.1f\n", pass ? "ok" : "FAIL",
+           "run end: a symbol at 0.0 neither closes nor opens a frame", after_zero, g_results, g_last.frame_start_ms);
+    if (!pass) fails++;
+    wwv_time_decoder_destroy(td);
+}
+
 int main(void) {
     test_encoder();
     test_chain_tolerance();
+    test_run_end();
     status_t nov = {-1, 0, 0, 0};
     clean_run("2026-323 12:10 on, as on air", (utc_t){2026, 323, 12, 10}, 10, nov);
     clean_run("day-of-year rollover 323 -> 324", (utc_t){2026, 323, 23, 55}, 16, nov);
