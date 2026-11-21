@@ -331,6 +331,56 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   loss and of a wrong one are the same).
 - **Date DECODED wrong rose on seg2**: before, 0 right of 3 decoded; after, 9 right of 19, 10
   wrong. All DECODED (unverified); FALSE CONFIRM 0. Not traced per frame.
+  - **Traced (fix/wwv-15mhz-bcd): lost samples.** With the loss added back to every event time
+    (the gap fill, emulated), the same chain decodes the date 23 right of 24, 1 wrong; without,
+    3 right of 11, 8 wrong. See the next item.
+- **15 MHz BCD quality on run90g seg2 is signal for 1->0, and lost samples for most of the rest
+  (fix/wwv-15mhz-bcd); nothing changed in the chain.** Measured on the current chain: seg2's frames
+  through `tests/air/btime_replay`, then `tests/air/replay_events`, scored by
+  `tests/air/symbol_rates.py`. Truth is corrected for the loss: UTC = `out_utc0_unix` + stream
+  time + loss, with the loss taken from the least-delayed console lag (`STATUS ... lag A..B`,
+  every 30 s). That lag is flat to t=1290 s and reaches +5.3 s by 3090 s. Uncorrected,
+  `bcd_window_trace.py` and `btime_start_forensics.py` put every second after 1330 s against
+  the wrong UTC second.
+  - **Current chain on seg2: 1->0 108/285 (37.9%), P->1 30/141 (21.3%)**, against 156/321 (48.6%)
+    and 55/157 (35.0%) in the live log. Date 3 right, 8 wrong; time of day 25/25; FALSE CONFIRM 0.
+  - **Lost samples: 30 of the 108 1->0 and 8 of the 30 P->1** fall in seconds whose held second is
+    more than 100 ms off the true second, all after t=1480 s. With the loss added to every event
+    time (emulating the gap fill, now on main), the rates are 1->0 108/331 (32.6%) and P->1 24/163
+    (14.7%), against run90f's 66/231 (28.6%) and 15/96 (15.6%). Date is 23 right of 24, time of
+    day 37/37, FALSE CONFIRM 0. 18 1->0 are still more than 100 ms off: the lag is sampled
+    every 30 s, so the emulation is coarse.
+  - **Signal: 1->0 is as high before the loss starts.** In 14:10-14:20 (no loss) 1->0 is 26/63
+    (41.3%) and P->1 8/34 (23.5%). Of the 78 1->0 on a right phase, 68 hold a BTIME event that
+    starts by +250 ms and ends early (median width 182 ms; 28 start after +100 ms). 10 hold none.
+  - **The detector does the same on both bands at the same contrast.** Contrast is the median
+    detector energy over +80..+180 ms of the true second, over -160..-10 ms, in dB (the frame
+    record's compressed scale). Here are the rates of sent 1 read 0 and sent P read 1 or 0, on a
+    right phase:
+
+    | contrast | seg2 1->0     | run90f 1->0  | seg2 P->1/0  | run90f P->1/0 |
+    |----------|---------------|--------------|--------------|---------------|
+    | < 1 dB   | 37/54 (68.5%) | 23/33 (69.7%) | 21/25 (84.0%) | 7/11 (63.6%) |
+    | 1-2 dB   | 18/43 (41.9%) | 25/53 (47.2%) | 10/20 (50.0%) | 11/21 (52.4%) |
+    | 2-3 dB   | 6/46 (13.0%)  | 11/46 (23.9%) | 13/28 (46.4%) | 7/23 (30.4%) |
+    | 3-5 dB   | 15/75 (20.0%) | 5/74 (6.8%)   | 6/32 (18.8%)  | 6/33 (18.2%) |
+    | >= 5 dB  | 2/20 (10.0%)  | 2/25 (8.0%)   | 1/8 (12.5%)   | 1/8 (12.5%)  |
+
+    seg2 has more sent-1 seconds under 1 dB, 54 of 238 against run90f's 33 of 231. So what is
+    left is fade and SNR. A better 1->0 there needs the BCD time detector to hold a pulse at
+    1-2 dB contrast on every band, not a 15 MHz setting.
+  - **The BCD time detector's lead is the same on both bands, so there is no per-band lead.**
+    BTIME starts of seconds read right, against the true second, have a median of +55 ms on run90f
+    (n=174) and +62 ms on seg2 before the loss (n=58). With `PHASE_LEAD_BTIME_MS` at 30 ms, the
+    held second runs +11 ms (run90f) and +20 ms (seg2) after the true second. That is well inside
+    the window's 100 ms lead and the 250 ms boundary. A 55 ms lead was tried as a probe and not
+    kept:
+    - gap-filled seg2: 1->0 107/329, P->1 24/162, date 23/24;
+    - unfilled seg2: 1->0 122/307 (39.7%);
+    - run90f: 1->0 62/228, P->1 17/96, date 24/24.
+
+    FALSE CONFIRM was 0 everywhere. The earlier "+50 ms on seg2" was measured against the marker
+    lead, not against UTC.
 - `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
   (recovery re-locks on a marker on the held phase alone).
 - **Stream times are `float` milliseconds** through the detectors, sync, the correlator and the
