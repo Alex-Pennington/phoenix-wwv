@@ -37,6 +37,7 @@
 #include "manager/wwv_detector_manager_internal.h"
 #include "wwv_chain_log.h"
 #include "telemetry.h"
+#include "correlation/bcd_correlator_internal.h"
 
 /* ---- telemetry interposition (as harness_iq) ---- */
 bool telem_init(int port) { (void)port; return true; }
@@ -238,6 +239,9 @@ int main(int argc, char **argv) {
     printf("PHASE slews=%d slewed_ms=%.0f jumps=%d snaps=%d ignored=%d candidate_seconds=%d breaks=%d epoch=%d\n",
            ps.slews, ps.slewed_ms, ps.jumps, ps.snaps, ps.jumps_ignored, ps.candidate_seconds, ps.breaks,
            sync_detector_get_phase_epoch(sd));
+    bcd_correlator_t *bc = wwv_detector_manager_get_bcd_correlator(mgr);
+    if (bc) printf("BCDWIN silent=%d late_events=%d broken=%d\n", bc->silent_windows, bc->late_events,
+                   bc->broken_windows);
     wwv_gap_drops_t gd = wwv_detector_manager_get_gap_drops(mgr);
     if (gd.tick || gd.tmark || gd.marker || gd.candidate || gd.btime || gd.bfreq || mgr->n_gaps)
         printf("GAPDROPS tick=%d tmark=%d mark=%d cand=%d btime=%d bfreq=%d\n",

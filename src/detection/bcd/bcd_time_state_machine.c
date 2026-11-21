@@ -74,34 +74,31 @@ static float fit_width(const bcd_time_detector_t *td, uint64_t sf, float *contra
     for (int i = 0; i < n; i++) {
         ps[i + 1] = ps[i] + td->log_energy[(b0 + i) % BCD_TIME_HIST_FRAMES];
     }
-    double tot = ps[n], best = -1.0, bh = 0.0, bl = 0.0;
-    int br = -1, be = -1;
-    for (int r = 0; r <= pre + rise_max; r++) {
+    /* 1/k for every box and outside length: no division in the loops below */
+    double inv[BCD_TIME_HIST_FRAMES + 1];
+    inv[0] = 0.0;
+    for (int k = 1; k <= n; k++) inv[k] = 1.0 / k;
+
+    /* One pass over every box [r, e). The best with its rise at most rise_max
+     * frames after the start is the fit. The best with its rise anywhere: one
+     * rising more than BCD_TIME_FIT_LATE_RISE_MS after the latest rise allowed
+     * means the event started before the pulse (on the low level), not at its
+     * rise. */
+    double tot = ps[n], best = -1.0, bh = 0.0, bl = 0.0, fb = -1.0;
+    int br = -1, be = -1, fr = -1;
+    for (int r = 0; r < n - min_width; r++) {
+        bool held = r <= pre + rise_max;
         for (int e = r + min_width; e <= n - BCD_TIME_FIT_TAIL_FRAMES; e++) {
             double si = ps[e] - ps[r], so = tot - si;
             int ni = e - r, no = n - ni;
-            double h = si / ni, l = so / no;
+            double h = si * inv[ni], l = so * inv[no];
             if (h <= l) continue;
-            double f = si * si / ni + so * so / no;   /* least squares: max of this */
-            if (best < 0.0 || f > best) { best = f; br = r; be = e; bh = h; bl = l; }
+            double f = si * h + so * l;   /* least squares: max of this */
+            if (fb < 0.0 || f > fb) { fb = f; fr = r; }
+            if (held && (best < 0.0 || f > best)) { best = f; br = r; be = e; bh = h; bl = l; }
         }
     }
     if (br < 0) return -1.0f;
-
-    /* The best box with its rise anywhere in the window: one rising more than
-     * BCD_TIME_FIT_LATE_RISE_MS after the latest rise allowed above means the event
-     * started before the pulse (on the low level), not at its rise */
-    double fb = -1.0;
-    int fr = -1;
-    for (int r = 0; r < n - min_width; r++) {
-        for (int e = r + min_width; e <= n - BCD_TIME_FIT_TAIL_FRAMES; e++) {
-            double si = ps[e] - ps[r], so = tot - si;
-            int ni = e - r, no = n - ni;
-            if (si / ni <= so / no) continue;
-            double f = si * si / ni + so * so / no;
-            if (fb < 0.0 || f > fb) { fb = f; fr = r; }
-        }
-    }
     if (fr > pre + rise_max + MS_TO_FRAMES(BCD_TIME_FIT_LATE_RISE_MS)) return -1.0f;
 
     *contrast = (float)exp(bh - bl);

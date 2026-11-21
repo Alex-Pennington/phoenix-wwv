@@ -103,7 +103,7 @@ extern "C" {
 #define BCD_TIME_FIT_TAIL_FRAMES    6
 #define BCD_TIME_FIT_OFFSET_MS      15.0f
 #define BCD_TIME_FIT_CONTRAST_MIN   1.3f
-#define BCD_TIME_FIT_CONTRAST_MAX   3.0f
+#define BCD_TIME_FIT_CONTRAST_MAX   4.0f
 #define BCD_TIME_FIT_LATE_RISE_MS   150.0f
 
 /* Pulse classification thresholds (same as existing bcd_decoder) */
