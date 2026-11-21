@@ -419,6 +419,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
     tracker's counts) are identical. The float chain fails it at the third line: a minute start
     7.9 ms off.
+  - **`tests/test_detector_offset.c` runs the tick, marker and BCD detectors on 125 s of samples**
+    from a frame count of 20 x 1024 ms and from that plus 40 h. All 267 event stamps of the 40 h
+    run are the base run's plus exactly 144,000,000 ms. With `wwv_frames_to_ms()` returning float,
+    255 of 267 miss, by up to 7.69 ms. Both runs start past the startup guards
+    (`MARKER_MIN_STARTUP_MS`, `BCD_FREQ_MIN_STARTUP_MS`). Those key on stream time from 0, not
+    frames since start, so a detector started at a later frame count skips them.
   - **Measured against the float chain, at short run times:** on the four captures the symbol
     sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
     ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
