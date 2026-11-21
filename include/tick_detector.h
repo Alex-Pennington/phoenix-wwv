@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "wwv_time.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,7 +50,7 @@ typedef struct tick_detector tick_detector_t;
 
 typedef struct {
     int tick_number;
-    float timestamp_ms;
+    wwv_time_ms_t timestamp_ms;
     float interval_ms;
     float duration_ms;
     float peak_energy;
@@ -74,8 +75,8 @@ typedef void (*tick_callback_fn)(const tick_event_t *event, void *user_data);
 
 typedef struct {
     int marker_number;
-    float timestamp_ms;        /* TRAILING EDGE - when pulse energy dropped below threshold */
-    float start_timestamp_ms;  /* LEADING EDGE (ON-TIME MARKER): timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS,
+    wwv_time_ms_t timestamp_ms;        /* TRAILING EDGE - when pulse energy dropped below threshold */
+    wwv_time_ms_t start_timestamp_ms;  /* LEADING EDGE (ON-TIME MARKER): timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS,
                                   or from timestamp_ms alone when the run is off a clean
                                   marker's length (see tick_internal.h) */
     float duration_ms;         /* Measured duration (may be biased longer than actual due to threshold hysteresis) */
@@ -95,11 +96,11 @@ typedef void (*tick_marker_callback_fn)(const tick_marker_event_t *event, void *
 #define TICK_CANDIDATE_MIN_MS      100.0f
 
 typedef struct {
-    float start_ms;             /* Run start (first frame above threshold_high) */
-    float end_ms;               /* Run end (first frame below threshold_low) */
-    float lead_from_start_ms;   /* From the run's start, as a TMARK of clean length: right
+    wwv_time_ms_t start_ms;             /* Run start (first frame above threshold_high) */
+    wwv_time_ms_t end_ms;               /* Run end (first frame below threshold_low) */
+    wwv_time_ms_t lead_from_start_ms;   /* From the run's start, as a TMARK of clean length: right
                                    if the end was cut short */
-    float lead_from_end_ms;     /* end_ms less a clean marker run and the filter delay:
+    wwv_time_ms_t lead_from_end_ms;     /* end_ms less a clean marker run and the filter delay:
                                    right if the start was hidden */
 } tick_marker_candidate_t;
 
@@ -221,14 +222,14 @@ typedef enum {
  * Timing gate control (for marker-based epoch bootstrap)
  * Set epoch from marker timestamp: epoch_ms = marker_timestamp - 10.0
  */
-void tick_detector_set_epoch(tick_detector_t *td, float epoch_ms);
+void tick_detector_set_epoch(tick_detector_t *td, wwv_time_ms_t epoch_ms);
 
 /**
  * Set timing gate epoch with source and confidence tracking
  * @param source Where epoch came from (marker or tick chain)
  * @param confidence Confidence metric 0-1 (higher = more precise)
  */
-void tick_detector_set_epoch_with_source(tick_detector_t *td, float epoch_ms,
+void tick_detector_set_epoch_with_source(tick_detector_t *td, wwv_time_ms_t epoch_ms,
                                           epoch_source_t source, float confidence);
 
 void tick_detector_set_gating_enabled(tick_detector_t *td, bool enabled);

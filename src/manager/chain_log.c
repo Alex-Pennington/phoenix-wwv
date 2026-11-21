@@ -54,7 +54,7 @@ static void on_marker_candidate(const marker_event_t *e, void *u) {
 }
 
 /* Which window a BCD event landed in */
-static void trace_event(wwv_chain_log_t *log, char src, float t, float dur) {
+static void trace_event(wwv_chain_log_t *log, char src, wwv_time_ms_t t, float dur) {
     bcd_correlator_t *c = wwv_detector_manager_get_bcd_correlator(log->mgr);
     if (c && c->window_open)
         fprintf(log->out, "WEV src=%c t=%.1f dur=%.1f win_sec=%d win_start=%.1f anchor=%.1f\n",

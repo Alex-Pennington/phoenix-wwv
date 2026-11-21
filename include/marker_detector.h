@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "wwv_time.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,14 +58,14 @@ typedef struct marker_detector marker_detector_t;
 
 typedef struct {
     int marker_number;
-    float timestamp_ms;             /* When the detector fired (end of the 1 s window excursion) */
+    wwv_time_ms_t timestamp_ms;     /* When the detector fired (end of the 1 s window excursion) */
     float since_last_marker_sec;
     float accumulated_energy;       /* Peak of the 1 s window sum over the run */
     float peak_energy;              /* 1000 Hz bucket energy of the run's last frame */
     float duration_ms;              /* Estimated pulse length, window stretch removed.
                                        Unreliable when the window sum barely clears the
                                        threshold (weak or faded markers). */
-    float start_timestamp_ms;       /* Leading edge (on-time marker): window-run midpoint
+    wwv_time_ms_t start_timestamp_ms; /* Leading edge (on-time marker): window-run midpoint
                                        minus (window + 800 ms)/2 */
 } marker_event_t;
 

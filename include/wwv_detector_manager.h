@@ -39,6 +39,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "wwv_time.h"
 #include "external/kiss_fft.h"
 #include "tick_detector.h"
 #include "marker_detector.h"
@@ -102,7 +103,7 @@ typedef struct {
 /* Tick detected */
 typedef struct {
     int tick_number;
-    float timestamp_ms;
+    wwv_time_ms_t timestamp_ms;
     float duration_ms;
     float energy;
 } wwv_tick_event_t;
@@ -112,7 +113,7 @@ typedef void (*wwv_tick_callback_fn)(const wwv_tick_event_t *event, void *user_d
 /* Minute marker detected */
 typedef struct {
     int marker_number;
-    float timestamp_ms;
+    wwv_time_ms_t timestamp_ms;
     float since_last_sec;
     float duration_ms;
     float energy;
@@ -194,7 +195,7 @@ void wwv_detector_manager_process_display_sample(wwv_detector_manager_t *mgr,
  */
 void wwv_detector_manager_process_display_fft(wwv_detector_manager_t *mgr,
                                                const kiss_fft_cpx *fft_out,
-                                               float timestamp_ms);
+                                               wwv_time_ms_t timestamp_ms);
 
 /*============================================================================
  * Callbacks
@@ -226,7 +227,7 @@ wwv_sync_status_t wwv_detector_manager_get_sync_status(wwv_detector_manager_t *m
  * processed (the last one, between calls).
  */
 uint64_t wwv_detector_manager_get_detector_samples(wwv_detector_manager_t *mgr);
-double wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr);
+wwv_time_ms_t wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr);
 
 /**
  * The owned components, for diagnostics (NULL when disabled). Do not destroy them,
@@ -278,7 +279,7 @@ void wwv_detector_manager_log_display_gain(wwv_detector_manager_t *mgr, float di
 #define WWV_GAP_SETTLE_MIN_MS 100.0
 #define WWV_GAP_SETTLE_MS     1500.0
 #define WWV_GAP_SPANS      8
-void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms, double len_ms);
+void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, wwv_time_ms_t start_ms, double len_ms);
 
 /** Events held back from routing by gaps, cumulative since create */
 typedef struct { int tick, tmark, marker, candidate, btime, bfreq; } wwv_gap_drops_t;

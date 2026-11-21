@@ -33,20 +33,20 @@ static float calculate_bucket_energy(tick_detector_t *td) {
     return fft_processor_get_bucket_energy(td->fft, TICK_TARGET_FREQ_HZ, TICK_BANDWIDTH_HZ);
 }
 
-float tick_calculate_avg_interval(tick_detector_t *td, float current_time_ms) {
+float tick_calculate_avg_interval(tick_detector_t *td, wwv_time_ms_t current_time_ms) {
     if (td->tick_history_count < 2) return 0.0f;
 
-    float cutoff = current_time_ms - TICK_AVG_WINDOW_MS;
+    wwv_time_ms_t cutoff = current_time_ms - TICK_AVG_WINDOW_MS;
     float sum = 0.0f;
     int count = 0;
-    float prev_time = -1.0f;
+    wwv_time_ms_t prev_time = -1.0;
 
     for (int i = 0; i < td->tick_history_count; i++) {
         int idx = (td->tick_history_idx - td->tick_history_count + i + TICK_HISTORY_SIZE) % TICK_HISTORY_SIZE;
-        float t = td->tick_timestamps_ms[idx];
+        wwv_time_ms_t t = td->tick_timestamps_ms[idx];
         if (t >= cutoff) {
-            if (prev_time >= 0.0f) {
-                sum += (t - prev_time);
+            if (prev_time >= 0.0) {
+                sum += (float)(t - prev_time);
                 count++;
             }
             prev_time = t;
@@ -60,8 +60,8 @@ float tick_calculate_avg_interval(tick_detector_t *td, float current_time_ms) {
  * Get wall clock time string for CSV output
  * Format: HH:MM:SS
  */
-void tick_get_wall_time_str(tick_detector_t *td, float timestamp_ms, char *buf, size_t buflen) {
-    time_t event_time = td->start_time + (time_t)(timestamp_ms / 1000.0f);
+void tick_get_wall_time_str(tick_detector_t *td, wwv_time_ms_t timestamp_ms, char *buf, size_t buflen) {
+    time_t event_time = td->start_time + (time_t)(timestamp_ms / 1000.0);
     struct tm *tm_info = localtime(&event_time);
     strftime(buf, buflen, "%H:%M:%S", tm_info);
 }
@@ -306,8 +306,8 @@ int tick_detector_get_tick_count(tick_detector_t *td) {
 void tick_detector_print_stats(tick_detector_t *td) {
     if (!td) return;
 
-    float elapsed = td->frame_count * FRAME_DURATION_MS / 1000.0f;
-    float current_time_ms = td->frame_count * FRAME_DURATION_MS;
+    float elapsed = (float)(TICK_FRAMES_TO_MS(td->frame_count) / 1000.0);
+    wwv_time_ms_t current_time_ms = TICK_FRAMES_TO_MS(td->frame_count);
     float detecting = td->warmup_complete ?
         (elapsed - TICK_WARMUP_FRAMES * FRAME_DURATION_MS / 1000.0f) : 0.0f;
     int expected = (int)detecting;
@@ -336,7 +336,7 @@ void tick_detector_log_metadata(tick_detector_t *td, uint64_t center_freq,
     strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&now));
 
     /* Get timestamp in ms since detector start */
-    float timestamp_ms = td->frame_count * FRAME_DURATION_MS;
+    wwv_time_ms_t timestamp_ms = TICK_FRAMES_TO_MS(td->frame_count);
 
     /* Log as special META row */
     fprintf(td->csv_file, "%s,%.1f,META,0,freq=%llu rate=%u GR=%u LNA=%u,0,0,0,0,0,0\n",
@@ -357,7 +357,7 @@ void tick_detector_log_display_gain(tick_detector_t *td, float display_gain_db) 
     strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&now));
 
     /* Get timestamp in ms since detector start */
-    float timestamp_ms = td->frame_count * FRAME_DURATION_MS;
+    wwv_time_ms_t timestamp_ms = TICK_FRAMES_TO_MS(td->frame_count);
 
     /* Log as special GAIN row */
     fprintf(td->csv_file, "%s,%.1f,GAIN,0,display_gain=%.1f,0,0,0,0,0,0,0\n",
@@ -373,12 +373,12 @@ float tick_detector_get_frame_duration_ms(void) {
  * Timing Gate API (Step 2: WWV Tick/BCD Separation)
  *============================================================================*/
 
-void tick_detector_set_epoch_with_source(tick_detector_t *td, float epoch_ms,
+void tick_detector_set_epoch_with_source(tick_detector_t *td, wwv_time_ms_t epoch_ms,
                                           epoch_source_t source, float confidence) {
     if (!td) return;
 
     /* Normalize to millisecond within second (0-999) */
-    float normalized_epoch = fmodf(epoch_ms, 1000.0f);
+    float normalized_epoch = (float)fmod(epoch_ms, 1000.0);
     if (normalized_epoch < 0) {
         normalized_epoch += 1000.0f;
     }
@@ -394,7 +394,7 @@ void tick_detector_set_epoch_with_source(tick_detector_t *td, float epoch_ms,
                   source_str, normalized_epoch, confidence);
 }
 
-void tick_detector_set_epoch(tick_detector_t *td, float epoch_ms) {
+void tick_detector_set_epoch(tick_detector_t *td, wwv_time_ms_t epoch_ms) {
     /* Legacy function - assume marker source with medium confidence */
     tick_detector_set_epoch_with_source(td, epoch_ms, EPOCH_SOURCE_MARKER, 0.7f);
 }
