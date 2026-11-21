@@ -53,6 +53,11 @@
 #                 arrival jitter: every sample's stream index stays within 40 ms of its true
 #                 time, within 6 ms at the end; each fill logged (GAP) with its cause
 #   stream_ramp   rsp2_stream.py: 3 ms/s lost for 30 s as a little before every block: the same
+#   stream_drift  rsp2_stream.py on a virtual clock (FAKE_VCLOCK=1, 720 s in seconds), 20 kS/s:
+#                 the delivery delay growing 110 ppm, nothing lost: no fill (the slow stage filled
+#                 75 ms before the lag rate was tracked, NOTES.md "Stream slip"), lag rate +110 ppm;
+#                 then runG-like, 80 ppm stepping to 165 ppm with losses of 0.3 s, 20 ms and a 3 s
+#                 outage: gap-exact as stream_gaps
 #   stream_toobig rsp2_stream.py, --stall-secs 20: a 12 s outage, over --gap-max-secs 10: exit 76,
 #                 and no sample from after the loss is sent
 #   gap_chain     wwv_live on synthetic WWV with a 1.05 s loss after LOCKED: filled (zeros), the
@@ -155,7 +160,7 @@ CASES=("$@")
                                  auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
                                  stream_stall stream_lag scan_keep_raw gap_chain gap76
                                  mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
-                                 stream_gaps stream_ramp stream_toobig)
+                                 stream_gaps stream_ramp stream_drift stream_toobig)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -436,6 +441,29 @@ PY
     grep -q '"hold_s": 3.0' "$D/anchor.json" 2>/dev/null || fail 'no --anchor-out file'
     [ "$(wc -l < "$D/gaps.jsonl")" -ge "$ngaps" ] || fail 'too few --gap-log lines'
     /bin/rm -f "$D/stream.cs16"
+    end_case ;;
+  stream_drift)
+    begin "$c"
+    for m in d110 mix; do
+      if [ $m = d110 ]; then spec='true:jitter:30;drift@0:110'; else
+        spec='true:jitter:30;drift@0:80;drift@360:165;loss@400:0.3;loss@520:0.02;outage@600:3'; fi
+      env FAKE_VCLOCK=1 FAKE_MTU=655 SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" \
+          "$REPO/scripts/rsp2_stream.py" "$spec" -- --rate 20000 --secs 720 --stall-secs 10 --report-secs 60 \
+          > "$D/$m.cs16" 2> "$D/$m.con"
+      cat "$D/$m.con" >> "$D/console.txt"
+      grep -qF '[harness] exit 0' "$D/$m.con" || fail "$m: the stream did not exit 0"
+      if [ $m = d110 ]; then
+        grep -q '] GAP ' "$D/$m.con" && fail 'd110: a steady delay drift was filled'
+        grep -qE 'stopped .* 0 gaps filled \(0\.0 ms\).*lag rate \+1(0[5-9]|1[0-5]) ppm' "$D/$m.con" ||
+          fail "d110: not 0 ms filled at a lag rate of about +110 ppm: $(grep stopped "$D/$m.con")"
+        python3 -I "$HERE/check_gapfill.py" "$D/$m.cs16" 20000 "$D/$m.con" --gaps 0 --max-ms 1 --end-ms 1 \
+            >> "$D/console.txt" 2>&1 || fail 'd110: the stream is not gap-exact (check_gapfill)'
+      else
+        python3 -I "$HERE/check_gapfill.py" "$D/$m.cs16" 20000 "$D/$m.con" --gaps 3 --max-ms 40 \
+            >> "$D/console.txt" 2>&1 || fail 'mix: the stream is not gap-exact (check_gapfill)'
+      fi
+      /bin/rm -f "$D/$m.cs16"
+    done
     end_case ;;
   stream_toobig)
     begin "$c"
