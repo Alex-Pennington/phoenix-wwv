@@ -77,4 +77,66 @@
 - A real-radio run with the fill (none was possible: the radio was in use). The checks are in the
   worker's report.
 - `docs/WWV_LIVE.md` does not describe GAP / GAPEND, `--anchor-in` or the hold.
+  (Done 2026-11-21 in 8ec94eb.)
 - The open items under Live host in `NOTES.md` (no issues filed: the brief forbids it).
+
+## 2026-11-21 — ymir-phoenix-wwv (coordinator, phoenix-wwv)
+
+**What was merged** (`git log --merges 0c146d0..424ad81`)
+
+- 8ec94eb: `docs/WWV_LIVE.md` gap fill, scan bound, reopen-max; live_wrapper_stubs 437 s of 600.
+- 83a20f8: 15 MHz BCD quality (NOTES only): 1->0 errors match 5 MHz bin for bin at equal contrast,
+  lost samples cause most wrong dates; BTIME lead +55/+62 ms on both bands. 93678df: its scripts
+  (`seg_attr.py`, `shift_loss.py`, `confusion_causes.py`) in `tests/air`, outputs byte-identical.
+- 4fbcbf6: one stream time type, `wwv_time_ms_t` (double ms), detector to decoder; float ms stepped
+  8 ms by 18.6 h. 35 replays 0 FALSE CONFIRM, same first-CONFIRMED times. b3553e1: detector test at
+  0 h and 40 h, 267 stamps exact (float: 255/267 off, up to 7.69 ms).
+- aef316f: wrapper MEM lines at start, reopen and errno=12 burst; crash backoff 5 s doubling to
+  120 s; `--mem-wait-secs` opt-in, default 0. Why: runG ran with 0 errno=12 while Unmovable +
+  Reclaimable had 0 free blocks at order 9 or above, so the order-9 premise is falsified.
+- c48234e: pessimistic p10 floor 0.15 -> 0.10. Time of day CONFIRMS up to 8 min sooner (1-2 on
+  most runs). Independent review: no blocker; per-bit risk about 10x the old floor (1.1e-6 at a
+  12.4% 1->0 rate).
+- fcd29c0: stream slip. runG's slow stage filled 1054.6 ms never lost (delivery delay growing
+  50-170 ppm); the fill now tracks the lag rate (Theil-Sen, 300 s); a runG-like drift fills 0.0 ms
+  (was 1185.8). ffba5d4: shared stream-UTC truth (`tests/air/stream_utc.py`) for the air scorers.
+- 7d63b2e: full sync reset clears the anchor; marker and BCD-freq startup guards count from
+  start_frame. 36 live replays byte-identical.
+- 21d7bc2: `--antenna NAME` through the wrapper and band scan, checked against listAntennas().
+- b6abcc7: CLOCK line, host clock error against confirmed WWV time; synthetic anchor errors
+  recovered within +1.4..+3.6 ms at sigma 3 ms; clean saga segments -4..-11 ms.
+- 2a93047: BCD TIME step fit at contrast 1.3-3: wrong 1669 -> 833, right 26587 -> 27602, holds out
+  of sample (fit on either half, tested on the other). Ceiling kept at 3. Cost: saga agc DST no
+  longer CONFIRMS (630 s on main).
+- 2174441: `--band-cache` with locked_utc refreshed while LOCKED; skips the ~7.5 min scan.
+- bfcf6fa: mawk buffered the FIFO, so LOCKED reached the filter minutes late (runH1); the wrapper
+  picks gawk, else `mawk -W interactive`, else busybox awk.
+- 424ad81: live stub suite split into five ctest entries; 538 s -> 171-175 s wall at `-j4`.
+
+**runG** (saga, 2026-11-21 09:58-12:38 UTC, 5 MHz; crash and memory figures from the
+coordinator's log reads)
+
+- 0 errno=12 lines; 0 core files in `/var/lib/systemd/coredump` (coredumpctl not installed).
+- Time of day and date CONFIRMED right 146/146; FALSE CONFIRM 0 (NOTES.md, p10 floor item).
+- Order-9/10 free blocks were 0 in about half the minutes from 10:12 UTC, before the copy and
+  stick-write confounders began. So the `vm.min_free_kbytes` result is consistent with no crashes,
+  and fragmentation is not shown to be the trigger.
+
+**gangleri** (coordinator's setup and log reads)
+
+- The RSP2 moved from saga to gangleri: Zotac ZBOX CI320 nano, headless, Mint live USB, WireGuard
+  10.77.77.23, Hi-Z fan dipole, built from `gangleri-linux-install` (local on saga).
+- Runs 24/7 as user unit `wwv-live.service` on bfcf6fa, one run directory per start under
+  `~/wwv-live`; saga pulls the logs into `~/wwv-gangleri`.
+- runH1/H2/H3, 10 and 15 MHz: Hi-Z C/N0 62-80 dB-Hz on 5-20 MHz; CLOCK steady at about -19 ms,
+  sigma 3 ms; delivery lag +4 to +105 ppm; 0 fills.
+
+**Open**
+
+- PHASE_LEAD_* against the measured edge leads (NOTES.md, Sync and correlator).
+- TENTATIVE has no timeout.
+- Pipe buffering in the other pipeline tools (grep, sed, python) is unchecked.
+- `sdrplay_apiService` dumps core on SIGTERM.
+- ALE (greybeard-ale) is to take over gangleri's RSP2 later and keep WWV clock sync; a decoder
+  state save and restore is requested.
+- fix/wwv-stream-activate-hang: stopped by Alex, left as is.
