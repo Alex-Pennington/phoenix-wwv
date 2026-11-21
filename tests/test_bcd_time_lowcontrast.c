@@ -42,8 +42,8 @@
  *     pulse clears the start threshold only on a ripple crest, and the box's rise
  *     can stay there: with other noise seeds the start came out at +41 and +77 ms.
  *     So the start is not checked;
- *   - 0, 1 and P at 7 dB: edge width kept (the fit's ceiling, contrast 4, is 6.0 dB,
- *     so a 5 dB pulse is still fitted; an edge-width case must be over 6 dB);
+ *   - 0, 1 and P at 7 dB: edge width kept (over the fit's ceiling, contrast 3,
+ *     4.8 dB; 7 dB also clears a ceiling of 4, 6.0 dB);
  *   - a 1 at 1.1 times the low level (0.4 dB), under the fit's floor, with a noise
  *     floor of 0.65 (so the event lives past 100 ms): edge width, and it reads 0;
  *   - a P at 2 dB whose high part sags to the low level for its last 300 ms
