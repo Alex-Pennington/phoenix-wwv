@@ -16,11 +16,17 @@ MODE: stall_after:S  data for S s, then timeouts forever
                                        and those samples are lost
                        ramp@T1-T2:R    from T1 to T2, R s lost per s, a little before each block
                        jitter:J        each block arrives 0..J ms late (uniform, seeded)
+                       drift@T:PPM     from T on, the delivery delay grows PPM us per s (no
+                                       sample lost; runG's 1 s in 2.6 h is about +110); a later
+                                       drift@ item sets the next rate
                      FAKE_MTU sets the block (default 4096).
       timelog:PATH   the blocks of a recording's PATH.timelog.npy (rsp2_stream / rsp_record
                      --record: cumulative samples, arrival ns, ret, flags), each at its
                      recorded arrival time from the first, carrying its true index as true:
                      does; the rate from PATH.json. Timeouts and overflows are replayed.
+FAKE_VCLOCK=1: time.time, time.time_ns, time.monotonic and time.sleep run on a virtual
+clock that a sleep advances at once, so a long stream runs as fast as it is processed
+(true: and timelog: arrivals are exact; processing takes no time).
 """
 import sys, time, types, runpy
 import numpy as np
@@ -33,18 +39,40 @@ class SR:
     def __init__(s, ret): s.ret = ret; s.flags = 0
 SPEC = []
 JIT = 0.0
+DRIFT = []                                  # (T, s/s) from T on
 if kind == 'true':
     for item in filter(None, val.split(';')):
         what, _, arg = item.partition('@') if '@' in item else item.partition(':')
         if what == 'jitter':
             JIT = float(arg) / 1000.0
+        elif what == 'drift':
+            t, r = arg.split(':'); DRIFT.append((float(t), float(r) * 1e-6))
         elif what in ('loss', 'outage'):
             t, d = arg.split(':'); SPEC.append([what, float(t), float(d)])
         elif what == 'ramp':
             span, r = arg.split(':'); t1, t2 = span.split('-'); SPEC.append(['ramp', float(t1), float(t2), float(r)])
         else:
             raise SystemExit(f'bad true: item {item}')
+DRIFT.sort()
+def drift_at(ts):
+    """the delivery delay at true stream time ts, s"""
+    d = 0.0
+    for i, (t, r) in enumerate(DRIFT):
+        t2 = DRIFT[i + 1][0] if i + 1 < len(DRIFT) else float('inf')
+        if ts > t:
+            d += r * (min(ts, t2) - t)
+    return d
 import os, json as _json
+if os.environ.get('FAKE_VCLOCK') == '1':
+    class _VC:
+        t = 1795000000.0                    # wall; monotonic is t - wall0
+    _wall0 = _VC.t
+    def _sleep(d):
+        if d > 0: _VC.t += d
+    time.time = lambda: _VC.t
+    time.time_ns = lambda: int(round(_VC.t * 1e9))
+    time.monotonic = lambda: _VC.t - _wall0 + 1000.0
+    time.sleep = _sleep
 MTU = int(os.environ.get('FAKE_MTU', '4096'))
 TL = None
 if kind == 'timelog':
@@ -69,7 +97,7 @@ class Dev:
             elif e[0] == 'ramp' and e[1] * s.rate <= s.k < e[2] * s.rate:
                 s.ramp_acc += e[3] * n
                 lost = int(s.ramp_acc); s.ramp_acc -= lost; s.k += lost
-        due = s.t0 + (s.k + n) / s.rate + RNG.uniform(0, JIT)
+        due = s.t0 + (s.k + n) / s.rate + drift_at((s.k + n) / s.rate) + RNG.uniform(0, JIT)
         due = max(due, s.last)
         if due - now > timeoutUs / 1e6:
             time.sleep(timeoutUs / 1e6)

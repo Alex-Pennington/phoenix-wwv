@@ -28,14 +28,27 @@ timeNs or SOAPY_SDR_HAS_TIME, and OVERFLOW means only that its own 8-buffer ring
 about 262 ms, filled), so a loss is read from the arrival times: a block arrives
 no earlier than its last sample's time plus the least USB/API latency, so
 "lag" = arrival (CLOCK_MONOTONIC) minus stream time has a floor, and samples lost
-upstream raise the floor by what was lost. Two stages, each filling only the
-excess over a margin, so a fill is never too large:
-  fast: the least lag over the last 2 s against the floor (the least lag seen);
-        over 15 ms margin + 15 ms, the excess less the margin is filled, at the
-        block where the lag rose (to within a block, 33 ms at 2 MS/s);
+upstream raise the floor by what was lost, as a step. The floor is a line, not a
+constant: on the live runs the delivery delay grew steadily, 50 to 170 ppm (runG:
+1 s in 2.6 h), with no sample lost, and filling that ramp put stream time 1 s
+ahead of UTC (NOTES.md, "Stream slip"). So the lag's rate is tracked: the least
+lag of each 10 s bin (fills included), fitted over the last 300 s (Theil-Sen, once 120 s of bins are in; at most +-1000 ppm). The floor
+line is the least of the last 60 s of bins, each carried forward at that rate.
+A rate error under about 60 ppm stays under the slow stage's 4.5 ms over those
+60 s, so nothing is filled and the fit sees the whole rate; a larger one (the
+rate stepping) fills only until the fit catches up.
+A steady rate is not a loss and is never filled; this cannot tell a ramp of real
+loss under 1000 ppm from a growing delay, and does not try. Two stages, each
+filling only the excess over the floor line beyond a margin, so a fill is never
+too large:
+  fast: the least lag over the last 2 s; over 15 ms margin + 15 ms, the excess
+        less the margin is filled, at the block where the lag rose (to within a
+        block, 33 ms at 2 MS/s);
   slow: the least lag over the last 30 s; over 2.5 ms margin + 2 ms, the excess
         less the margin is filled ahead of the held blocks (the remainder of a
-        fast fill, or the RSP2's clock running slow against the host's).
+        fast fill, or a loss under the fast stage's threshold). Until the rate
+        is known it fills only within 60 s of a fast fill; at most one fill
+        per 30 s, as a fill cannot move a released block's lag.
 The margins are the largest window-minimum excesses measured on saga's
 10-minute capture (13.4 ms at 2 s, 2.1 ms at 30 s). To place a fill where the
 loss was, output is held --hold-secs (3 s) behind the radio. Fills are zeros
@@ -59,8 +72,9 @@ starts and once when it ends, not one line each.
 supervisor can see a stream that hangs inside readStream.
 
 Every --report-secs the stream logs how far its sample count (fills included) is
-behind the wall clock since streaming began ("behind"), what was filled, and how
-long its writes to stdout blocked.
+behind the wall clock since streaming began ("behind"), what was filled, how
+long its writes to stdout blocked, and the tracked lag rate ("lag rate", ppm; a
+steady positive rate makes "behind" grow by that much and is not filled).
 Behind growing with little write wait means samples were lost upstream of this
 process (USB or the API service) without an overflow report; a long write wait
 means the reader (wwv_live) is not keeping up.
@@ -196,6 +210,10 @@ def behind_ms(tn_s):
 # ---- gap fill ----
 FAST_W, FAST_B, FAST_T = 2.0, 0.015, 0.015     # window s, margin s, least fill s
 SLOW_W, SLOW_B, SLOW_T = 30.0, 0.0025, 0.002
+RATE_BIN, RATE_W, RATE_MIN = 10.0, 300.0, 120.0 # lag-rate bins s, fit window s, least span s
+RATE_MAX = 1000e-6                              # the largest lag rate tracked, s/s
+FLOOR_W = 60.0                                  # the floor: least of the last FLOOR_W s of bins
+REMAINDER_S = 60.0                              # before the rate is known, the slow stage fills only this soon after a fast fill
 REFINE_S = 10.0                                 # wwv_live's anchor refinement
 EX_GAP = 76
 hold = 0.0 if a.no_fill else a.hold_secs
@@ -203,7 +221,11 @@ held = collections.deque()      # records: [mono_s, wall_s, data or None, n, idx
 hist = collections.deque()      # the same records, last SLOW_W s (released ones too)
 idx = 0                         # true samples so far (fills included)
 mono0 = None                    # monotonic time of stream time 0 (any fixed origin)
-floor = None                    # least lag seen
+bins = collections.deque()      # [bin start, t of least lag, least lag], last RATE_W s
+rate = 0.0                      # tracked lag rate, s/s (0 until RATE_MIN s of bins)
+rate_ready = False
+t_fast = None                   # monotonic time of the last fast fill
+t_slow = None                   # and of the last slow fill
 fills = []                      # (wall UTC, stream s, samples, cause)
 filled = 0
 events = collections.deque()    # (mono_s, 'timeout' | 'overflow'), last SLOW_W s
@@ -213,6 +235,35 @@ gap_log = open(a.gap_log, 'a') if a.gap_log else None
 def lag(r):
     return r[0] - mono0 - r[4] / a.rate
 
+def track(t, ln):
+    """One block's lag on arrival: the bins, and the lag rate when a bin closes"""
+    global rate, rate_ready
+    if bins and t < bins[-1][0] + RATE_BIN:
+        b = bins[-1]
+        if ln < b[2]:
+            b[1], b[2] = t, ln
+        return
+    bins.append([t, t, ln])
+    while bins[0][0] < t - RATE_W:
+        bins.popleft()
+    done = list(itertools.islice(bins, 0, len(bins) - 1))   # closed bins
+    if len(done) >= 3 and done[-1][1] - done[0][1] >= RATE_MIN:
+        x = np.array([b[1] for b in done]); y = np.array([b[2] for b in done])
+        i, j = np.triu_indices(len(x), 1)
+        dx = x[j] - x[i]
+        ok = dx > RATE_BIN / 2
+        s = float(np.median((y[j] - y[i])[ok] / dx[ok]))   # Theil-Sen: robust to a step and a stray bin
+        rate = max(-RATE_MAX, min(RATE_MAX, s))
+        rate_ready = True
+
+def floor_c(t):
+    """The floor line's intercept at t: the least lag over the bins of the last FLOOR_W s, each
+    carried at the lag rate. The floor at any time u near t is floor_c(t) + rate * u."""
+    return min(b[2] - rate * b[1] for b in bins if b[0] >= t - FLOOR_W - RATE_BIN or b is bins[-1])
+
+def floor_at(t):
+    return floor_c(t) + rate * t
+
 def cause_between(t0, t1):
     k = [e for t, e in events if t0 - 0.05 <= t <= t1 + 0.05]
     if 'overflow' in k:
@@ -221,9 +272,13 @@ def cause_between(t0, t1):
         return f'timeout ({k.count("timeout")} readStream timeouts)'
     return 'upstream, no report (USB or API service)'
 
-def fill(at, nfill, cause):
+def fill(at, nfill, cause, slow=False):
     """nfill zeros before held[at]: every later held record moves on"""
-    global idx, filled
+    global idx, filled, t_fast, t_slow
+    if slow:
+        t_slow = held[-1][0]
+    else:
+        t_fast = held[-1][0]
     r = held[at]
     r[5] += nfill
     for q in itertools.islice(held, at, None):
@@ -241,11 +296,14 @@ def fill(at, nfill, cause):
         gap_log.flush()
 
 def check_gaps(now_m):
-    """The two stages, on the newest block's arrival"""
-    global floor
+    """The two stages, on the newest block's arrival. Both measure the lag against the floor
+    line (floor_at): a steady lag rate (the delivery delay growing, or the radio's clock off the
+    host's) is tracked there, not filled."""
     if len(hist) < 2 or not held:
         return None
     t_new = hist[-1][0]
+    c = floor_c(t_new)
+    floor = c + rate * t_new
     # fast: the window must be all within the hold, so the fill can still be placed
     if t_new - hist[0][0] >= FAST_W:
         wmin = min(lag(q) for q in hist if q[0] >= t_new - FAST_W)
@@ -253,7 +311,7 @@ def check_gaps(now_m):
         if ex - FAST_B >= FAST_T:
             d = ex - FAST_B
             k = len(held) - 1
-            while k > 0 and lag(held[k - 1]) >= floor + FAST_B + d / 2:
+            while k > 0 and lag(held[k - 1]) >= c + rate * held[k - 1][0] + FAST_B + d / 2:
                 k -= 1
             prev = held[k - 1][0] if k > 0 else hist[0][0]
             cause = cause_between(prev, held[k][0])
@@ -263,13 +321,17 @@ def check_gaps(now_m):
                 return f'lost {d:.1f} s, more than --gap-max-secs {a.gap_max_secs:g}; cause: {cause}'
             fill(k, int(round(d * a.rate)), cause)
             return None
-    # slow
-    if t_new - hist[0][0] >= SLOW_W - 0.5:
-        ex = min(lag(q) for q in hist) - floor
+    # slow: a step over the floor line the fast stage left (its margin, or a loss under its
+    # threshold). Until the rate is known, only a fast fill's remainder: a ramp is not a loss.
+    # One fill per window: the window's least lag may be a released block, which a fill does
+    # not move, so a second look inside the same window would fill the same excess again.
+    if (t_new - hist[0][0] >= SLOW_W - 0.5 and (t_slow is None or t_new - t_slow >= SLOW_W)
+            and (rate_ready or (t_fast is not None and t_new - t_fast <= REMAINDER_S))):
+        ex = min(lag(q) - rate * q[0] for q in hist) - c
         if ex - SLOW_B >= SLOW_T:
             d = ex - SLOW_B
             fill(0, int(round(d * a.rate)),
-                 'remainder over 30 s (a fast fill\'s margin, or the radio clock slow against the host)')
+                 'remainder over 30 s (a fast fill\'s margin, or a loss under the fast stage\'s threshold)', slow=True)
     return None
 
 def release(r):
@@ -313,7 +375,8 @@ try:
             if mono0 is None:
                 mono0 = tm - idx / a.rate
             ln = lag(r)
-            floor = ln if floor is None else min(floor, ln)
+            fl = floor_at(tm) if bins else ln    # the floor line before this block
+            track(tm, ln)
             a0 = now - idx / a.rate
             if idx <= REFINE_S * a.rate or anchor is None:
                 anchor = a0 if anchor is None else min(anchor, a0)
@@ -323,10 +386,10 @@ try:
                     hist.popleft()
                 while events and events[0][0] < tm - SLOW_W:
                     events.popleft()
-                if ln - floor > a.gap_max_secs + 0.3:     # past any queueing: certain
+                if ln - fl > a.gap_max_secs + 0.3:        # past any queueing: certain
                     held.pop()                 # after the loss: not this segment's
-                    gap_end = (f'lost about {ln - floor:.1f} s, more than --gap-max-secs {a.gap_max_secs:g}; '
-                               f'cause: {cause_between(held[-1][0] if held else tm - ln + floor, tm)}')
+                    gap_end = (f'lost about {ln - fl:.1f} s, more than --gap-max-secs {a.gap_max_secs:g}; '
+                               f'cause: {cause_between(held[-1][0] if held else tm - ln + fl, tm)}')
                 else:
                     gap_end = check_gaps(tm)
                 if gap_end:
@@ -366,7 +429,8 @@ try:
             log(f'behind wall clock {b:+.0f} ms ({grew:+.0f} in {a.report_secs:.0f} s), '
                 f'filled {filled / a.rate * 1000:.0f} ms in {len(fills)} gaps, '
                 f'write wait {wait_s * 1000:.0f} ms (max {wait_max * 1000:.0f}), '
-                f'{overflows} overflows, {timeouts} timeouts{what}')
+                f'{overflows} overflows, {timeouts} timeouts, '
+                f'lag rate {rate * 1e6:+.0f} ppm{"" if rate_ready else " (not yet known)"}{what}')
             behind_last = b; wait_s = 0.0; wait_max = 0.0
             t_report += a.report_secs
         if t_end_wall is not None and now >= t_end_wall:
@@ -400,7 +464,8 @@ finally:
         json.dump(info, open(a.record + '.json', 'w'), indent=1)
         log(f'recorded {a.record}.cs16 / .timelog.npy / .json')
     log(f'stopped ({reason}): {idx} samples ({idx / a.rate:.1f} s), {n} from the radio, '
-        f'{len(fills)} gaps filled ({filled / a.rate * 1000:.1f} ms), {overflows} overflows, {timeouts} timeouts')
+        f'{len(fills)} gaps filled ({filled / a.rate * 1000:.1f} ms), {overflows} overflows, {timeouts} timeouts, '
+        f'lag rate {rate * 1e6:+.0f} ppm')
     try:
         out.flush()
     except BrokenPipeError:
