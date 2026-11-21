@@ -86,20 +86,36 @@ extern "C" {
  * above its 95% upper bound (2 x 3.3%, 6.4%).
  * Pessimistic p10: 0.10. That is above the worst run's 6.8% but below twice it
  * (13.6%) and below its 95% upper bound (12.4%), so the floor alone does not cover
- * that run's worst case. What 0.10 rests on is the chain's own estimate (below) and
- * these measurements, 0 CONFIRMED wrong in each (tests/sim_wwv_time_decoder.c,
- * 5000 chains of 30 minutes; the CTest Slow cases): two and three times the worst
- * air run; the live run's rates and twice them; a sent 1 read as 0 at 12.4% with
- * every P read right, so the P seconds raise nothing; and 1 -> 0 stepping from 2%
- * to 12.4% at minute 4, 8, 12 or 15, so the chain's estimate lags the step. And
- * the 17 live replays of 2026-11-20/21 (tests/air/replay_events): 0 wrong. The cost
- * of 0.15 was one or more minutes to CONFIRMED on most of them (NOTES.md).
+ * that run's worst case. It rests on the chain's own estimate (below) and on
+ * measurements that show no wrong CONFIRMED but cannot separate 0.10 from 0.15:
+ * 0 wrong in 5000 chains of 30 minutes bounds the risk only below about 6e-4 per
+ * chain. The CTest Slow cases (tests/sim_wwv_time_decoder.c), 0 wrong in each: two
+ * and three times the worst air run; the live run's rates and twice them; a sent 1
+ * read as 0 at 12.4% with every P read right, so p10 stays at the floor; and a fade
+ * at minute 12 that takes 1 -> 0 from 2% to 12.4% and P read short from 2% to 21%,
+ * which the chain's estimate lags. The 17 live replays of 2026-11-20/21
+ * (tests/air/replay_events): 0 wrong. What the sims cannot show, the analytic risk
+ * per bit does (independent review, 2026-11-21): for a bit in a 30-frame chain read
+ * at the second in 66% of frames, with every P read right, a wrong CONFIRMED has
+ * probability 1.1e-6 at 1 -> 0 = 12.4%, 5.2e-6 at 15% and 2.3e-5 at 18% under the
+ * 0.10 floor, against 1.1e-7 at 12.4% and 5.7e-7 at 15% under 0.15: about ten times
+ * the risk per bit, for CONFIRMED up to 8 minutes sooner on the live replays (1-2
+ * on most; NOTES.md). The class exposed is the bits that stay constant over the
+ * chain (year, hour, DST, DUT1) under a fault that shortens the 500 ms pulses but
+ * not the P markers: nothing in the chain raises p10 then (NOTES.md, "What the 0.10
+ * floor does not cover").
  * Prior weight: the 0 -> 1 rate varies between runs as a Beta prior of weight 66
  * would; 50 leaves room for more variation between frames than between runs.
  *
  * The pessimistic rates are floors, not the model: the live RSP2 run of 2026-11-20
  * (90 minutes) read a sent 0 as 1 in 14.4%, a 1 as 0 in 15.0%, and P as 1 or 0 in
- * 20.9%, with 0 -> 1 between 10.7% and 21.4% per 10-minute block. A model that
+ * 20.9%, with 0 -> 1 between 10.7% and 21.4% per 10-minute block. The 160-minute
+ * run of 2026-11-21 (runG, 5 MHz) read a 1 as 0 in 5.2% (94/1816; 0.0-12.0% per
+ * 10-minute block), a 0 as 1 in 2.1% and P as 1 or 0 in 9.2%, by the decoder's own
+ * seconds; its chain's p10 stayed at the 0.10 floor until the last block (to 0.135,
+ * P read short 35.5%). tests/air/decode_score.py reads 19.6% there because runG's
+ * stream time slips 1 s against its UTC anchor, which moves that script's
+ * per-second truth one second after minute 110 (NOTES.md). A model that
  * trusts a symbol more than the signal deserves lowers the effective CONFIRMED
  * margin: at live rates a fixed 0.07 / 0.15 gave about 9 nats of ln 10^6, at
  * twice them 4. So each chain raises them to its own evidence: the reserved

@@ -650,11 +650,19 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     chain's p10 estimate, so it lowers that estimate early in a chain too. 0.10 is below
     twice the worst air run's 1 -> 0 (13.6%) and below its 95% upper bound (12.4%); the
     header gives what it rests on instead. Gates at 0.10 (5000 chains of 30 minutes each, 0
-    CONFIRMED wrong in every one): CTest Slow x2, x3, xlive, xlive2 (figures in the next
-    bullet); 1 -> 0 at 12.4% with P read right, seeds 21 / 31: time of day median 17 / 17,
-    p90 24 / 23 minutes; 1 -> 0 stepping from 2% to 12.4% at minute 4 / 8 / 12 / 15 (seed 31):
-    median 16 / 16 / 15 / 15, p90 22 / 21 / 20 / 20. The 12.4% case (seed 21) and the step at
-    minute 12 are CTest Slow cases (`wwv_time_decoder_sim_p10ub`, `_p10step`). The 17 live
+    CONFIRMED wrong in every one): CTest Slow x2, x3, xlive, xlive2 (time of day median / p90
+    19 / 27, 27 / >30, 26 / >30, >30 / >30 minutes); 1 -> 0 at 12.4% with P read right, seeds
+    21 / 31: median 17 / 17, p90 24 / 23; a fade that takes 1 -> 0 from 2% to 12.4% and P read
+    1 or 0 from 2% to 21% together (P -> 1 15%, P -> 0 6%), at minute 4 / 8 / 12 (seed 31):
+    median 17 / 16 / 15, p90 24 / 22 / 21. The 12.4% case (seed 21) and the fade at minute 12
+    are CTest Slow cases (`wwv_time_decoder_sim_p10ub`, `_p10step_joint`). An earlier step
+    case moved 1 -> 0 alone with P read right; it never lifted p10 off the floor, so it was
+    easier than the 12.4% case and showed no lag (review, 2026-11-21). These sims cannot tell
+    0.10 from 0.15: 0 wrong in 5000 chains bounds the risk only below about 6e-4 a chain. The
+    review's analytic risk per bit (30-frame chain, read at the second in 66% of frames, P read
+    right): at 0.10, 1.1e-6 at 1 -> 0 = 12.4%, 5.2e-6 at 15%, 2.3e-5 at 18%; at 0.15, 1.1e-7
+    and 5.7e-7. That is about ten times per bit, the price of CONFIRMED up to 8 minutes sooner;
+    the class exposed is in the bullet after next. The 17 live
     replays: 0 wrong; run_air.sh: FALSE CONFIRM 0 on all four captures, and saga plain now
     CONFIRMS its time of day once, right. Time to CONFIRMED, time of day / date (s), 0.15 ->
     0.10: run90 1919 -> 1439 / 1259 -> 1259, run90c 894 -> 774 / 954 -> 894, run90d 843 -> 723
@@ -663,10 +671,31 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     1097 -> 1097, runN1 712 -> 652 / -; run3h and run90f unchanged. In the simulator at clean
     rates (p01 2%, p10 4%, P 5%; 2000 chains) the median does not move (time of day 11, date 13
     -> 12) and the p90 falls one or two minutes.
+  - **runG (2026-11-21 09:58-12:38 UTC, 160 minutes, 5 MHz), replayed.** Time of day and date
+    first CONFIRMED at 720 s on main (0.15), 660 s at 0.10; FALSE CONFIRM 0 on both, and every
+    CONFIRMED time of day and date is right (146/146 and 147/147). By the decoder's own seconds a
+    sent 1 reads 0 in 5.2% (94/1816), a 0 reads 1 in 2.1% (111/5326) and P reads 1 or 0 in 9.2%
+    (70/759). Per 10-minute block 1 -> 0 is 0.0-12.0% and P read short 0.0-35.5%. The chain's
+    p10 stays at the 0.10 floor until minutes 150-160 (0.103-0.135, P short 35.5% of 31). In
+    minutes 140-160, 1 -> 0 is 12.0% and 11.1%, above the floor, while p10 sits at 0.10 for the
+    first ten of them: the proxy lags there, and nothing confirmed wrong.
   - **What the 0.10 floor does not cover.** A site where a sent 1 reads 0 well above 12.4% while
-    its P seconds read right: nothing in the chain raises p10 there. The simulator covers 12.4%,
-    not beyond it. On all 12 replays with frames, P read short is at or above the measured
-    1 -> 0 rate.
+    its P seconds read right: nothing in the chain raises p10 there. The bits exposed are the ones
+    constant over a chain (year, hour, DST, DUT1), under a fault that shortens the 500 ms pulses
+    but not the P markers. The simulator covers 12.4%, not beyond it. On all 12 replays with
+    frames, P read short is at or above the measured 1 -> 0 rate, and on runG over the run
+    (9.2% against 5.2%).
+  - **`tests/air/decode_score.py` misreads runG's symbol confusion (19.6% 1 -> 0, 9.0% 0 -> 1).**
+    It takes each symbol's truth from floor(out_utc0_unix + t / 1000), one anchor for the run.
+    runG's stream time slips against that anchor: the median pulse start moves from +415 ms in
+    the UTC second (minutes 0-10) to +934 ms (100-110), wraps to +47 ms (110-120) and reaches
+    +409 ms by the end, about 1 s in 160 minutes (714 GAP lines in the log). After the wrap the
+    script compares each symbol with the next second's bit: by its own method 1 -> 0 is 3.2%
+    before minute 110 and 67.5% after it, 0 -> 1 1.3% and 29.2%. Its per-minute decode scoring
+    rounds to the minute and is not affected. Not fixed: tests/air and the live host's time base
+    are outside this branch. Taking truth from the decoder's own minute start and second, or
+    rounding the pulse start to the nearest second, would fix the script; why the stream slips
+    a second against the anchor is a live-host question.
 - `tests/test_chain_synth.c` does not run the decoder: its 125 s signal holds two frames, fewer
   than CONFIRMED needs.
 - The commit "Tests: WWV time decoder on clean, corrupted and WWVB-layout frames" gives two
