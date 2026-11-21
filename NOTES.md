@@ -966,6 +966,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Commit message corrections
 
+- "BCD time detector: width from a step fit at low contrast" says start times are unchanged. The
+  next commit changes that: a fitted event starts at the box's rise.
 - "BCD time detector: a start must clear 2.37 times the low level, measured after each pulse"
   quotes run90f's "75 of 80 sampled from the noise term" and "threshold 1.40 x the low level"
   from the first 138 s, next to counts from the first 1175 s. Over 1175 s, 1010 of the 1036
