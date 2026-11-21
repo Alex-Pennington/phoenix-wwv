@@ -56,6 +56,11 @@ add_executable(test_wwv_time_decoder test_wwv_time_decoder.c)
 target_link_libraries(test_wwv_time_decoder PRIVATE phoenix_wwv)
 add_test(NAME wwv_time_decoder COMMAND test_wwv_time_decoder)
 
+# Stream time: sync, correlator and decoder give the same result at a 40 h offset
+add_executable(test_stream_offset test_stream_offset.c)
+target_link_libraries(test_stream_offset PRIVATE phoenix_wwv m)
+add_test(NAME stream_offset COMMAND test_stream_offset)
+
 add_executable(btime_frames air/btime_frames.c)
 target_link_libraries(btime_frames PRIVATE phoenix_wwv)
 
