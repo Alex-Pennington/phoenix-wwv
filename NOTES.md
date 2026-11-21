@@ -165,9 +165,10 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     11:34:44 on the false 11:34:20 tick-path marker and reads 544/584 symbols right against
     447/450. Ticks carry no minute phase; feeding them needs a lock rule that does not count them
     toward LOCKED.
-- **`sync_detector_get_frame_time()` takes the current second from `tick_gap.last_tick_ms`**, which
-  stays 0 because ticks are not fed. wwv_live's STATUS line prints `sec=1` in all 40 LOCKED lines
-  of the 2026-11-20 live run. Display only; the correlator does not use it.
+- **`sync_detector_get_frame_time()` reads the second at the last periodic check**
+  (fix/wwv-sync-decoder-cleanup). It took it from `tick_gap.last_tick_ms`, which stays 0 because
+  ticks are not fed, so it read -anchor mod 60 s: 142 of 162 LOCKED STATUS lines of run3h's console
+  say `sec=54`. Display only.
 - **Lost samples move the held phase; the tracker follows them only in part on a weak band**
   (fix/wwv-sync-drift). On run90g seg2 (15 MHz) the stream lost about 3 ms/s, up to 5 ms/s, from
   t=1330 s: 5.3 s by the end, read from the console's least-delayed lag (it matches every TMARK
@@ -205,29 +206,46 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   of false ticks and false BCD starts agreeing on one early phase is not tested; on a band
   where the BCD starts are as sparse as the ticks, a real jump goes to RECOVERING rather than
   snapping.
-- **The decoder's chain tolerance is inclusive at 1000 ms** (`fabsf(d - n * MINUTE_MS) <=
-  CHAIN_TOLERANCE_MS`), so a frame whose phase is exactly a whole second off chains. The phase-
-  reset count covers the marker and candidate cases; the tolerance is unchanged.
+- **The decoder chains frames less than 900 ms off a whole number of minutes** (was `<=` 1000
+  ms, fix/wwv-sync-decoder-cleanup), sync's `PHASE_WRONG_MS`. Residuals of consecutive frame starts
+  over the live replays and air captures: 417 of 433 under 100 ms; the largest that chain with
+  right values are 704 ms (run90g seg2) and 530 ms (run3h), both lost samples; none in 705-1045 ms.
+  Every tolerance in 705-1045 ms gives the same chains there. A phase whole seconds off with no
+  marker or candidate to show it still chains (the residual of a right phase that followed a 1 s
+  loss and of a wrong one are the same).
 - **Date DECODED wrong rose on seg2**: before, 0 right of 3 decoded; after, 9 right of 19, 10
   wrong. All DECODED (unverified); FALSE CONFIRM 0. Not traced per frame.
 - `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
   (recovery re-locks on a marker on the held phase alone).
-- **Stream times are `float` milliseconds** through sync, the correlator and the decoder. The step
-  is 0.5 ms at 90 minutes, 8 ms after 18.6 hours and 16 ms after 37 hours. With holdover, a live
-  run can stay LOCKED that long; nothing re-bases the clock.
+- **Stream times are `float` milliseconds** through the detectors, sync, the correlator and the
+  decoder. The step is 1 ms from 2.33 h, 2 ms from 4.66 h, 4 ms from 9.3 h, 8 ms from 18.6 h and 16
+  ms from 37 h; with holdover, a live run can stay LOCKED that long and nothing re-bases the clock.
+  Not changed (fix/wwv-sync-decoder-cleanup): the longest run is run3h (3 h, step 1 ms against
+  sync's 8 ms tick dead band), and the times are float where they are made (tick, marker and BCD
+  detector events, the correlator's interface), so sync or the decoder in double would not remove
+  the step. Where it bites first: a slew (half the median edge offset, 4-20 ms) added to the held
+  anchor rounds to the step, so from 18.6 h a 4-8 ms slew moves the phase 0 or 8 ms. The decoder's
+  900 ms chain tolerance and the decay's elapsed-time step tolerate a step of tens of ms. A fix is
+  one time type through every module, and the producer re-basing it.
 - **A marker within 5 s of a whole number of minutes is accepted and moves the anchor**
-  (`confirm_marker()`'s +-5 s interval test), in every state. On air every accepted marker is
-  within -45..+61 ms of :00, so it has not mattered. Under holdover a single such marker 1-5 s off
-  would move a held, correct phase.
+  (`confirm_marker()`'s +-5 s interval test), in every state. Not changed
+  (fix/wwv-sync-decoder-cleanup): with no gap-fill upstream it is the only correction for whole
+  seconds of lost samples. In the live replays, 13 marker moves of 100 ms or more, all on runs that
+  lost samples (run3h, run90d, run90g seg2); the two of a second or more (run90d -1049 ms, seg2
+  -1153 ms) match the loss (run90d 1.115 s; seg2's stream-to-UTC offset stepped -1153 ms). On the
+  runs with no loss (run90, run90c, run90f), no marker moved the phase. Once gaps are filled
+  upstream, stream time stays on UTC and a held phase should move only by the drift: a marker more
+  than a few hundred ms off would then be false, and the window can be narrowed.
 - **BFREQ still sets the width of a window with no BTIME event, and can set its pulse offset.**
   Its durations (164-983 ms over the four runs) do not cluster at 200/500/800 ms; BFREQ-only
   windows gave 7 wrong symbols at b2ede79 (not re-measured). When a window holds both, the
   pulse offset is the earlier of the two first events (`src/correlation/bcd_correlator.c`), so
   a BFREQ event can mark a window as a boundary detection. Not changed.
-- **The correlator's P positions include second 0** (`VALID_P_POSITIONS`,
-  `src/correlation/bcd_symbol_classifier.c:20`): the WWVB frame reference. WWV sends no pulse at
-  second 0, so a long event there is labelled P instead of 1. Neither is a WWV symbol; the time
-  decoder rejects a frame with P at second 0. Not seen on air.
+- **Second 0 is not a P position** (`VALID_P_POSITIONS`, `src/correlation/bcd_symbol_classifier.c`,
+  fix/wwv-sync-decoder-cleanup). It was the WWVB frame reference; 13 frames of the live replays
+  carried a P there, all on the right phase, and each was refused by the decoder. Without it,
+  run90c CONFIRMS the time of day 60 s and the date 120 s sooner; no value turned wrong. The
+  decoder still refuses a frame with P at second 0 (the WWVB layout test).
 - `bcd_window_get_second_for_timestamp()` no longer has a caller inside the correlator
   (`bcd_window_get_index()` replaced it). It is kept for its declared interface, and its unused
   `corr` parameter warns.
@@ -236,16 +254,27 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   output formats coexist (audit F2).
 - `marker_event_t.accumulated_energy` / `peak_energy` carry swapped quantities since 7e7805e. The
   only reader logs them.
-- **The confidence decay is per periodic check, and the check runs every 50 ms, not 100 ms.**
-  `CONFIDENCE_DECAY_NORMAL` 0.9999 is commented as 6% per minute; at 50 ms it is 11.3%. LOCKED
-  (0.70) therefore needs three markers close together: three consecutive minutes reach 0.73, a
-  missed minute before the second 0.71, but a missed minute between the second and the third
-  only 0.69, and the fourth marker is needed.
-- **Acquisition now takes the first marker plus two minutes in every replay** (run90, run90c,
-  smoke, live15: LOCKED 118-120 s after TENTATIVE). A candidate never starts a phase, so the
-  minute before the first marker is lost even when it holds a late-started marker on the phase
-  the marker then sets (run90 00:31, live15 13:08). Keeping recent candidates and applying them
-  when the first marker arrives would save a minute there; not done.
+- **Confidence decays on stream time** (fix/wwv-sync-decoder-cleanup): 0.9999 per 100 ms, applied
+  for the time since the last periodic check. It was per check, every 50 ms (11.3% a minute), and
+  a missed minute between the second and third markers left 0.69, short of LOCKED. In the replays
+  run90g seg1 (markers 60 s then 180 s apart) never locked and now locks at 264 s; seg2 locked at
+  435 s and now at 373 s. The other runs are unchanged.
+- **Acquisition takes the first marker plus two minutes** (run90, run90c, run90d, run90f, run3h:
+  LOCKED 119-120 s after TENTATIVE). Locking on two markers a minute apart (threshold 0.62 against
+  0.70, measured, not changed) locks 58-180 s sooner in six of the seven replays (seg2 unchanged)
+  and brings first CONFIRMED forward on some parts (run3h time of day 727 -> 667 s, date 1087 ->
+  1027 s; run90c date 894 -> 774 s; run90d date 1023 -> 963 s), but delays others (run90 leap
+  second warning 899 -> 1199 s; run90f, whose only CONFIRMED part is the LSW, 696 -> 756 s), and
+  adds wrong DECODED values (run3h and run90c time of day 1 each, seg1 DUT1 3). Why the early
+  frames delay a part was not traced. A candidate never starts a phase, so the minute
+  before the first marker is lost even when it holds a late-started marker on the phase the
+  marker then sets (run90 00:31, live15 13:08).
+- **A candidate shows whole seconds by its end reading only** (fix/wwv-sync-decoder-cleanup). A
+  tick-path gap-zone run that starts on a tick has its start reading on a whole second by
+  construction: on the tick-gate branch, kiwi agc's 128 ms run at 462469 ms (start reading 4 s +
+  59 ms off) sent a right phase to RECOVERING and lost a minute (tod 6/6, now 7/7). The run90d-shaped
+  drops in test_sync_phase_track still reach RECOVERING through a candidate. A noise run whose
+  end lands within 60 ms of a whole second 1-5 s off still does; none did in the replays.
 
 ## Time decoder (`src/decode/wwv_time_decoder.c`)
 
@@ -314,11 +343,21 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   0 in 6.4% against 17.5-18.1%. Per second of the minute the 0 -> 1 spread is 1.37 times
   binomial, per frame 1.48. The gate's rates are pooled over contexts, so it is not optimistic on
   that count, but runs of errors on one bit are only as frequent as chance makes them.
-- **A frame opens at stream time 0.0 when a run ends.** On saga plain the last symbol carries
-  `minute_start_ms` 0 and the decoder emits a `BCDS,FRAME` and `BCDS,UTC` line for a frame starting
-  at 0.0, which `decode_score.py` scores as 12:10 (all NONE). Not traced.
-- **The pessimistic margin is not reported.** `BCDS,UTC` carries the nominal margin only, so a
-  part at 24 nats nominal that does not CONFIRM gives no reason on the line.
+- **The correlator's old destroy path sent its last symbol with `minute_start_ms` 0**
+  (`bcd_correlator_destroy()` -> the old static `close_window()`). On saga plain and agc it closed
+  the open frame early and opened one at 0.0 (`BCDS,FRAME,0.0`, scored as 12:10, all NONE). The
+  decoder ignores a symbol with no minute anchor (`minute_start_ms` <= 0)
+  (fix/wwv-sync-decoder-cleanup); fix/wwv-bcd-corr-cleanup fixed the destroy path. The run's last
+  partial minute is no longer reported (the air captures report 6 minutes, not 7).
+- **`BCDS,UTC` carries each part's pessimistic margin** (five trailing fields,
+  fix/wwv-sync-decoder-cleanup), negative when the pessimistic model's best value differs.
+- **CONFIRMED is margin-bound, with no lag from the state rules.** On every live replay, each part
+  is CONFIRMED the minute its nominal and pessimistic margins first both reach ln 10^6, and the
+  pessimistic one is the later (run3h: time of day 13.1 then 15.6 nats at frames 9 and 10, date 11.9
+  then 14.0 at frames 15 and 16). A decoder-side gain means a different pessimistic model or margin,
+  that is, the false-confirm gate itself. On run3h the date margin rises about 1.8 nats a frame under
+  the pessimistic model, about the weight of one sent 0 at the floor rates (ln(0.15 / 0.93) =
+  -1.82); which bit was not traced.
 - `tests/test_chain_synth.c` does not run the decoder: its 125 s signal holds two frames, fewer
   than CONFIRMED needs.
 - The commit "Tests: WWV time decoder on clean, corrupted and WWVB-layout frames" gives two
@@ -385,6 +424,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   prev_end=`; the marker detector prints `MARKER short run` (with flank and `(candidate)`) and,
   every 10 s, `MARKER block peak`; `MINUTE MARKER` gained `peak/baseline`. A marker-detector
   short run takes no cooldown.
+- **fix/wwv-sync-decoder-cleanup.** `sync_detector_set_decay_normal()` / `_recovering()` rates are
+  per 100 ms of stream time, not per periodic check. `sync_detector_get_frame_time()` reports the
+  second at the last periodic check. `sync_detector_marker_candidate()`'s whole-second rule reads
+  `lead_b_ms` (the end reading) only. `wwv_td_result_t` gained `tod_pmargin`, `date_pmargin`,
+  `dut1_pmargin`, `dst_pmargin`, `lsw_pmargin`, and `BCDS,UTC` the same five trailing fields
+  (`docs/UDP_TELEMETRY_OUTPUT_PROTOCOL.md`). `wwv_time_decoder_symbol()` ignores a symbol with
+  `minute_start_ms` <= 0. `VALID_P_POSITIONS` no longer holds second 0.
 
 ## Live host (`apps/wwv_live.c`, `scripts/wwv_rsp2_live.sh`)
 
