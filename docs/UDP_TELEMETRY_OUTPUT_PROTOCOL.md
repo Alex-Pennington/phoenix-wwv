@@ -421,7 +421,7 @@ value and the best value that differs in that part. Each part has its own state:
 |-------|---------|
 | `NONE` | No value leads by ln 10 (2.3 nats), or only one frame has evidence. The value field is dashes |
 | `DECODED` | Leads by ln 10: the best reading, **not verified** |
-| `CONFIRMED` | Leads by ln 10^4 (9.2 nats) under both the nominal model and a pessimistic one (a sent 1 read as 0 three times as often), with the same value. The previous minute of the chain was `DECODED` or better with the value this one steps from. The history holds two P markers. For the date and the status bits, the time of day is reported this minute |
+| `CONFIRMED` | Leads by ln 10^6 (13.8 nats, `WWV_TD_DEFAULT_CONFIRMED`) under both the nominal model and a pessimistic one, with the same value. The pessimistic 0->1 and 1->0 rates are floored at 0.07 and 0.15 and rise to what the chain's own reserved seconds and P markers show. The previous minute of the chain was `DECODED` or better with the value this one steps from. The history holds two P markers. For the date and the status bits, the time of day is reported this minute |
 | `PREDICTED` | Not `CONFIRMED` now: the last `CONFIRMED` value of this chain, carried forward by the elapsed minutes, with no `DECODED` reading against it. The date and status bits are carried only while it is known whether 00:00 UTC was crossed |
 
 A `DECODED` reading that disagrees with a carried `CONFIRMED` value is a conflict. It is counted,
