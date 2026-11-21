@@ -268,8 +268,32 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Sync and correlator
 
-- `sync_detector_full_reset()` does not clear `last_confirmed_ms`, so a stale anchor survives a
-  reset. The re-anchor rule mitigates it.
+- **`sync_detector_full_reset()` clears the anchor** (fix/wwv-reset-guards): `last_confirmed_ms`,
+  `prev_confirmed_ms`, `last_rejected_ms`, `last_confirm_weak`, `minute_anchor_ms`,
+  `phase_support_ms` and `good_intervals`. Run totals (`confirmed_count`, `phase_epoch`,
+  `phase_resets`, `phase_stats`) stay. The reset's only caller is the retention expiry, so the
+  anchor it dropped was at least 80 minutes old (20 min holdover, then 60 min retention). Kept,
+  it judged the first marker after the reset: a marker more than 5 s off a whole minute of it
+  was rejected until two in a row re-anchored, and the move from it was counted as a phase break,
+  and as a phase reset at 900 ms or more. `tests/test_sync_full_reset.c` reacquires 2 h after
+  the reset on the old phase, +2.3 s and +20 s from it. Without the fix, +2.3 s counted a break
+  and a reset, and +20 s rejected the first marker and locked one marker later than a fresh
+  detector.
+  - **Every reader of `last_confirmed_ms`, after a reset:** `confirm_marker()` (interval test,
+    re-anchor, `note_phase_move()`; 0 means first marker); `sync_detector_marker_candidate()`
+    returns in ACQUIRING before it reads it; `edge_offset()`, `track_phase()`,
+    `sync_detector_second_edge()` and the holdover test in `sync_detector_periodic_check()` run only
+    while LOCKED; the recovery re-lock only in RECOVERING; `bcd_window_get_minute_anchor()` reads
+    it only while LOCKED; `log_confirmed_marker()` and `sync_detector_broadcast_state()` are
+    telemetry. None reads the cleared value as an anchor.
+  - **The decoder's chain does not span a reset either way.** Its newest frame is at least 60
+    minutes after the last LOCKED frame, and `close_frame()` drops history whose chain minute is
+    `max_frames` (60) or more older.
+  - **No replay reaches a full reset.** All 36 live logs in `~/wwv-live/run*/` replay to
+    byte-identical output against main, and the four air runs (`tests/air/run_air.sh`) are
+    identical but for wall-clock strings.
+  - **Open: TENTATIVE has no timeout,** so a TENTATIVE sync with no further marker keeps its
+    anchor indefinitely, and the next marker is judged against it however old it is. Not changed.
 - The sync detector gets no per-tick lock evidence (`sync_detector_tick_event()`): neither the
   manager nor the harness ever fed it, so tick-hole evidence never arrives. Kept that way so the
   scored chain did not change. Ticks and BCD time-pulse leading edges now reach sync through
@@ -412,8 +436,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     anchor, is taken only while LOCKED, so it stays under 20 min (`SYNC_HOLDOVER_MS`,
     `src/sync/sync_detector.c:50`). A float would do there; double is kept for uniformity.
     `minute_wrap()` reaches about 80 min in recovery: an anchor up to 20 min old at the loss, then
-    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has no bound, because
-    `sync_detector_full_reset()` keeps `last_confirmed_ms`.
+    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has the same bound while
+    LOCKED or RECOVERING, since `sync_detector_full_reset()` now clears `last_confirmed_ms`
+    (fix/wwv-reset-guards). In TENTATIVE it has none: that state has no timeout.
   - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
     routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
@@ -422,9 +447,24 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   - **`tests/test_detector_offset.c` runs the tick, marker and BCD detectors on 125 s of samples**
     from a frame count of 20 x 1024 ms and from that plus 40 h. All 267 event stamps of the 40 h
     run are the base run's plus exactly 144,000,000 ms. With `wwv_frames_to_ms()` returning float,
-    255 of 267 miss, by up to 7.69 ms. Both runs start past the startup guards
-    (`MARKER_MIN_STARTUP_MS`, `BCD_FREQ_MIN_STARTUP_MS`). Those key on stream time from 0, not
-    frames since start, so a detector started at a later frame count skips them.
+    255 of 267 miss, by up to 7.69 ms. The base run starts at frame 0 (it started at 20.48 s,
+    past the startup guards, until those counted from `start_frame`).
+  - **The marker and BCD freq startup guards count from `start_frame`** (fix/wwv-reset-guards).
+    They keyed on stream time from 0 (`MARKER_MIN_STARTUP_MS` 10 s, `BCD_FREQ_MIN_STARTUP_MS`
+    5 s), while warmup beside them counted from `start_frame`, so a detector started at a later
+    frame count had no guard. **No live path starts or resets a detector at a nonzero frame
+    count:** `wwv_live` creates the manager once, at frame 0; a reopen in `wwv_rsp2_live.sh` starts
+    a new `wwv_live` process; `--anchor-in` sets only the UTC anchor; a filled gap
+    (`wwv_detector_manager_mark_gap()`) only records a span and resets no detector; no detector
+    has a reset function, and nothing calls the detectors' `set_enabled`. Only the test hooks
+    (`tests/detector_offset_start_*.c`) set `start_frame`. So the change alters no live or
+    replay output; it removes a trap for the first code that starts a detector late.
+    `tests/test_detector_startup_guard.c` runs both detectors from frame 0 and from about 1 h
+    (87,890 x 40.96 ms, whole frames for both) on markers and 100 Hz bursts inside the guards: the
+    same events, none inside either guard. On the old guards the 1 h run reports a marker at
+    4.3 s.
+  - **The tick and BCD time detectors have no stream-time startup guard;** their warmup counts
+    from `start_frame`. Not checked beyond that grep: BCD time is another branch's file.
   - **Measured against the float chain, at short run times:** on the four captures the symbol
     sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
     ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
