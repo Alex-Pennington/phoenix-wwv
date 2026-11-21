@@ -111,7 +111,7 @@ scripts/wwv_rsp2_live.sh --secs 5400 --log run.log --timebase run.json
 ### Run length, stalls and reopen
 
 ```
-scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
+scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 20] ...
 ```
 
 - **`--secs N` is wall clock.** The run ends N seconds after it starts, however many samples
@@ -197,7 +197,7 @@ sample's index stays its true time since the start. Details and margins are in
   radio, so a fill lands where the loss was. The least is 2.5 s: a smaller value is refused
   unless `--no-fill` is given. The wrapper passes `--anchor-out FILE` to rsp2_stream and
   `--anchor-in FILE` to `wwv_live` on every segment. rsp2_stream writes the file (JSON:
-  `in_sample0_unix`, `hold_s`) before the first sample past 10 s leaves. `wwv_live` reads it when
+  `source`, `in_sample0_unix`, `hold_s`, `anchor`) before the first sample past 10 s leaves. `wwv_live` reads it when
   its own 10 s refinement ends, and takes the anchor measured before the hold. Its arrival lag
   then leaves the hold out:
 
@@ -236,9 +236,10 @@ sample's index stays its true time since the start. Details and margins are in
   GAPEND start=<ms> len=<ms> tick= tmark= mark= cand= btime= bfreq=
   ```
 
-  At the end of the input `wwv_live` closes every open span and prints
-  `GAPS     N filled gaps, X ms in all`. `start` is a detector time in ms. `tests/air/replay_events` honours them (`GAPDROPS` at the end
-  equals the sum of the `GAPEND` counts).
+  At the end of the run `wwv_live` closes every open span and, when there was a fill, prints
+  `GAPS     N filled gaps, X ms in all`. `start` is a detector time in ms.
+  `tests/air/replay_events` honours them (`GAPDROPS` at the end equals the sum of the `GAPEND`
+  counts).
 - **What normal looks like.** No fills with cause `upstream, no report`. `behind wall
   clock` stays within about ±30 ms with `filled 0 ms in 0 gaps`. A few-ms `remainder over
   30 s` fill now and then is the radio's clock against the host's. On 2026-11-21 01:37 UTC
@@ -253,9 +254,9 @@ sample's index stays its true time since the start. Details and margins are in
   against `samples_radio`. `tests/live/stream_fake_soapy.py` replays a recording's arrival
   times through the fill offline.
 
-Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when an
-`auto` scan finds no band or fails twice (first scan or re-scan), 4 after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else
-`wwv_live`'s or rsp2_stream's own.
+Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when the
+first `auto` scan finds no band or a scan (first or re-scan) fails again after the restart, 4
+after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_stream's own.
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
@@ -318,9 +319,10 @@ signal reaches its traps at once. Options (all `auto` only):
   every band: 240 + 300 = 540 s at the defaults.
 
 A scan fails when it runs past the bound (`SCAN: the band scan ran past its N s bound; stopping
-it`) or exits 5 (the sdrplay API failing, from `wwv_band_scan.py`). The wrapper then stops the
-scan and any of its processes left after it (SIGKILL), stops `sdrplay.service` and starts it
-again (memory compacted first), and scans once more. If that fails too, the run logs `not going
+it`) or exits 5 (the sdrplay API failing, from `wwv_band_scan.py`). Past the bound, the wrapper
+stops the scan (SIGTERM, then SIGKILL after 10 s) and kills (SIGKILL) any of its child processes
+still running. On either failure it stops `sdrplay.service`, starts it again (memory compacted
+first), and scans once more (`SCAN: restarting sdrplay.service and scanning once more`). If that fails too, the run logs `not going
 live` and ends with exit status 3. That holds for the first scan and for a band switch's re-scan
 (the history then reads `re-scan for segment K: <reason>`). A scan that ends without failing but
 finds no band logs `the band scan found no band (exit N)`. At the first scan that is exit status
