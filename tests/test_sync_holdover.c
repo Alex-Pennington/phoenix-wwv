@@ -11,6 +11,8 @@
  * 3. In RECOVERING, a marker off the held phase (25 s) does not re-lock.
  * 4. With no marker at all, the retention window (60 minutes from the loss)
  *    ends in ACQUIRING.
+ * 5. Confidence decays on stream time: one missed minute before the third
+ *    marker still locks, at 50 ms or 1000 ms check intervals.
  */
 #include <stdio.h>
 #include <math.h>
@@ -196,6 +198,35 @@ int main(void) {
           "retention: ACQUIRING 81 minutes after the last marker (state %.0f, resets %.0f)",
           at_end, n_acq_after_lock);
     sync_detector_destroy(sd);
+
+    /* 5. The confidence decay runs on stream time, not per check. Markers at
+     *    minutes 0, 1 and 3 (minute 2 missed) lock at the third whatever the
+     *    check interval; at 0.9999 per 50 ms check they reached only 0.69. */
+    const float step_ms[2] = { 50.0f, 1000.0f };
+    float conf_at_end[2];
+    for (int k = 0; k < 2; k++) {
+        sd = sync_detector_create(NULL);
+        sync_detector_set_state_callback(sd, on_state, NULL);
+        reset_counts();
+        const int minutes[3] = { 0, 1, 3 };
+        int next = 0;
+        for (float now = 0.0f; now <= 200000.0f; now += step_ms[k]) {
+            if (next < 3 && now >= 400.0f + 60000.0f * minutes[next] + 800.0f) {
+                g_now = now;
+                sync_detector_tick_marker(sd, 400.0f + 60000.0f * minutes[next], 800.0f, 1.0f);
+                next++;
+            }
+            g_now = now;
+            sync_detector_periodic_check(sd, now);
+        }
+        conf_at_end[k] = sync_detector_get_confidence(sd);
+        check(n_lock == 1 && first_lock_ms >= 180400.0f && first_lock_ms <= 185000.0f,
+              "decay: one missed minute, LOCKED at the third marker (%.0f ms, checks every %.0f ms)",
+              first_lock_ms, step_ms[k]);
+        sync_detector_destroy(sd);
+    }
+    check(fabsf(conf_at_end[0] - conf_at_end[1]) < 0.01f,
+          "decay: same confidence at 50 ms and 1000 ms checks (%.3f / %.3f)", conf_at_end[0], conf_at_end[1]);
 
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;
