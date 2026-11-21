@@ -167,6 +167,49 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
   It appends what it did to the wrapper's stderr, as `[wwv_rsp2_live guard]` lines ending
   with the unit's state. The wrapper's own cleanup stops the guard last.
 
+### Lost samples: the gap fill
+
+SoapySDRPlay3 0.5.3 passes on no sign of lost samples (it drops the API's
+`firstSampleNum` and reset flag and never sets `timeNs`), so without help a loss
+upstream shortens the stream and every later sample is early by what was lost. rsp2_stream
+detects losses from arrival time: arrival (CLOCK_MONOTONIC) minus stream time has a floor,
+and a loss raises it by exactly the samples lost. It fills each loss with zeros, so a
+sample's index stays its true time since the start. Details and margins are in
+`scripts/rsp2_stream.py`'s header.
+
+- **Hold.** Output runs `--hold-secs` (3 s) behind the radio, so a fill lands where the loss
+  was. `wwv_live --anchor-in` takes the anchor rsp2_stream measured before the hold (the
+  wrapper passes it by default):
+
+  ```
+  ANCHOR   input sample 0 = 2026-11-21T01:37:10.400733Z: rsp2_stream: least-delayed block over the first 10 s, before its 3.000 s hold line
+  ```
+
+- **Fills.** Each one is logged by rsp2_stream, then by `wwv_live`, which takes a run of
+  exact zeros (0.5 ms or more) out as a gap. The manager holds every detector event that
+  overlaps the span back from sync, the correlator and the decoder, so those seconds become
+  erasures. `GAPEND` gives the counts held back:
+
+  ```
+  [rsp2_stream] GAP <UTC> at stream S s (sample N): X ms filled with zeros; cause: ...
+  GAP      start=<ms> len=<ms>
+  GAPEND   start=<ms> len=<ms> tick= tmark= mark= cand= btime= bfreq=
+  ```
+
+  The chain log carries the `GAP` and `GAPEND` lines too, and `tests/air/replay_events`
+  honours them (`GAPDROPS` at the end equals the sum of the `GAPEND` counts).
+- **What normal looks like.** No fills with cause `upstream, no report`. `behind wall
+  clock` stays within about ±30 ms with `filled 0 ms in 0 gaps`. A few-ms `remainder over
+  30 s` fill now and then is the radio's clock against the host's. On 2026-11-21 01:37 UTC
+  (5 MHz) the first 6 minutes showed 0 fills and `behind` between −20 and +1 ms.
+- **Too big.** A loss over `--gap-max-secs` (10 s) ends the stream with exit status 76, and
+  the wrapper reopens it as a new segment (`REOPEN: ... rsp2_stream lost more samples than
+  it fills`).
+- **`--no-fill`** (rsp2_stream) keeps the old behaviour: no hold and no fill.
+- With `--record PREFIX`, `PREFIX.json` lists the fills (`gaps`), `hold_s`, and `samples`
+  against `samples_radio`. `tests/live/stream_fake_soapy.py` replays a recording's arrival
+  times through the fill offline.
+
 Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when an
 `auto` scan finds no band, 4 after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else
 `wwv_live`'s or rsp2_stream's own.
