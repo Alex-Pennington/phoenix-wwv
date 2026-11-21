@@ -22,6 +22,11 @@
  *    window), or from the late start after a P (within 250 ms of the second).
  *    Again with every 0's event (but those after a P) ending 200 ms late: a
  *    trailing-edge width of about 400 ms must read 0 (TRAIL_ZERO_MAX_MS).
+ * 6b. Hidden start: before each 1 (not after a P), an event on the low level ends
+ *    at the second, so the 200 ms cooldown hides the pulse's rise and the next
+ *    event starts at +200 ms, inside the pulse, and ends at its trailing edge
+ *    (+540 ms). Its own width (340 ms) reads 0; the window must read 1, from
+ *    the trailing edge (source TRAIL). The other seconds are clean.
  * 7. Time-driven: events delivered at pulse end, with bcd_correlator_periodic_check()
  *    every 50 ms after sync's. Seconds 5-8 and 0 carry no pulse: each must be
  *    emitted once, as NONE; every other second once, with its symbol. Then the
@@ -137,6 +142,52 @@ static void run_chain(const char *name, float zero_late) {
     int pass = ok == n && edges > 40;
     printf("%-4s %-50s %d/%d symbols right, %d from a trailing edge\n",
            pass ? "ok" : "FAIL", name, ok, n, edges);
+    if (!pass) fails++;
+    bcd_correlator_destroy(c);
+    sync_detector_destroy(sd);
+}
+
+static const char *srcs[60];
+static void on_sym_src(const bcd_symbol_event_t *e, void *u) {
+    on_sym(e, u);
+    if (e->second >= 0 && e->second < 60) srcs[e->second] = e->source;
+}
+
+static void run_hidden(void) {
+    const char *name = "pulse start hidden by a cooldown";
+    sync_detector_t *sd = sync_detector_create(NULL);
+    for (int m = 0; m < 4; m++) {
+        sync_detector_tick_marker(sd, 400.0f + 60000.0f * m, 810.0f, 100.0f);
+        sync_detector_periodic_check(sd, 450.0f + 60000.0f * m);
+    }
+    float a = sync_detector_get_last_marker_ms(sd);
+    bcd_correlator_t *c = bcd_correlator_create(NULL);
+    bcd_correlator_set_sync_source(c, sd);
+    bcd_correlator_set_callback(c, on_sym_src, NULL);
+    memset(got, 0, sizeof got);
+    memset(srcs, 0, sizeof srcs);
+    int hidden = 0;
+    for (int s = 1; s <= 59; s++) {
+        float sec = a + 1000.0f * s;
+        if (truth(s) == '1' && s % 10 != 0) {
+            bcd_correlator_time_event(c, sec - 320.0f, 320.0f, 1.0f);  /* low level */
+            bcd_correlator_time_event(c, sec + 200.0f, 340.0f, 1.0f);  /* to +540 */
+            hidden++;
+        } else {
+            bcd_correlator_time_event(c, sec + 40.0f, width(truth(s), s), 1.0f);
+        }
+    }
+    int ok = 0, n = 0, trail = 0;
+    for (int s = 1; s <= 58; s++) {       /* window 59 is still open */
+        n++;
+        if (srcs[s] && strcmp(srcs[s], "TRAIL") == 0) trail++;
+        if (got[s] == truth(s)) ok++;
+        else printf("     %s: second %d got %c want %c (%s)\n",
+                    name, s, got[s] ? got[s] : '-', truth(s), srcs[s] ? srcs[s] : "-");
+    }
+    int pass = ok == n && trail == hidden;
+    printf("%-4s %-50s %d/%d symbols right, %d/%d hidden starts read from the end\n",
+           pass ? "ok" : "FAIL", name, ok, n, trail, hidden);
     if (!pass) fails++;
     bcd_correlator_destroy(c);
     sync_detector_destroy(sd);
@@ -262,6 +313,7 @@ int main(void) {
     run_reanchor();
     run_chain("chain of events started on the low level", 0.0f);
     run_chain("chain, a 0's event ends 200 ms late", 200.0f);
+    run_hidden();
     run_timed();
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;

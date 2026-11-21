@@ -61,6 +61,22 @@ extern "C" {
  * 460 ms (0/1 errors there: 202 at a 350 ms cut, 102 at 450). */
 #define TRAIL_ZERO_MAX_MS       450.0f
 
+/* A pulse start hidden by a cooldown. BTIME takes a 200 ms cooldown after each
+ * event (bcd_time_state_machine.c); an event that ends less than
+ * HIDDEN_PREV_END_MS before the second hides the pulse's rise (sent at +30 ms),
+ * and the detector starts the next event when the cooldown ends, inside the
+ * pulse. That event's start is late, its end is the pulse's trailing edge. A
+ * window whose first event starts within HIDDEN_GAP_MIN_MS..HIDDEN_GAP_MAX_MS of
+ * such an end (the cooldown in whole frames, plus two frames; measured gaps
+ * start at 195 ms), and at least HIDDEN_START_MIN_MS after the second, takes its
+ * width from that end, as EDGE does (source TRAIL). The leading edge of a clean
+ * pulse lands at +44..+48 ms (p10-p90 within 5 ms); after a P the cooldown ends
+ * at +35..+55 ms, at the rise, and that event is not late. */
+#define HIDDEN_PREV_END_MS      170.0f
+#define HIDDEN_GAP_MIN_MS       190.0f
+#define HIDDEN_GAP_MAX_MS       210.0f
+#define HIDDEN_START_MIN_MS     60.0f
+
 /* Phase 8: Valid P-marker positions (WWV BCD time code format) */
 extern const int VALID_P_POSITIONS[];
 
@@ -95,7 +111,9 @@ struct bcd_correlator {
     int time_event_count;
     float time_first_ms;
     float time_first_dur_ms;        /* reported width of the window's first event */
+    float time_first_prev_end_ms;   /* end of the BTIME event before it; NAN if none */
     float time_last_ms;
+    float time_prev_end_ms;         /* end of the last BTIME event seen; NAN if none */
 
     float freq_energy_sum;
     float freq_duration_sum;

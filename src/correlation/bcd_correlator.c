@@ -40,6 +40,7 @@ bcd_correlator_t *bcd_correlator_create(const char *csv_path) {
 
     corr->state = BCD_CORR_ACQUIRING;
     corr->start_time = time(NULL);
+    corr->time_prev_end_ms = NAN;
     corr->window_open = false;
 
     if (csv_path) {
@@ -102,12 +103,15 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
     /* Its end may be a later window's trailing edge, even when its own window
      * is already emitted */
     bcd_window_note_edge(corr, timestamp_ms, timestamp_ms + duration_ms);
+    float prev_end_ms = corr->time_prev_end_ms;
+    corr->time_prev_end_ms = timestamp_ms + duration_ms;
     if (!accepted) return;
 
     /* Accumulate into current window */
     if (corr->time_event_count == 0) {
         corr->time_first_ms = timestamp_ms;
         corr->time_first_dur_ms = duration_ms;
+        corr->time_first_prev_end_ms = prev_end_ms;
     }
     corr->time_last_ms = timestamp_ms;
     corr->time_energy_sum += peak_energy;
