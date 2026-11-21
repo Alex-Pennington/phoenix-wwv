@@ -39,7 +39,7 @@ extern "C" {
 /* Warmup */
 #define MARKER_WARMUP_FRAMES        200     /* ~1 second warmup */
 #define MARKER_WARMUP_ADAPT_RATE    0.02f   /* Faster adaptation during warmup */
-#define MARKER_MIN_STARTUP_MS       10000.0f /* No markers in first 10 seconds */
+#define MARKER_MIN_STARTUP_MS       10000.0f /* No markers in the first 10 s from start_frame */
 
 /* Tone purity. A WWV minute marker is a pure 1000 Hz tone. Through the 256-point
  * Hann window its energy sits in the centre bin (5, 977 Hz) and leaks about 0.04

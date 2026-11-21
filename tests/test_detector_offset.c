@@ -4,12 +4,11 @@
  * One synthetic 125 s signal (the WWV format of test_chain_synth.c, with a 300 ms
  * 1000 Hz burst at :45 for a tick-path candidate) goes through the channel filters
  * into fresh tick, marker, BCD time and BCD freq detectors, twice. Each run starts
- * the detectors at a frame count: a base of 20 x 1024 ms, then that base plus 40 h.
- * Both are whole frames at 5.12 ms (tick, marker, BCD time) and at 40.96 ms (BCD
- * freq). The base puts both runs past the detectors' startup guards, which key on
- * stream time from 0 (MARKER_MIN_STARTUP_MS 10 s, BCD_FREQ_MIN_STARTUP_MS 5 s), so
- * the two runs see the same detector logic. Warmup counts from start_frame and is
- * the same in both.
+ * the detectors at a frame count: 0, then 40 h. Both are whole frames at 5.12 ms
+ * (tick, marker, BCD time) and at 40.96 ms (BCD freq). Warmup and the startup
+ * guards (MARKER_MIN_STARTUP_MS 10 s, BCD_FREQ_MIN_STARTUP_MS 5 s) count from
+ * start_frame, so the two runs see the same detector logic
+ * (test_detector_startup_guard.c tests the guards themselves).
  *
  * Every event's stream times (tick, tick-path marker, marker detector, tick-path
  * candidate, BTIME; marker candidates and BFREQ too, though this signal makes none)
@@ -28,7 +27,7 @@
 
 #define FS        50000.0
 #define SECONDS   125
-#define BASE_MS   (20.0 * 1024.0)
+#define BASE_MS   0.0
 #define OFFSET_MS (40.0 * 3600.0 * 1000.0)
 
 typedef struct { char kind; int nt; double t[4]; float w; } ev_t;

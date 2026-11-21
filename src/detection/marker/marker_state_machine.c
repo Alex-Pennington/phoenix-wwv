@@ -153,9 +153,10 @@ void marker_state_machine_run(marker_detector_t *md) {
         return;
     }
 
-    /* No markers in first few seconds - baseline still stabilizing */
-    wwv_time_ms_t timestamp_ms = MARKER_FRAMES_TO_MS(md->frame_count);
-    if (timestamp_ms < MARKER_MIN_STARTUP_MS) {
+    /* No markers in the detector's first few seconds - baseline still
+     * stabilizing. Counted from start_frame, as warmup is, not from stream time
+     * 0: the same at frame 0, and a detector started later settles as long. */
+    if (MARKER_FRAMES_TO_MS(frame - md->start_frame) < MARKER_MIN_STARTUP_MS) {
         md->baseline_energy += md->noise_adapt_rate * (md->accumulated_energy - md->baseline_energy);
         md->threshold = md->baseline_energy * md->threshold_multiplier;
         track_purity_background(md, md->noise_adapt_rate);
