@@ -53,6 +53,14 @@ extern "C" {
 #define EDGE_MIN_END_MS         100.0f
 #define EDGE_LEAD_MS            40.0f
 
+/* A width read from such a trailing edge is a 0 up to TRAIL_ZERO_MAX_MS, not
+ * BCD_SYMBOL_ZERO_MAX_MS. The event started on the low level, so its mean is
+ * low; after a 0 the low level often stays above half of it and the event ends
+ * late. Over the live replays and captures the trailing-edge widths of sent 1s
+ * start at 470-480 ms, while sent 0s outnumber them in every 10 ms bin up to
+ * 460 ms (0/1 errors there: 202 at a 350 ms cut, 102 at 450). */
+#define TRAIL_ZERO_MAX_MS       450.0f
+
 /* Phase 8: Valid P-marker positions (WWV BCD time code format) */
 extern const int VALID_P_POSITIONS[];
 
@@ -213,6 +221,11 @@ bool bcd_symbol_is_valid_p_position(int second);
  * Applies position gating for P-markers
  */
 bcd_corr_symbol_t bcd_symbol_classify_duration(float duration_ms, int second);
+
+/**
+ * Classify a width read from a trailing edge (see TRAIL_ZERO_MAX_MS)
+ */
+bcd_corr_symbol_t bcd_symbol_classify_trailing(float width_ms, int second);
 
 #ifdef __cplusplus
 }

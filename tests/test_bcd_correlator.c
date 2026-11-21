@@ -20,6 +20,8 @@
  *    cooldown ends inside the next pulse, which then starts late. Every window's
  *    symbol must come from the trailing edge in it (a pulse offset before the
  *    window), or from the late start after a P (within 250 ms of the second).
+ *    Again with every 0's event (but those after a P) ending 200 ms late: a
+ *    trailing-edge width of about 400 ms must read 0 (TRAIL_ZERO_MAX_MS).
  * 7. Time-driven: events delivered at pulse end, with bcd_correlator_periodic_check()
  *    every 50 ms after sync's. Seconds 5-8 and 0 carry no pulse: each must be
  *    emitted once, as NONE; every other second once, with its symbol. Then the
@@ -98,8 +100,9 @@ static void on_sym_off(const bcd_symbol_event_t *e, void *u) {
     if (e->second >= 0 && e->second < 60) offs[e->second] = e->pulse_offset_ms;
 }
 
-static void run_chain(void) {
-    const char *name = "chain of events started on the low level";
+/* zero_late: a sent 0's carried event ends this much after the pulse (the low level
+ * after it stays above half the event's mean), except after a P */
+static void run_chain(const char *name, float zero_late) {
     sync_detector_t *sd = sync_detector_create(NULL);
     for (int m = 0; m < 4; m++) {
         sync_detector_tick_marker(sd, 400.0f + 60000.0f * m, 810.0f, 100.0f);
@@ -116,6 +119,7 @@ static void run_chain(void) {
     for (int s = 1; s <= 59; s++) {
         float pulse = a + 1000.0f * s + 40.0f;
         float end = pulse + width(truth(s), s);
+        if (truth(s) == '0' && s % 10 != 0 && prev_end >= 0.0f) end += zero_late;
         /* the detector is idle again 15 ms (three low frames) plus 200 ms after
          * the previous event's end */
         float start = (prev_end < 0.0f) ? pulse : prev_end + 215.0f;
@@ -256,7 +260,8 @@ int main(void) {
     run("pulses start 40 ms before the anchor second", 0, -40.0f, 0);
     run("minute after the last marker (stale anchor)", 0, 20.0f, 1);
     run_reanchor();
-    run_chain();
+    run_chain("chain of events started on the low level", 0.0f);
+    run_chain("chain, a 0's event ends 200 ms late", 200.0f);
     run_timed();
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);
     return fails ? 1 : 0;

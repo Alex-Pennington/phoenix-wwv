@@ -182,7 +182,7 @@ void bcd_window_close(bcd_correlator_t *corr) {
      * before the second. */
     if (edge) {
         duration_ms = edge_width_ms;
-        symbol = bcd_symbol_classify_duration(duration_ms, corr->current_second);
+        symbol = bcd_symbol_classify_trailing(duration_ms, corr->current_second);
         pulse_offset_ms = corr->edge_start_ms - second_ms;
         source = "EDGE";
         if (confidence == 0.0f) confidence = 0.6f;
