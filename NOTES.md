@@ -268,8 +268,32 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Sync and correlator
 
-- `sync_detector_full_reset()` does not clear `last_confirmed_ms`, so a stale anchor survives a
-  reset. The re-anchor rule mitigates it.
+- **`sync_detector_full_reset()` clears the anchor** (fix/wwv-reset-guards): `last_confirmed_ms`,
+  `prev_confirmed_ms`, `last_rejected_ms`, `last_confirm_weak`, `minute_anchor_ms`,
+  `phase_support_ms` and `good_intervals`. Run totals (`confirmed_count`, `phase_epoch`,
+  `phase_resets`, `phase_stats`) stay. The reset's only caller is the retention expiry, so the
+  anchor it dropped was at least 80 minutes old (20 min holdover, then 60 min retention). Kept,
+  it judged the first marker after the reset: a marker more than 5 s off a whole minute of it
+  was rejected until two in a row re-anchored, and the move from it was counted as a phase break,
+  and as a phase reset at 900 ms or more. `tests/test_sync_full_reset.c` reacquires 2 h after
+  the reset on the old phase, +2.3 s and +20 s from it. Without the fix, +2.3 s counted a break
+  and a reset, and +20 s rejected the first marker and locked one marker later than a fresh
+  detector.
+  - **Every reader of `last_confirmed_ms`, after a reset:** `confirm_marker()` (interval test,
+    re-anchor, `note_phase_move()`; 0 means first marker); `sync_detector_marker_candidate()`
+    returns in ACQUIRING before it reads it; `edge_offset()`, `track_phase()`,
+    `sync_detector_second_edge()` and the holdover test in `sync_detector_periodic_check()` run only
+    while LOCKED; the recovery re-lock only in RECOVERING; `bcd_window_get_minute_anchor()` reads
+    it only while LOCKED; `log_confirmed_marker()` and `sync_detector_broadcast_state()` are
+    telemetry. None reads the cleared value as an anchor.
+  - **The decoder's chain does not span a reset either way.** Its newest frame is at least 60
+    minutes after the last LOCKED frame, and `close_frame()` drops history whose chain minute is
+    `max_frames` (60) or more older.
+  - **No replay reaches a full reset.** All 36 live logs in `~/wwv-live/run*/` replay to
+    byte-identical output against main, and the four air runs (`tests/air/run_air.sh`) are
+    identical but for wall-clock strings.
+  - **Open: TENTATIVE has no timeout,** so a TENTATIVE sync with no further marker keeps its
+    anchor indefinitely, and the next marker is judged against it however old it is. Not changed.
 - The sync detector gets no per-tick lock evidence (`sync_detector_tick_event()`): neither the
   manager nor the harness ever fed it, so tick-hole evidence never arrives. Kept that way so the
   scored chain did not change. Ticks and BCD time-pulse leading edges now reach sync through
@@ -488,8 +512,9 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     anchor, is taken only while LOCKED, so it stays under 20 min (`SYNC_HOLDOVER_MS`,
     `src/sync/sync_detector.c:50`). A float would do there; double is kept for uniformity.
     `minute_wrap()` reaches about 80 min in recovery: an anchor up to 20 min old at the loss, then
-    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has no bound, because
-    `sync_detector_full_reset()` keeps `last_confirmed_ms`.
+    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has the same bound while
+    LOCKED or RECOVERING, since `sync_detector_full_reset()` now clears `last_confirmed_ms`
+    (fix/wwv-reset-guards). In TENTATIVE it has none: that state has no timeout.
   - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
     routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
@@ -498,9 +523,24 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   - **`tests/test_detector_offset.c` runs the tick, marker and BCD detectors on 125 s of samples**
     from a frame count of 20 x 1024 ms and from that plus 40 h. All 267 event stamps of the 40 h
     run are the base run's plus exactly 144,000,000 ms. With `wwv_frames_to_ms()` returning float,
-    255 of 267 miss, by up to 7.69 ms. Both runs start past the startup guards
-    (`MARKER_MIN_STARTUP_MS`, `BCD_FREQ_MIN_STARTUP_MS`). Those key on stream time from 0, not
-    frames since start, so a detector started at a later frame count skips them.
+    255 of 267 miss, by up to 7.69 ms. The base run starts at frame 0 (it started at 20.48 s,
+    past the startup guards, until those counted from `start_frame`).
+  - **The marker and BCD freq startup guards count from `start_frame`** (fix/wwv-reset-guards).
+    They keyed on stream time from 0 (`MARKER_MIN_STARTUP_MS` 10 s, `BCD_FREQ_MIN_STARTUP_MS`
+    5 s), while warmup beside them counted from `start_frame`, so a detector started at a later
+    frame count had no guard. **No live path starts or resets a detector at a nonzero frame
+    count:** `wwv_live` creates the manager once, at frame 0; a reopen in `wwv_rsp2_live.sh` starts
+    a new `wwv_live` process; `--anchor-in` sets only the UTC anchor; a filled gap
+    (`wwv_detector_manager_mark_gap()`) only records a span and resets no detector; no detector
+    has a reset function, and nothing calls the detectors' `set_enabled`. Only the test hooks
+    (`tests/detector_offset_start_*.c`) set `start_frame`. So the change alters no live or
+    replay output; it removes a trap for the first code that starts a detector late.
+    `tests/test_detector_startup_guard.c` runs both detectors from frame 0 and from about 1 h
+    (87,890 x 40.96 ms, whole frames for both) on markers and 100 Hz bursts inside the guards: the
+    same events, none inside either guard. On the old guards the 1 h run reports a marker at
+    4.3 s.
+  - **The tick and BCD time detectors have no stream-time startup guard;** their warmup counts
+    from `start_frame`. Not checked beyond that grep: BCD time is another branch's file.
   - **Measured against the float chain, at short run times:** on the four captures the symbol
     sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
     ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
@@ -909,8 +949,10 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   +344 ms from t=600 to 4200 s with 0 timeouts and 0 overflows; NTP reports the host synchronised.
   The saga capture's timelog drifts 5.9 ppm over 630 s, and the TCXO read 1.09 ppm, so 80 ppm is
   not the radio clock alone; the cause is not found. From t=4200 to 5100 s it lost 3.7 s more, with
-  one 1.2 s timeout.
-- **rsp2_stream's "the reader is not keeping up" label is wrong on run3h.** The write wait is a
+  one 1.2 s timeout. The pulse phase held over the first 70 minutes, so that drift lost no sample:
+  see "Stream slip" below.
+- **rsp2_stream's "the reader is not keeping up" label was wrong on run3h** (it now reads
+  `delivery delay growing (samples late or lost upstream), with a long write wait`). The write wait is a
   steady 1.5-3 s per 60 s whatever the loss, so a growth under twice that reads as the reader's
   fault: the +159 ms and +225 ms minutes of the 3.7 s loss were labelled so, with a write-wait
   maximum of 12 ms. The label is unchanged on fix/wwv-gap-fill; the gap fill does not use it.
@@ -928,6 +970,77 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     WWV, where the onset events fall within 40 ms of the span's end. It is not measured on air.
   - wwv_live reads 0.5 ms of exact (0,0) as a fill. Any producer that sends real zeros that
     long (a muted source, a test file) has them taken as gaps.
+- **Stream slip: on runG the slow stage filled 1054.6 ms that were never lost, and stream time
+  ran 1 s ahead of UTC** (fix/wwv-stream-slip). runG (`~/wwv-live/runG`, saga RSP2, 5 MHz,
+  10:01-12:38 UTC 2026-11-21, 9431.7 s) logged 378 fills, every one `remainder over 30 s`, 0
+  overflows, 0 timeouts. Measured from the log and console:
+  - **The slip is the fill.** The median BCD pulse start (BTIME `t`) within the anchor's second,
+    per 10 minutes, unwrapped: +57 ms at the start, +1046 ms at the end. Against the cumulative
+    fill at the same stream time: phase = 0.974 x fill + 47 ms, residual SD 8.9 ms over 16 bins;
+    slopes 107.6 and 110.3 ppm. It follows the fill rate's rise from about 80 to about 165 ppm
+    after minute 100. runF segment 5 (slow fills only) gives 0.944 x fill over 172 ms. A zero
+    pushes every later sample on by its length, so a spurious fill puts stream time ahead of
+    UTC and the pulses late in the second, which is what moved. A fill of a real loss leaves
+    them where they were: runF segment 1's fast fills (17, 16, 16 ms) and segment 6's 1114.5 ms
+    timeout fill left the phase within 1-2 ms (mod 1 s for the latter).
+  - **The radio's sample count keeps WWV's time, and the host's clock keeps UTC.** On run3h,
+    before the gap fill existed, the first 70 minutes lost nothing: "behind" grew +49 to +357 ms
+    (85 ppm) while the pulse phase moved 54.7 to 47.1 ms (-2 ppm). The scan's carrier read 1.09
+    ppm, and the TCXO clocks the ADC too. Host (read 12:45 UTC, after the run): systemd-timesyncd
+    synchronised, offset +4.3 ms at the 12:12 poll after 34 min of free run, kernel frequency
+    +7.18 ppm, PLL offset 89 us, clocksource tsc, no clock step in the journal (no chrony on saga).
+    A host clock 112 ppm off would have shown 230 ms at that poll.
+  - **So the count's shortfall against the host clock is a delivery delay that grows, not loss
+    and not a clock rate** (inference, from the two points above). The delay grew 50-170 ppm on
+    live runs (run3h 85, runF segment 5 70, runG 80-165). saga's 10-minute capture timelog (rsp_record,
+    no live reader) shows +0.6 ppm (30 s window minima, least squares), so the growth comes with
+    the live pipeline. run3h's tail fits a queue that reaches a cap: from minute 109 to 129
+    "behind" is flat (+24 ms) while the pulse phase moves -78 ppm, so samples are dropped then at
+    the rate the delay had grown, and arrival times see nothing. Where the queue is (the closed
+    API service, USB) is not determined. Per-minute delay growth against the write wait (the
+    time rsp2_stream blocks writing to wwv_live) correlates at +0.03, so that link is not shown.
+  - **The fix tracks the lag rate** (`scripts/rsp2_stream.py` docstring): the floor is a line,
+    the least lag of 10 s bins, fitted over 300 s (Theil-Sen, from 120 s, at most 1000 ppm),
+    carried over the last 60 s. A steady rate is never filled. The slow stage fills at most once
+    per 30 s: a fill moves only held blocks, so when the window's least lag was a released block
+    it refilled on every block (runG's 2.3 ms x 3 bursts). On the fake radio's virtual clock
+    (`tests/live/stream_fake_soapy.py` `drift@`, `FAKE_VCLOCK=1`): 110 ppm for 720 s filled 74.6
+    ms before and 0.0 ms now; a runG-like 9400 s, 80 stepping to 170 ppm, filled 1185.8 ms in
+    536 gaps before and 0.0 ms now; 80 then 165 ppm with losses of 0.3 s, 20 ms and a 3 s outage
+    ends 3.5 ms off true time (83 ms before). saga's capture timelog replayed fills 0 both ways.
+    `ctest -L live` case `stream_drift` holds the first and third.
+  - **The limits it leaves.** A steady real loss under 1000 ppm is now taken as a rate and not
+    filled; by arrival times it cannot be told from a growing delay. A loss once a queue is at its
+    cap (run3h's tail) is invisible to arrival times either way: only the signal sees it. The
+    rate's fit lags a rate step by about half its 300 s window; an error over about 60 ppm then
+    fills a few ms until it catches up. The live path still has no rate correction, so a growing
+    delay now shows as "behind" growing by the rate (about 1 s on a runG), which the report line
+    names as `lag rate`.
+  - **Scoring.** The scorers took a symbol's or window's truth as floor(U0 + t), t being about
+    400-500 ms into the decoder's second, so a slip past about 500 ms read the next second.
+    `decode_score.py`, `symbol_second_score.py` and `bcd_window_trace.py` now share
+    `tests/air/stream_utc.py`: U0 re-anchored at the decoder's minute starts (offset to the
+    nearest UTC minute, median of 11 anchors, the run's first 11 as baseline, a 40 ms deadband;
+    its docstring). It does not use the decoder's second labels, so `symbol_second_score.py`
+    still checks them. Against the scorers before the fix, only logs whose stream time left the
+    anchor change; frame scores and FALSE CONFIRM (0 in all) do not:
+    - runG: 1->0 334/1704 -> 94/1816 (5.2%), 0->1 473/5242 -> 112/5327 (2.1%), one 0 more than the
+      confirm worker's 111/5326 (not traced); second labels exact 6583 -> 9245 of 9245; windows
+      wrong 1404 -> 433.
+    - run3h (5.3 s unfilled loss): 1->0 459/1371 -> 137/1452, 0->1 500/4171 -> 111/4370; labels
+      exact 4381 -> 7839 of 7901; windows wrong 1821 -> 557.
+    - run90d (1.1 s timeout loss): 1->0 552/869 -> 72/942, 0->1 515/2480 -> 77/2771; labels exact
+      958 -> 5270 of 5272; windows wrong 2196 -> 523.
+    - run90g segment 2: 1->0 172/286 -> 160/320, 0->1 165/758 -> 101/721; labels exact 1135 -> 2600
+      of 2662; windows wrong 789 -> 664.
+    - runF segment 5 (164 ms ahead on slow fills): `bcd_window_trace.py` only, its ms-level
+      offsets (right-by-pulse 1863 -> 1911, wrong 175 either way).
+    run90, run90c, run90f, run90g segment 1, runF (segments 1, 2, 6), runF3, runN1 and the four air
+    wirings score identically. Near a loss step the median switches halfway between minute
+    anchors, so a few symbols there differ from the decoder-label truth this replaced (run3h 4 and
+    3, run90d 1, run90g segment 2 8 and 3), and run3h keeps 62 and run90g segment 2 keeps 62
+    second labels off by 1-2 s. run90c's real 35 ms loss at 2950 s is under the deadband and not
+    corrected.
 
 - **The SDRplay API service keeps crashing on libusb errno=12 (ENOMEM), and compaction
   at start and reopen does not prevent it.** 2026-11-21 01:30-06:31 UTC on saga: 132

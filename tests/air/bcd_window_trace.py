@@ -3,7 +3,8 @@ Usage: python3 -I bcd_window_trace.py harness_out.txt conv.json [--rows]
 
 Reads the harness's WEV lines (each BCD event and the window it landed in) and WCLOSE
 lines (each window's accumulators at close), plus the SYMCB line that follows each
-WCLOSE. Truth is score.py's: the symbol of the UTC second holding the window centre.
+WCLOSE. Truth is score.py's: the symbol of the UTC second holding the window centre, with
+stream time corrected for its slip against the anchor (stream_utc.py).
 
 A "boundary pulse" for UTC second s is a BTIME event that starts within -100..+250 ms
 of s (bcd_pulse_score.py's alignment band, widened 50 ms early). Its own class is its
@@ -30,6 +31,9 @@ Correct symbols are split into right-by-pulse (the boundary pulse is in the wind
 its class is right) and right-by-luck (anything else).
 """
 import sys, re, json, math, collections, datetime
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); sys.dont_write_bytecode = True
+from stream_utc import StreamUTC
 fn, conv = sys.argv[1], sys.argv[2]
 ROWS = '--rows' in sys.argv
 U0 = json.load(open(conv))['out_utc0_unix']
@@ -72,12 +76,13 @@ def kv(l):
 
 def boundary(t_ms):
     """UTC second whose boundary pulse this event start could be, or None."""
-    u = U0 + t_ms / 1000
+    u = SU.utc(t_ms)
     s = round(u)
     return s if B_LO <= (u - s) * 1000 <= B_HI else None
 
 
 L = open(fn).read().splitlines()
+SU = StreamUTC(L, U0)
 bucket = collections.defaultdict(list)
 wins = []
 bpulse = collections.defaultdict(list)       # UTC second -> boundary BTIME durations
@@ -98,9 +103,9 @@ for i, l in enumerate(L):
 luck = collections.Counter(); st = collections.Counter(); causes = collections.Counter(); rows = []; offs = collections.Counter()
 for d, ev, sym in wins:
     ws = float(d['win_start']); sec = int(d['sec'])
-    us = math.floor(U0 + (ws + 500) / 1000)  # score.py's second
+    us = SU.second(ws + 500)  # score.py's second, slip-corrected
     truth, got = frame_bit(us), sym['sym']
-    off = (U0 + ws / 1000 - us) * 1000
+    off = (SU.utc(ws) - us) * 1000
     offs[int(math.floor(off / 50) * 50)] += 1
     if got not in '01P':
         st['none'] += 1; continue
@@ -111,8 +116,8 @@ for d, ev, sym in wins:
         shift = round(((ev[0][1] - ws) / 1000) / 60) * 60
     real = us + shift
     rtruth = frame_bit(real)
-    T = [(t, du, (U0 + t / 1000 - real) * 1000) for s_, t, du in ev if s_ == 'T']
-    F = [(t, du, (U0 + t / 1000 - real) * 1000) for s_, t, du in ev if s_ == 'F']
+    T = [(t, du, (SU.utc(t) - real) * 1000) for s_, t, du in ev if s_ == 'T']
+    F = [(t, du, (SU.utc(t) - real) * 1000) for s_, t, du in ev if s_ == 'F']
     bp = [e for e in T if B_LO <= e[2] <= B_HI]
     bp_ok = bool(bp) and cls(bp[0][1], real % 60) == rtruth
     if got == truth:
@@ -146,7 +151,7 @@ for d, ev, sym in wins:
                  [(round(o), round(du)) for t, du, o in T], [(round(o), round(du)) for t, du, o in F]))
 
 # what a correlator that took exactly the boundary pulse would score, over the same seconds
-cov = set(math.floor(U0 + (float(d['win_start']) + 500) / 1000) for d, ev, sym in wins)
+cov = set(SU.second(float(d['win_start']) + 500) for d, ev, sym in wins)
 print(f"WINDOWS: closed={len(wins)} decoded={st['decoded']} correct={st['correct']} wrong={st['wrong']} "
       f"none={st['none']}; correct right-by-pulse={st['right-by-pulse']} right-by-luck={st['right-by-luck']}")
 print('  wrong by cause: ' + ', '.join(f'{k}={v}' for k, v in causes.most_common()))

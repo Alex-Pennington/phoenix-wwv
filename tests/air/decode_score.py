@@ -12,13 +12,20 @@ wrong value is a false confirm; the gate is that there are none. Time to first i
 seconds from the start of the capture to the stream time the result was emitted.
 Also prints the symbol confusion the decoder's error model rests on: for symbols
 whose pulse starts within 250 ms of the second, a sent 0 read as 1 and a sent 1
-read as 0."""
+read as 0. A symbol's true second is the UTC second its stream time falls in,
+corrected for the stream's slip against the anchor (stream_utc.py; runG slipped
+1 s in 2.6 h, NOTES.md "Stream slip"); floor(U0 + t) took the next second once
+the slip and the symbol's place in its second passed 1 s."""
 import sys, re, json, math, datetime, collections
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); sys.dont_write_bytecode = True
+from stream_utc import StreamUTC
 fn, conv = sys.argv[1], sys.argv[2]
 label = sys.argv[3] if len(sys.argv) > 3 else fn
 U0 = json.load(open(conv))['out_utc0_unix']
 TRUE_DUT1, TRUE_DST, TRUE_LSW = '-0.1', '00', '0'
 L = open(fn).read().splitlines()
+SU = StreamUTC(L, U0)
 at = {}
 for l in L:
     if l.startswith('TDRES'):
@@ -74,7 +81,7 @@ for i, l in enumerate(L):
         off = float(re.search(r'pulse_offset=(\S+)', L[i + 1]).group(1))
         if sym not in '01' or not (off <= 250): continue
         t = float(re.search(r' t=([\d.]+)', l).group(1))
-        tr = frame_bit(math.floor(U0 + t / 1000))
+        tr = frame_bit(SU.second(t))
         if tr in ('0', '1'): conf[(tr, sym)] += 1
 n0 = conf[('0', '0')] + conf[('0', '1')]; n1 = conf[('1', '0')] + conf[('1', '1')]
 print(f'  frames admitted={adm}/{len(frames)} decodable alone (hard_valid)={hv}; conflicts={rows[-1][20] if rows else 0}')

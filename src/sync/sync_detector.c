@@ -322,9 +322,11 @@ static void log_confirmed_marker(sync_detector_t *sd, wwv_time_ms_t timestamp_ms
 
 /* Sub-minute part of a phase change, in (-30 s, +30 s]. Takes the difference of
  * two stream times. In recovery that is under about 80 minutes (an anchor up to
- * SYNC_HOLDOVER_MS old at the loss, then SYNC_RETENTION_WINDOW_MS); from
- * confirm_marker() it is unbounded, because a full reset keeps last_confirmed_ms.
- * It wraps in double, as every stream time difference does. */
+ * SYNC_HOLDOVER_MS old at the loss, then SYNC_RETENTION_WINDOW_MS). From
+ * confirm_marker() it is bounded the same way while LOCKED or RECOVERING; a full
+ * reset clears last_confirmed_ms. TENTATIVE has no timeout, so there it is the
+ * time since the last confirmed marker, without bound. It wraps in double, as
+ * every stream time difference does. */
 static float minute_wrap(double d) {
     return (float)(d - round(d / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS);
 }
@@ -621,6 +623,23 @@ static void sync_detector_full_reset(sync_detector_t *sd) {
     sd->evidence_mask = 0;
     sd->signal_weak_count = 0;
     sd->expecting_marker_soon = false;
+
+    /* The anchor goes too. It is at least SYNC_RETENTION_WINDOW_MS old here (the
+     * only caller is the retention expiry), so the held phase it carried is not
+     * known any more, by the same argument that ended recovery. Kept, it judged
+     * the first marker after the reset: one more than 5 s off a whole number of
+     * minutes from it was rejected until two in a row re-anchored, and the move
+     * from it was counted as a phase break (a phase reset at 900 ms or more,
+     * which drops the decoder's chain). The next marker is a first marker, as
+     * at start. confirmed_count, phase_epoch, phase_resets and phase_stats are
+     * totals over the run and stay. */
+    sd->last_confirmed_ms = 0.0;
+    sd->prev_confirmed_ms = 0.0;
+    sd->last_rejected_ms = 0.0;
+    sd->last_confirm_weak = false;
+    sd->minute_anchor_ms = 0.0;
+    sd->phase_support_ms = 0.0;
+    sd->good_intervals = 0;
 
     transition_state(sd, SYNC_ACQUIRING);
 }
