@@ -128,6 +128,7 @@ typedef struct {
 
     /* zero runs (filled gaps) */
     uint64_t zero_run;          /* zero samples held back: a run that reached the end of a block */
+    bool in_gap;                /* pushing a fill: its arrival time says nothing of the stream's lag */
     struct { double start_ms, len_ms, close_ms; } open_gaps[WWV_GAP_SPANS];
     int n_open_gaps;
     wwv_gap_drops_t drops_said; /* drop counts at the last GAPEND */
@@ -410,7 +411,6 @@ static bool read_anchor_in(double *sample0, double *hold) {
 }
 
 static void time_block(size_t n, double arrival) {
-    arrival -= A.hold_s;
     double d = arrival - (double)(A.in_samples + n) / A.opt.rate;
     if (!A.anchored) {
         if (A.opt.have_t0) {
@@ -447,7 +447,8 @@ static void time_block(size_t n, double arrival) {
             }
         }
     }
-    double lag = (d - A.anchor_unix) * 1000.0;
+    if (A.in_gap) return;
+    double lag = (d - A.hold_s - A.anchor_unix) * 1000.0;   /* hold_s: read with the anchor */
     if (lag < A.lag_min_ms) A.lag_min_ms = lag;
     if (lag > A.lag_max_ms) A.lag_max_ms = lag;
 }
@@ -543,7 +544,9 @@ static void push_gap(uint64_t n, int format, double arrival) {
     A.n_open_gaps++;
     A.n_gaps++; A.gap_ms_total += len_ms;
     (void)format;
+    A.in_gap = true;          /* a held run goes in at once, stamped with a later block's arrival */
     push_zeros(n, arrival);
+    A.in_gap = false;
 }
 
 /* Push a block, taking its zero runs out as gaps. A run that reaches the block's
