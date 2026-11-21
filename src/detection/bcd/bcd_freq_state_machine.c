@@ -36,7 +36,7 @@
 /* Warmup */
 #define BCD_FREQ_WARMUP_FRAMES      50
 #define BCD_FREQ_WARMUP_ADAPT_RATE  0.02f
-#define BCD_FREQ_MIN_STARTUP_MS     5000.0f
+#define BCD_FREQ_MIN_STARTUP_MS     5000.0f  /* No pulses in the first 5 s from start_frame */
 
 #define MS_TO_FRAMES(ms)    ((int)((ms) / FRAME_DURATION_MS + 0.5f))
 
@@ -81,9 +81,10 @@ void bcd_freq_run_state_machine(bcd_freq_detector_t *fd) {
         return;
     }
 
-    /* No pulses in first few seconds - baseline still stabilizing */
-    wwv_time_ms_t timestamp_ms = FREQ_FRAMES_TO_MS(fd->frame_count);
-    if (timestamp_ms < BCD_FREQ_MIN_STARTUP_MS) {
+    /* No pulses in the detector's first few seconds - baseline still
+     * stabilizing. Counted from start_frame, as warmup is, not from stream time
+     * 0: the same at frame 0, and a detector started later settles as long. */
+    if (FREQ_FRAMES_TO_MS(frame - fd->start_frame) < BCD_FREQ_MIN_STARTUP_MS) {
         fd->baseline_energy += BCD_FREQ_NOISE_ADAPT_RATE * (fd->accumulated_energy - fd->baseline_energy);
         fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
         return;

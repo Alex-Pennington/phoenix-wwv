@@ -71,6 +71,12 @@ add_executable(test_detector_offset test_detector_offset.c detector_offset_start
 target_link_libraries(test_detector_offset PRIVATE phoenix_wwv m)
 add_test(NAME detector_offset COMMAND test_detector_offset)
 
+# The marker and BCD freq startup guards count from the detector's own start
+add_executable(test_detector_startup_guard test_detector_startup_guard.c
+               detector_offset_start_marker.c detector_offset_start_bcd.c)
+target_link_libraries(test_detector_startup_guard PRIVATE phoenix_wwv m)
+add_test(NAME detector_startup_guard COMMAND test_detector_startup_guard)
+
 add_executable(btime_frames air/btime_frames.c)
 target_link_libraries(btime_frames PRIVATE phoenix_wwv)
 
