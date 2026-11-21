@@ -622,6 +622,39 @@ line when it sets the anchor (first block, and again once refined after 10 s of 
 
 UTC of an event = `utc0_unix + timestamp_ms / 1000`.
 
+#### CONS CLOCK - Host Clock Error (wwv_live)
+
+Once the time decoder has CONFIRMED the time of day, `wwv_live` sends one line for every decoder
+result whose time of day is CONFIRMED: about once a minute. A new frame refines it, and a changed
+value is sent at once. Nothing is sent before CONFIRMED. The same JSON is printed on stdout and
+written to `--log` as `CLOCK {...}`.
+
+**Format:** `CONS,CLOCK,{"confirmed":true,"utc_minus_anchor_s":S,"sigma_ms":E,"band_khz":K,"t_unix":T,"frame_stream_ms":F,"source":"SRC"}`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `confirmed` | bool | Always `true`: the time of day is CONFIRMED |
+| `utc_minus_anchor_s` | float, s | UTC of the confirmed minute's start, less `in_sample0_unix + frame_stream_ms / 1000` (the host's reckoning of it from the anchor) |
+| `sigma_ms` | float, ms | 1-sigma error of the minute's start on the stream: the second-marking edges' fit and their delay's calibration |
+| `band_khz` | number or `null` | WWV carrier received, kHz (`--band-khz`), `null` when not known |
+| `t_unix` | float, s | Host time when the line was made |
+| `frame_stream_ms` | float, ms | Input stream time of the minute's start (detector time less the group delay) |
+| `source` | string | Anchor source: `rsp2_stream`, `wwv_live` or `t0` |
+
+**Example:**
+```
+CONS,CLOCK,{"confirmed":true,"utc_minus_anchor_s":-0.009140,"sigma_ms":3.1,"band_khz":null,"t_unix":1795225861.049,"frame_stream_ms":769608.407,"source":"rsp2_stream"}
+```
+
+`-utc_minus_anchor_s` is the host clock's error at the anchor (host - UTC), plus four terms that
+`sigma_ms` does not cover:
+- the anchor's own delivery latency;
+- the radio path delay;
+- the sample clock's rate error since the anchor (+3.9 ms an hour on the RSP2's 1.09 ppm);
+- any slip of stream time against true time.
+
+docs/WWV_LIVE.md (*Clock*) gives the derivation and the values measured on the live runs.
+
 ---
 
 ## Enabling/Disabling Channels

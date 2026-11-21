@@ -540,7 +540,7 @@ while :; do
   fi
   [ -n "$CARRIER" ] && [ "$SEG" = 1 ] && C=$CARRIER || C=$(python3 -I -c "print(f'{$PPM * $WWV_KHZ / 1000:.3f}')")
   SHIFT=$(python3 -I -c "print(f'{$OFFSET_KHZ * 1000 + $C:.3f}')")
-  WL_ARGS=(-f s16 -r "$RATE" -s "$SHIFT" -g "$SCALE")
+  WL_ARGS=(-f s16 -r "$RATE" -s "$SHIFT" -g "$SCALE" --band-khz "$WWV_KHZ")
   [ -n "$AGC" ] && WL_ARGS+=(-a)
   [ -n "$LOG" ] && WL_ARGS+=(-l "$(seg_name "$LOG" "$SEG")")
   [ -n "$TIMEBASE" ] && WL_ARGS+=(-j "$(seg_name "$TIMEBASE" "$SEG")")

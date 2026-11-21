@@ -35,6 +35,7 @@ set(PHOENIX_WWV_SOURCES
     src/detection/tone/tone_tracker.c
     src/external/kiss_fft.c
     src/manager/chain_log.c
+    src/manager/clock_report.c
     src/manager/detector_lifecycle.c
     src/manager/detector_routing.c
     src/manager/wwv_detector_manager.c

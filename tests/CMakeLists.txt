@@ -2,6 +2,10 @@ add_executable(test_chain_synth test_chain_synth.c)
 target_link_libraries(test_chain_synth PRIVATE phoenix_wwv)
 add_test(NAME chain_synth COMMAND test_chain_synth)
 
+add_executable(test_clock_report test_clock_report.c)
+target_link_libraries(test_clock_report PRIVATE phoenix_wwv)
+add_test(NAME clock_report COMMAND test_clock_report)
+
 # Air-capture harness: runs a recorded 50 kHz IQ stream through the chain.
 # It stubs telemetry and prints every BCDS line, so it is not a CTest test;
 # tests/air/run_air.sh drives it against the recordings.
@@ -126,6 +130,13 @@ target_link_libraries(btime_replay PRIVATE phoenix_wwv)
 # no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 516 s measured on
 # saga 2026-11-21 (nice -n 19, 34 cases) against the TIMEOUT of
 # 600 s. ctest -L live runs it alone.
+# The CLOCK line end to end: synthetic WWV with a real time code through wwv_live with
+# an anchor 2.5 s and -0.75 s off, and replay_events on its log (python3 and numpy).
+if(TARGET wwv_live)
+    add_test(NAME clock_line_synth
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/clock_synth.sh $<TARGET_FILE_DIR:wwv_live>
+                     ${CMAKE_CURRENT_BINARY_DIR}/clock_synth)
+endif()
 if(TARGET wwv_live)
     add_test(NAME live_wrapper_stubs
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh $<TARGET_FILE_DIR:wwv_live>

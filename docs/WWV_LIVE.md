@@ -83,6 +83,95 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
   ```
   scripts/wwv_rsp2_live.sh --secs 5400 --log run.log --timebase run.json -- --frames run.frames
   ```
+- `CLOCK` gives the host clock's error, read off a CONFIRMED time of day (see *Clock* below).
+
+## Clock
+
+Once the decoder has CONFIRMED the time of day, every decoder result whose time of day is
+CONFIRMED gives one `CLOCK` line: on stdout, in `--log`, and over UDP as `CONS,CLOCK,{...}`. That
+is one line a minute while it stays CONFIRMED: a new frame refines it, and a changed value is
+said at once. Nothing CLOCK-like is printed before CONFIRMED.
+
+```
+CLOCK {"confirmed":true,"utc_minus_anchor_s":-0.009140,"sigma_ms":3.1,"band_khz":null,"t_unix":1795225861.049,"frame_stream_ms":769608.407,"source":"rsp2_stream"}
+```
+
+That is runF segment 1's first line, replayed from its log, which predates `--band-khz`.
+
+| Field | Meaning |
+|-------|---------|
+| `utc_minus_anchor_s` | UTC of the confirmed minute's start, less the host's reckoning of it: `in_sample0_unix + frame_stream_ms / 1000` |
+| `sigma_ms` | The 1-sigma error of that minute's start on the stream (below) |
+| `band_khz` | The WWV carrier received (`--band-khz`, which `wwv_rsp2_live.sh` passes), else `null` |
+| `t_unix` | The host's time when the line was made |
+| `frame_stream_ms` | Input stream time (ms since input sample 0) of the minute's start |
+| `source` | Where the anchor came from: `rsp2_stream` (`--anchor-in`), `wwv_live` (its own 10 s refinement) or `t0` (`-T`) |
+
+**The minute's start.** The decoder's frame start is the sync detector's held phase at that
+minute, on the detector clock. The held phase slews only beyond a dead band of 8 ms on ticks, or
+15 ms on BCD pulse starts, so it can sit that far off the edges. The line therefore refits the
+frame's own second-marking edges: the ticks and BCD pulse starts the phase tracker holds, over
+the frame's 60 seconds. Each edge counts less its known detector delay (`PHASE_LEAD_TICK_MS`
+15 ms, `PHASE_LEAD_BTIME_MS` 30 ms), modulo 1 s, within the tracker's 40 ms gate. The ticks are
+used alone when there are at least 4, as in the tracker. The fit's median moves the frame start
+(`sync_detector_phase_fit`). The front-end group delay then takes detector time back to input
+stream time, which is what the anchor dates. Day: from the decoded date when that is CONFIRMED,
+else the day that puts the decoded minute nearest the host's reckoning, which is right while the
+host is within 12 h.
+
+**sigma_ms** combines two independent errors. The first is the fit's standard error,
+1.2533 × the robust SD (1.4826 × the median absolute deviation) / √n. The second is how well the
+edge delay is known: 3 ms for ticks, 10 ms for BCD starts (`PHASE_LEAD_SIGMA_*` in
+`src/sync/sync_detector.c`).
+
+- Ticks: on `tests/live/wwv_synth.py`'s stream, where the true second is exact and there is no
+  radio path, tick edges sit 12.6 ms after the second, 2.4 ms before the 15 ms constant. The
+  marker lead that constant was taken from is calibrated to -1.8..+2.1 ms of :00 on kiwi plain.
+- BCD starts: 36.3 ms on the synthetic stream, and +17..+34 ms from the marker lead on the
+  5/10 MHz runs.
+- With fewer than 4 edges in the gate, the frame start is used as it is, and sigma is the gate's
+  uniform SD, 23.1 ms.
+
+**What `utc_minus_anchor_s` contains.** Write the host clock's error as e = host - UTC.
+
+```
+utc_minus_anchor_s = -e - L - P + r * T + slip
+```
+
+- **L** is the anchor's delivery latency. The anchor is the least-delayed block's arrival less its
+  stream time over the first 10 s, so it is late by the least USB/API delay, which nothing
+  measures.
+- **P** is the radio path from Fort Collins to the receiver, about 3.3 ms per 1000 km on the
+  ground plus the hop geometry. It is not corrected: the receiver's location is not configured.
+- **r × T** is the sample clock's rate error over the time since the anchor. The RSP2's TCXO read
+  1.09 ppm slow, so stream time runs slow and the value grows by about +3.9 ms an hour.
+- **slip** is anything that moved stream time off true time: an unfilled loss makes it positive,
+  and a fill of samples that were never lost makes it negative.
+
+Only the fit enters `sigma_ms`. L, P, r × T and slip are biases. On a host disciplined by
+timesyncd, e is a few ms, so a clean segment reads a few ms to about -10 ms.
+
+**Measured** (`tests/air/replay_events --anchor tb.json` on the runs' logs, before the
+stream-slip fix):
+
+- runF segment 1: 20 lines, -9.1 ms at the first and -5.3..-11.3 ms throughout, sigma
+  3.0-3.2 ms.
+- runF segment 2: 33 lines, first -10.4 ms, median -11.0 ms.
+- runG: 147 lines, from -28.1 ms at minute 10 to -1.039 s at minute 156. runG's stream time
+  slipped 1 s against its anchor: rsp2_stream filled 1053.5 ms of a growing delivery delay that
+  lost nothing (NOTES.md, "Stream slip"). Adding back the fills made before each line gives a
+  median of -4.1 ms, p10..p90 -9.0..+0.3 ms. That residual trends +0.98 ppm, the TCXO's
+  1.09 ppm, with a residual SD of 3.0 ms.
+- runF segments 5 and 6 slip the same way, by their slow fills.
+
+So on a run whose stream time keeps true time, the line reads the host clock to a few ms. On a
+run that slipped, it shows the slip.
+
+`tests/clock_synth.sh` (ctest `clock_line_synth`) runs the chain on synthetic WWV with a real
+time code, anchored 2.500 s and then -0.750 s off. Both runs give six lines 1.4..3.6 ms above
+the true error (sigma 3.0-3.1 ms). The edges' 2.4 ms tick bias is most of that.
+`tests/air/replay_events` prints the same lines from a `--log`, using the log's `ANCHOR` line or
+`--anchor TIMEBASE.json`, with `t_unix` as the anchor's reckoning of the decode.
 
 ## Saga RSP2
 

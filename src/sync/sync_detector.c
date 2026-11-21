@@ -117,6 +117,16 @@
 #define PHASE_GAIN                   0.5f
 #define PHASE_LEAD_TICK_MS           15.0f    /* tick detector, from the marker lead */
 #define PHASE_LEAD_BTIME_MS          30.0f    /* BCD time detector leading edge */
+/* How well those leads are known as delays after the true second, for
+ * sync_detector_phase_fit() (the CLOCK line). Ticks: on tests/live/wwv_synth.py's
+ * stream, whose true second is exact and has no radio path, tick edges sit 12.6
+ * ms after it, 2.4 ms before the 15 ms lead; the marker lead the 15 ms was
+ * taken from is TICK_FILTER_DELAY_MS's calibration, -1.8..+2.1 ms of :00 on kiwi
+ * plain (tick_detector.h). Together about 3 ms. BCD starts: 36.3 ms on the
+ * synthetic stream, and +17..+34 ms from the marker lead on the 5/10 MHz runs
+ * (NOTES.md, the phase tracker), against the 30 ms constant: 10 ms. */
+#define PHASE_LEAD_SIGMA_TICK_MS     3.0f
+#define PHASE_LEAD_SIGMA_BTIME_MS    10.0f
 #define PHASE_JUMP_WINDOW_MS         30000.0f
 #define PHASE_JUMP_GATE_MS           80.0f
 #define PHASE_JUMP_RADIUS_MS         15.0f
@@ -1039,6 +1049,35 @@ static void track_phase(sync_detector_t *sd, wwv_time_ms_t now_ms) {
     sd->minute_anchor_ms += c;
     sd->phase_stats.slews++;
     sd->phase_stats.slewed_ms += c;
+}
+
+sync_phase_fit_t sync_detector_phase_fit(sync_detector_t *sd, wwv_time_ms_t origin_ms,
+                                         wwv_time_ms_t from_ms, wwv_time_ms_t to_ms) {
+    sync_phase_fit_t f = {0};
+    if (!sd) return f;
+    float ticks[PHASE_EDGES_MAX], all[PHASE_EDGES_MAX];
+    int na = 0;
+    for (int i = 0; i < sd->edge_count; i++) {
+        const phase_edge_t *e = &sd->edges[(sd->edge_head - sd->edge_count + i + PHASE_EDGES_MAX) % PHASE_EDGES_MAX];
+        if (e->t_ms < from_ms || e->t_ms >= to_ms) continue;
+        float lead = e->kind == SYNC_EDGE_TICK ? PHASE_LEAD_TICK_MS : PHASE_LEAD_BTIME_MS;
+        float o = second_wrap(e->t_ms - origin_ms - lead);
+        if (fabsf(o) > PHASE_GATE_MS) continue;
+        all[na++] = o;
+        if (e->kind == SYNC_EDGE_TICK) ticks[f.n_ticks++] = o;
+        else f.n_btime++;
+    }
+    f.ticks = f.n_ticks >= PHASE_MIN_EDGES;
+    float *use = f.ticks ? ticks : all;
+    f.n = f.ticks ? f.n_ticks : na;
+    f.lead_sigma_ms = f.ticks ? PHASE_LEAD_SIGMA_TICK_MS : PHASE_LEAD_SIGMA_BTIME_MS;
+    if (f.n == 0) return f;
+    f.offset_ms = median_of(use, f.n);
+    float dev[PHASE_EDGES_MAX];
+    for (int i = 0; i < f.n; i++) dev[i] = fabsf(use[i] - f.offset_ms);
+    f.spread_ms = 1.4826f * median_of(dev, f.n);
+    f.sigma_ms = 1.2533f * f.spread_ms / sqrtf((float)f.n);
+    return f;
 }
 
 void sync_detector_second_edge(sync_detector_t *sd, wwv_time_ms_t timestamp_ms, sync_edge_kind_t kind) {

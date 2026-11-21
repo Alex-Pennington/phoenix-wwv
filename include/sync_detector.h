@@ -132,6 +132,29 @@ int sync_detector_get_phase_resets(sync_detector_t *sd);
 /** Counts of what the phase tracker did */
 sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd);
 
+/* Where the second-marking edges put whole seconds, against a given origin */
+typedef struct {
+    int n_ticks;            /* ticks within the tracker's gate (PHASE_GATE_MS) of a second */
+    int n_btime;            /* BCD time-pulse leading edges within the gate */
+    bool ticks;             /* the fit uses the ticks alone (at least PHASE_MIN_EDGES), else all */
+    int n;                  /* edges the fit uses */
+    float offset_ms;        /* median of their offsets, each less its lead (PHASE_LEAD_*): where
+                               the seconds are, after origin + k x 1000 ms; 0 when n is 0 */
+    float spread_ms;        /* 1.4826 x their median absolute deviation (a robust SD) */
+    float sigma_ms;         /* the median's standard error: 1.2533 x spread / sqrt(n) */
+    float lead_sigma_ms;    /* what the lead constants are known to: PHASE_LEAD_SIGMA_* */
+} sync_phase_fit_t;
+
+/**
+ * Fit the edges held for the phase tracker (those reported while LOCKED; at
+ * most the last 256) with from_ms <= t < to_ms, against seconds at origin_ms +
+ * k x 1000 ms, the way the tracker does: each edge's offset less its lead,
+ * modulo 1 s, gated at PHASE_GATE_MS, the ticks alone when there are
+ * PHASE_MIN_EDGES of them. Read only: the held phase is not moved.
+ */
+sync_phase_fit_t sync_detector_phase_fit(sync_detector_t *sd, wwv_time_ms_t origin_ms,
+                                         wwv_time_ms_t from_ms, wwv_time_ms_t to_ms);
+
 /**
  * Report minute marker from tick detector (duration-based detection)
  * @param sd Detector handle
