@@ -725,10 +725,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   errno=12 lines. systemd restarted the service within about 1 s, so from 06:01 the crashes
   looped in clusters every 1-3 min. The wrapper's compact-before-open did not prevent them. The
   buffer order the service needs cannot be determined, because the service is closed-source. The
-  wrapper now waits for a free block at order 9 or above in the Normal zone of `/proc/buddyinfo`,
-  and backs off between crash reopens (docs/WWV_LIVE.md, *Memory compaction*). Neither is tested
-  on the radio. `/proc/buddyinfo` sums the migrate types, so at the survey's state (48 free
-  Movable order-10 blocks) the wait goes ahead at once.
+  wrapper now waits for a free block at order 9 or above in the Normal zone's Unmovable and
+  Reclaimable rows of `/proc/pagetypeinfo`, read with `sudo -n`, falling back to the
+  `/proc/buddyinfo` total. It also backs off between crash reopens (docs/WWV_LIVE.md, *Memory
+  compaction*). Neither is tested on the radio. Counting Unmovable and Reclaimable rests on an
+  inference, not a measurement: that the service's libusb URB buffers are unmovable kernel
+  allocations. At 11:20 UTC the same day those two rows had 0 free blocks at order 9 or above,
+  so in that state the wait runs to its 60 s bound before every start and reopen.
 
 ## Documentation
 

@@ -8,8 +8,9 @@
 # in tests/live/fakebin stand in for systemctl, sudo and journalctl: the fake sdrplay.service
 # and its journal live in the case directory, and every check fails before a case runs if
 # the PATH would reach the real ones. The stub sudo logs the memory compaction instead of
-# running it. Each case's buddyinfo is a file in its directory (WWV_BUDDYINFO), with free
-# blocks at order 9 and 10 unless the case writes another. rsp2_stream.py runs against a
+# running it. Each case's buddyinfo and pagetypeinfo are files in its directory
+# (WWV_BUDDYINFO, WWV_PAGETYPEINFO; the stub sudo cats the latter), with free Unmovable
+# blocks at order 9 and 10 unless the case writes others. rsp2_stream.py runs against a
 # fake SoapySDR module.
 #
 # Cases (all by default):
@@ -35,11 +36,14 @@
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
-#   mem_now       buddyinfo has free order 9-10 blocks: the memory wait goes ahead at once,
-#                 after one compaction
-#   mem_delay     no free block at order >= 9 until 2 s in: the wait re-compacts every 1 s,
+#   mem_now       free Unmovable order 9-10 blocks in pagetypeinfo: the memory wait goes
+#                 ahead at once, after one compaction
+#   mem_delay     no free block at order >= 9 (pagetypeinfo) until 2 s in: the wait re-compacts every 1 s,
 #                 goes ahead when the blocks appear, and only then starts the unit
-#   mem_bound     no free block ever: the wait warns after its 2 s bound and goes live
+#   mem_bound     pagetypeinfo unreadable, no free block in buddyinfo ever: the wait falls back
+#                 to buddyinfo, warns after its 2 s bound and goes live
+#   mem_unmovable the survey's state: buddyinfo has free order 9-10 blocks (48 Movable
+#                 order-10), Unmovable and Reclaimable have none: the wait holds to its bound
 #   backoff_seq   the vendor service crashes (18 errno=12 lines, a restart) in every segment:
 #                 one ERRNO12 line per burst, backoffs of 1, 2, 2 s (doubled, capped), exit 4
 #   errno_burst   12 errno=12 lines and a stall, no restart: one ERRNO12 line, a 1 s backoff,
@@ -102,9 +106,22 @@ ended_in() {
   return 0
 }
 unit_off() { [ "$(cat "$D/state" 2>/dev/null)" = inactive ] || fail "fake sdrplay.service is $(cat "$D/state" 2>/dev/null)"; }
-# buddy FREE9 FREE10: write the case's buddyinfo, saga's three zones (2026-11-21), with
-# FREE9 and FREE10 free blocks at order 9 and 10 in the Normal zone.
+# buddy FREE9 FREE10 [UNMOV9 UNMOV10]: write the case's buddyinfo, saga's three zones
+# (2026-11-21), with FREE9 and FREE10 free blocks at order 9 and 10 in the Normal zone, and its
+# pagetypeinfo, whose Normal zone has UNMOV9 and UNMOV10 (default FREE9 and FREE10) of them
+# Unmovable, the rest Movable, and no Reclaimable block above order 5.
 buddy() {
+  local u9=${3:-$1} u10=${4:-$2}
+  {
+    echo 'Page block order: 9'; echo 'Pages per block:  512'; echo
+    echo 'Free pages count per migrate type at order       0      1      2      3      4      5      6      7      8      9     10 '
+    echo 'Node    0, zone    DMA32, type    Unmovable    458    183    243    277    132     36      9      0      0      0      0 '
+    echo "Node    0, zone   Normal, type    Unmovable   3473    296    466    724    289     44      0      1      0 $u9 $u10 "
+    echo "Node    0, zone   Normal, type      Movable  12846   2184    398   2125   1445    421     15      0      0 $(($1 - u9)) $(($2 - u10)) "
+    echo 'Node    0, zone   Normal, type  Reclaimable   1081    408     11     11      0      1      0      0      0      0      0 '
+    echo 'Node    0, zone   Normal, type   HighAtomic     47     21     15      8      0      0      0      0      0      0      0 '
+  } > "$D/pagetypeinfo.new"
+  mv -f "$D/pagetypeinfo.new" "$D/pagetypeinfo"
   printf '%s\n' 'Node 0, zone      DMA      0      0      0      0      0      0      0      0      1      2      2 ' \
     'Node 0, zone    DMA32   2792   1643   1082   1072    904    734    525    347    197    135    284 ' \
     "Node 0, zone   Normal   3989  16137  11122   5590   3206    995    222     54     53 $1 $2 " > "$D/buddyinfo.new"
@@ -127,7 +144,8 @@ live() {
   local envs=()
   while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
   env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" \
-      WWV_BUDDYINFO="$D/buddyinfo" SOAPY_SDR_ROOT=/nonexistent SOAPY_SDR_PLUGIN_PATH=/nonexistent "${envs[@]}" \
+      WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
+      SOAPY_SDR_PLUGIN_PATH=/nonexistent "${envs[@]}" \
       "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --log "$D/run.log" "$@" -- -p 0 > "$D/console.txt" 2>&1
   RC=$?
 }
@@ -136,7 +154,7 @@ CASES=("$@")
 [ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
                                  auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
                                  stream_stall stream_lag scan_keep_raw gap_chain gap76
-                                 mem_now mem_delay mem_bound backoff_seq errno_burst
+                                 mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
                                  stream_gaps stream_ramp stream_toobig)
 
 for c in "${CASES[@]}"; do
@@ -183,7 +201,8 @@ for c in "${CASES[@]}"; do
   kill9)
     begin "$c"
     env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
-        WWV_BUDDYINFO="$D/buddyinfo" SOAPY_SDR_ROOT=/nonexistent SOAPY_SDR_PLUGIN_PATH=/nonexistent \
+        WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
+        SOAPY_SDR_PLUGIN_PATH=/nonexistent \
         "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --wwv-khz 5000 --secs 60 -- -p 0 > "$D/console.txt" 2>&1 &
     W=$!
     sleep 4
@@ -325,7 +344,9 @@ PY
     live STUB_MODE=ok -- --wwv-khz 5000 --secs 2
     rc_is 0; ended_in 1 5000
     has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 96 22'
-    has 'MEMWAIT: 118 free blocks at order >= 9; going ahead'; hasnt 'waiting up to'
+    has 'MEMWAIT: pagetypeinfo: Node 0, zone Normal, type Unmovable 3473 296 466 724 289 44 0 1 0 96 22 | Node 0, zone Normal, type Reclaimable'
+    has 'MEMWAIT: 118 free blocks at order >= 9 (Unmovable + Reclaimable); going ahead'; hasnt 'waiting up to'
+    hasnt 'pagetypeinfo unreadable'
     [ "$(compactions)" = 1 ] || fail "$(compactions) compactions, want 1 (compacted once, not again by sdrplay_start)"
     unit_off
     end_case ;;
@@ -337,8 +358,8 @@ PY
     wait
     rc_is 0; ended_in 1 5000
     has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 0'
-    has 'MEMWAIT: no free block at order >= 9; waiting up to 30 s, compacting every 1 s'
-    t=$(grep -oE 'MEMWAIT: 3 free blocks at order >= 9 after [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+ s$' | cut -d' ' -f1)
+    has 'MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 30 s, compacting every 1 s'
+    t=$(grep -oE 'MEMWAIT: 3 free blocks at order >= 9 \(Unmovable \+ Reclaimable\) after [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+ s$' | cut -d' ' -f1)
     [ -n "$t" ] && [ "$t" -ge 1 ] && [ "$t" -le 6 ] || fail "the wait did not end 1-6 s in when the blocks appeared (got '${t}')"
     [ "$(compactions)" -ge 2 ] || fail "$(compactions) compactions, want 2 or more (one each second of the wait)"
     a=$(grep -n 'MEMWAIT: 3 free blocks' "$D/console.txt" | cut -d: -f1); b=$(grep -n 'starting sdrplay.service$' "$D/console.txt" | head -1 | cut -d: -f1)
@@ -348,11 +369,23 @@ PY
   mem_bound)
     begin "$c"
     buddy 0 0
-    live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
+    live STUB_MODE=ok WWV_PAGETYPEINFO="$D/no-such-file" -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: WARNING: no free block at order >= 9 after 2 s'; has 'going ahead: Node 0, zone Normal'
+    has 'MEMWAIT: pagetypeinfo unreadable, using buddyinfo (every migrate type)'
+    has 'MEMWAIT: WARNING: no free block at order >= 9 (buddyinfo) after 2 s'; has 'going ahead: Node 0, zone Normal 3989'
     [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more (one, then one each second)"
     [ $((SECONDS - T0)) -lt 20 ] || fail "took $((SECONDS - T0)) s: the wait was not bounded"
+    unit_off
+    end_case ;;
+  mem_unmovable)
+    begin "$c"
+    buddy 0 48 0 0
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
+    rc_is 0; ended_in 1 5000
+    has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 48'
+    has 'MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 2 s'
+    has 'MEMWAIT: WARNING: no free block at order >= 9 (Unmovable + Reclaimable) after 2 s'
+    hasnt 'pagetypeinfo unreadable'; hasnt 'free blocks at order'
     unit_off
     end_case ;;
   backoff_seq)

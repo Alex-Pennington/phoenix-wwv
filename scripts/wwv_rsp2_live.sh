@@ -32,8 +32,8 @@
 #                       0: never)
 #   --reopen-max N      end the run after N reopens (default 20)
 #   --mem-order N       before starting sdrplay.service and before each reopen, wait for
-#                       /proc/buddyinfo's Normal zone to show a free block at order N or
-#                       above (default 9: the pageblock order, 2 MiB; 0-10)
+#                       a free Unmovable or Reclaimable block at order N or above in the
+#                       Normal zone (default 9: the pageblock order, 2 MiB; 0-10)
 #   --mem-wait-secs N   bound on that wait; past it the wrapper warns and goes ahead
 #                       (default 60; 0: no wait)
 #   --mem-recompact-secs N  compact memory again every N s while waiting (default 5)
@@ -44,8 +44,10 @@
 #
 # Memory: before every start of sdrplay.service (the first, and the scan's restart) and
 # before each reopen, memory is compacted and the wrapper waits as --mem-order says. It
-# logs the buddyinfo line it started on (MEMWAIT). WWV_BUDDYINFO names another file to
-# read (for the tests). The wrapper reads sdrplay.service's journal every 3 s and at the
+# counts the Normal zone's Unmovable and Reclaimable rows of /proc/pagetypeinfo (sudo -n
+# cat), or, when that fails, every type in /proc/buddyinfo ("pagetypeinfo unreadable, using
+# buddyinfo"). It logs the buddyinfo line it started on (MEMWAIT). WWV_BUDDYINFO and
+# WWV_PAGETYPEINFO name other files to read (for the tests). The wrapper reads sdrplay.service's journal every 3 s and at the
 # end of each segment and scan, and logs each burst of libusb errno=12 lines there as one
 # ERRNO12 line with a count.
 #
@@ -109,8 +111,9 @@ MEM_ORDER=9; MEM_WAIT_SECS=60; MEM_RECOMPACT_SECS=5
 BACKOFF_SECS=5; BACKOFF_MAX=120; BACKOFF_RESET_SECS=600
 # The streamer; a test may point this at a stub that takes the same options.
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
-# The free-block counts; a test may point this at a file it writes.
+# The free-block counts; a test may point these at files it writes.
 BUDDYINFO=${WWV_BUDDYINFO:-/proc/buddyinfo}
+PAGETYPEINFO=${WWV_PAGETYPEINFO:-/proc/pagetypeinfo}
 GAINS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -299,29 +302,48 @@ svc_ready() {
   say "sdrplay.service is $(sdrplay_state) 30 s after the reopen was asked for; starting it"
   svc_start
 }
-# mem_read: MEM_LINE, buddyinfo's Normal zone (one line per node, joined by " | "), and
-# MEM_FREE, its free blocks at order MEM_ORDER and above; MEM_FREE is empty when there is
-# no Normal zone to read.
+# mem_read: MEM_FREE, the free blocks at order MEM_ORDER and above that the wait counts,
+# and MEM_LINE, the rows they were counted from (one per node, joined by " | "). From
+# /proc/pagetypeinfo (root only, read with sudo -n): the Normal zone's Unmovable and
+# Reclaimable rows together, MEM_SRC "Unmovable + Reclaimable". When that cannot be read,
+# from /proc/buddyinfo's Normal zone, every migrate type, MEM_SRC "buddyinfo". MEM_BUDDY is
+# buddyinfo's Normal zone either way. MEM_FREE is empty when there is no Normal zone.
 mem_read() {
-  local bi
+  local bi pt
   bi=$(cat "$BUDDYINFO" 2>/dev/null || true)
-  MEM_LINE=$(awk '$4 == "Normal" { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$bi")
-  MEM_FREE=$(awk -v o="$MEM_ORDER" '$4 == "Normal" { z = 1; for (k = 5 + o; k <= NF; k++) s += $k }
-                                    END { if (z) print s + 0 }' <<< "$bi")
+  MEM_BUDDY=$(awk '$4 == "Normal" { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$bi")
+  pt=$(sudo -n cat "$PAGETYPEINFO" 2>/dev/null || true)
+  MEM_LINE=$(awk '$4 == "Normal," && ($6 == "Unmovable" || $6 == "Reclaimable") { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$pt")
+  if [ -n "$MEM_LINE" ]; then
+    MEM_SRC="Unmovable + Reclaimable"
+    MEM_FREE=$(awk -v o="$MEM_ORDER" '$4 == "Normal," && ($6 == "Unmovable" || $6 == "Reclaimable") { for (k = 7 + o; k <= NF; k++) s += $k }
+                                      END { print s + 0 }' <<< "$pt")
+  else
+    MEM_SRC=buddyinfo
+    MEM_LINE=$MEM_BUDDY
+    MEM_FREE=$(awk -v o="$MEM_ORDER" '$4 == "Normal" { z = 1; for (k = 5 + o; k <= NF; k++) s += $k }
+                                      END { if (z) print s + 0 }' <<< "$bi")
+  fi
 }
 # mem_wait WHAT: compact memory, then wait up to --mem-wait-secs for a free block at
-# --mem-order or above in the Normal zone, compacting again every --mem-recompact-secs.
-# Past the bound, or at --secs, it warns and goes ahead: it never blocks the run.
+# --mem-order or above (mem_read says where it counts), compacting again every
+# --mem-recompact-secs. Past the bound, or at --secs, it warns and goes ahead: it never
+# blocks the run.
 mem_wait() {
   sdrplay_compact
   [ "$MEM_WAIT_SECS" = 0 ] && return 0
   mem_read
-  if [ -z "$MEM_FREE" ]; then say "MEMWAIT: no Normal zone in $BUDDYINFO; going ahead"; return 0; fi
-  say "MEMWAIT: before $1, Normal zone: $MEM_LINE"
-  if [ "$MEM_FREE" -gt 0 ]; then
-    say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER; going ahead"; return 0
+  if [ -z "$MEM_FREE" ]; then say "MEMWAIT: no Normal zone in $BUDDYINFO or $PAGETYPEINFO; going ahead"; return 0; fi
+  say "MEMWAIT: before $1, Normal zone: $MEM_BUDDY"
+  if [ "$MEM_SRC" = buddyinfo ]; then
+    say "MEMWAIT: pagetypeinfo unreadable, using buddyinfo (every migrate type)"
+  else
+    say "MEMWAIT: pagetypeinfo: $MEM_LINE"
   fi
-  say "MEMWAIT: no free block at order >= $MEM_ORDER; waiting up to $MEM_WAIT_SECS s, compacting every $MEM_RECOMPACT_SECS s"
+  if [ "$MEM_FREE" -gt 0 ]; then
+    say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER ($MEM_SRC); going ahead"; return 0
+  fi
+  say "MEMWAIT: no free block at order >= $MEM_ORDER ($MEM_SRC); waiting up to $MEM_WAIT_SECS s, compacting every $MEM_RECOMPACT_SECS s"
   local t0=$SECONDS tc=$SECONDS n=0
   while :; do
     sleep 1 & wait $! || true
@@ -331,11 +353,11 @@ mem_wait() {
     fi
     mem_read
     if [ "${MEM_FREE:-0}" -gt 0 ]; then
-      say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER after $((SECONDS - t0)) s ($n re-compactions); going ahead: $MEM_LINE"
+      say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER ($MEM_SRC) after $((SECONDS - t0)) s ($n re-compactions); going ahead: $MEM_LINE"
       return 0
     fi
     if [ $((SECONDS - t0)) -ge "$MEM_WAIT_SECS" ]; then
-      say "MEMWAIT: WARNING: no free block at order >= $MEM_ORDER after $MEM_WAIT_SECS s ($n re-compactions); going ahead: $MEM_LINE"
+      say "MEMWAIT: WARNING: no free block at order >= $MEM_ORDER ($MEM_SRC) after $MEM_WAIT_SECS s ($n re-compactions); going ahead: $MEM_LINE"
       return 0
     fi
   done
