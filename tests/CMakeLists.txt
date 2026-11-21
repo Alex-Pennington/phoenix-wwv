@@ -84,6 +84,11 @@ add_executable(test_bcd_time_width test_bcd_time_width.c)
 target_link_libraries(test_bcd_time_width PRIVATE phoenix_wwv m)
 add_test(NAME bcd_time_width COMMAND test_bcd_time_width)
 
+# The BTIME step fit at 1-3 dB pulse/low contrast, and where it is not used
+add_executable(test_bcd_time_lowcontrast test_bcd_time_lowcontrast.c)
+target_link_libraries(test_bcd_time_lowcontrast PRIVATE phoenix_wwv m)
+add_test(NAME bcd_time_lowcontrast COMMAND test_bcd_time_lowcontrast)
+
 # Time decoder simulation: time to CONFIRMED and false confirms over thousands of
 # random chains at given symbol error rates. Too slow for CTest; run by hand.
 add_executable(sim_wwv_time_decoder sim_wwv_time_decoder.c)
