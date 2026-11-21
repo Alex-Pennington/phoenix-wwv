@@ -734,7 +734,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   +344 ms from t=600 to 4200 s with 0 timeouts and 0 overflows; NTP reports the host synchronised.
   The saga capture's timelog drifts 5.9 ppm over 630 s, and the TCXO read 1.09 ppm, so 80 ppm is
   not the radio clock alone; the cause is not found. From t=4200 to 5100 s it lost 3.7 s more, with
-  one 1.2 s timeout.
+  one 1.2 s timeout. The pulse phase held over the first 70 minutes, so that drift lost no sample:
+  see "Stream slip" below.
 - **rsp2_stream's "the reader is not keeping up" label is wrong on run3h.** The write wait is a
   steady 1.5-3 s per 60 s whatever the loss, so a growth under twice that reads as the reader's
   fault: the +159 ms and +225 ms minutes of the 3.7 s loss were labelled so, with a write-wait
@@ -753,6 +754,63 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     WWV, where the onset events fall within 40 ms of the span's end. It is not measured on air.
   - wwv_live reads 0.5 ms of exact (0,0) as a fill. Any producer that sends real zeros that
     long (a muted source, a test file) has them taken as gaps.
+- **Stream slip: on runG the slow stage filled 1054.6 ms that were never lost, and stream time
+  ran 1 s ahead of UTC** (fix/wwv-stream-slip). runG (`~/wwv-live/runG`, saga RSP2, 5 MHz,
+  10:01-12:38 UTC 2026-11-21, 9431.7 s) logged 378 fills, every one `remainder over 30 s`, 0
+  overflows, 0 timeouts. Measured from the log and console:
+  - **The slip is the fill.** The median BCD pulse start (BTIME `t`) within the anchor's second,
+    per 10 minutes, unwrapped: +57 ms at the start, +1046 ms at the end. Against the cumulative
+    fill at the same stream time: phase = 0.974 x fill + 47 ms, residual SD 8.9 ms over 16 bins;
+    slopes 107.6 and 110.3 ppm. It follows the fill rate's rise from about 80 to about 165 ppm
+    after minute 100. runF segment 5 (slow fills only) gives 0.944 x fill over 172 ms. A zero
+    pushes every later sample on by its length, so a spurious fill puts stream time ahead of
+    UTC and the pulses late in the second, which is what moved. A fill of a real loss leaves
+    them where they were: runF segment 1's fast fills (17, 16, 16 ms) and segment 6's 1114.5 ms
+    timeout fill left the phase within 1-2 ms (mod 1 s for the latter).
+  - **The radio's sample count keeps WWV's time, and the host's clock keeps UTC.** On run3h,
+    before the gap fill existed, the first 70 minutes lost nothing: "behind" grew +49 to +357 ms
+    (85 ppm) while the pulse phase moved 54.7 to 47.1 ms (-2 ppm). The scan's carrier read 1.09
+    ppm, and the TCXO clocks the ADC too. Host (read 12:45 UTC, after the run): systemd-timesyncd
+    synchronised, offset +4.3 ms at the 12:12 poll after 34 min of free run, kernel frequency
+    +7.18 ppm, PLL offset 89 us, clocksource tsc, no clock step in the journal (no chrony on saga).
+    A host clock 112 ppm off would have shown 230 ms at that poll.
+  - **So the count's shortfall against the host clock is a delivery delay that grows, not loss
+    and not a clock rate** (inference, from the two points above). The delay grew 50-170 ppm on
+    live runs (run3h 85, runF segment 5 70, runG 80-165). saga's 10-minute capture timelog (rsp_record,
+    no live reader) shows +0.6 ppm (30 s window minima, least squares), so the growth comes with
+    the live pipeline. run3h's tail fits a queue that reaches a cap: from minute 109 to 129
+    "behind" is flat (+24 ms) while the pulse phase moves -78 ppm, so samples are dropped then at
+    the rate the delay had grown, and arrival times see nothing. Where the queue is (the closed
+    API service, USB) is not determined. Per-minute delay growth against the write wait (the
+    time rsp2_stream blocks writing to wwv_live) correlates at +0.03, so that link is not shown.
+  - **The fix tracks the lag rate** (`scripts/rsp2_stream.py` docstring): the floor is a line,
+    the least lag of 10 s bins, fitted over 300 s (Theil-Sen, from 120 s, at most 1000 ppm),
+    carried over the last 60 s. A steady rate is never filled. The slow stage fills at most once
+    per 30 s: a fill moves only held blocks, so when the window's least lag was a released block
+    it refilled on every block (runG's 2.3 ms x 3 bursts). On the fake radio's virtual clock
+    (`tests/live/stream_fake_soapy.py` `drift@`, `FAKE_VCLOCK=1`): 110 ppm for 720 s filled 74.6
+    ms before and 0.0 ms now; a runG-like 9400 s, 80 stepping to 170 ppm, filled 1185.8 ms in
+    536 gaps before and 0.0 ms now; 80 then 165 ppm with losses of 0.3 s, 20 ms and a 3 s outage
+    ends 3.5 ms off true time (83 ms before). saga's capture timelog replayed fills 0 both ways.
+    `ctest -L live` case `stream_drift` holds the first and third.
+  - **The limits it leaves.** A steady real loss under 1000 ppm is now taken as a rate and not
+    filled; by arrival times it cannot be told from a growing delay. A loss once a queue is at its
+    cap (run3h's tail) is invisible to arrival times either way: only the signal sees it. The
+    rate's fit lags a rate step by about half its 300 s window; an error over about 60 ppm then
+    fills a few ms until it catches up. The live path still has no rate correction, so a growing
+    delay now shows as "behind" growing by the rate (about 1 s on a runG), which the report line
+    names as `lag rate`.
+  - **Scoring.** `tests/air/decode_score.py` took a symbol's truth as floor(U0 + t), t being
+    about 400 ms into the decoder's second, so a slip past about 600 ms read the next second. Its
+    truth is now the decoder's label (SYMMIN `sec`) in the UTC minute nearest U0 + minute_start;
+    the 250 ms pulse test already ties the label to the pulse. runG: sent 1 read as 0 334/1704 ->
+    94/1816 (5.2%), sent 0 read as 1 473/5242 -> 112/5327 (2.1%), one 0 more than the confirm
+    worker's 111/5326 (not traced). Of the other live logs only those whose stream time left the
+    anchor move, all by unfilled loss: run3h 1->0 459/1371 -> 134/1454, 0->1 500/4171 -> 107/4372;
+    run90d 552/869 -> 72/942, 515/2480 -> 77/2770; run90g segment 2 172/286 -> 157/322, 165/758 ->
+    93/713. run90, run90c, run90f, runF (segments 1, 2, 5, 6), runF3 and runN1 are unchanged, as are
+    every frame score and FALSE CONFIRM (0 in all). `symbol_second_score.py` and
+    `bcd_window_trace.py` still take floor(U0 + t) and have the same fault on a slipped run.
 
 - **The SDRplay API service keeps crashing on libusb errno=12 (ENOMEM), and compaction
   at start and reopen does not prevent it.** 2026-11-21 01:30-06:31 UTC on saga: 132

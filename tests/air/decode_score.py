@@ -12,7 +12,13 @@ wrong value is a false confirm; the gate is that there are none. Time to first i
 seconds from the start of the capture to the stream time the result was emitted.
 Also prints the symbol confusion the decoder's error model rests on: for symbols
 whose pulse starts within 250 ms of the second, a sent 0 read as 1 and a sent 1
-read as 0."""
+read as 0. A symbol's true second is the decoder's own label (SYMMIN sec) in the
+UTC minute nearest its minute start (out_utc0_unix + minute_start), not the UTC
+second its stream time falls in: stream time can slip against the anchor (runG,
+2026-11-21: 1 s in 2.6 h, NOTES.md "Stream slip"), and the old floor(U0 + t)
+took the next second once the slip and the symbol's place in its second passed
+1 s. The 250 ms test keeps only symbols whose pulse sits on the decoder's
+second, so the label is the pulse's second; the minute rounding holds to 30 s."""
 import sys, re, json, math, datetime, collections
 fn, conv = sys.argv[1], sys.argv[2]
 label = sys.argv[3] if len(sys.argv) > 3 else fn
@@ -73,8 +79,9 @@ for i, l in enumerate(L):
         sym = re.search(r'sym=(.)', l).group(1)
         off = float(re.search(r'pulse_offset=(\S+)', L[i + 1]).group(1))
         if sym not in '01' or not (off <= 250): continue
-        t = float(re.search(r' t=([\d.]+)', l).group(1))
-        tr = frame_bit(math.floor(U0 + t / 1000))
+        sec = int(re.search(r'sec=(\d+)', L[i + 1]).group(1))
+        ms = float(re.search(r'minute_start=([-\d.]+)', L[i + 1]).group(1))
+        tr = frame_bit(round((U0 + ms / 1000) / 60) * 60 + sec)
         if tr in ('0', '1'): conf[(tr, sym)] += 1
 n0 = conf[('0', '0')] + conf[('0', '1')]; n1 = conf[('1', '0')] + conf[('1', '1')]
 print(f'  frames admitted={adm}/{len(frames)} decodable alone (hard_valid)={hv}; conflicts={rows[-1][20] if rows else 0}')
