@@ -6,7 +6,10 @@
  * pP0 (sent P read 0),
  * erase (no symbol at a locked second), mid (a mid-second detection: not evidence),
  * bad (fraction of minutes in a fade) and mult (rate multiplier in a fade, each rate
- * capped at 0.5). chains, minutes, seed. The first minute of every chain starts at
+ * capped at 0.5). p10b, pP1b, pP0b and step: from chain minute step on, a sent 1 reads 0
+ * at p10b and a sent P reads 1 at pP1b and 0 at pP0b, each in place of its rate before
+ * the step when given (a fade the chain's p10 estimate, which counts P read short, has
+ * to catch up with). chains, minutes, seed. The first minute of every chain starts at
  * a random second, as a capture or a lock does.
  * Model (decoder config; defaults if not given): m01, m10, m01p, m10p, weight, conf
  * (confirmed_nats), looks (confirm_looks).
@@ -97,7 +100,8 @@ static void pct(int *v, int n, int cap, char *out, size_t len) {
 
 int main(int argc, char **argv) {
     double p01 = 0.008, p10 = 0.021, pP1 = 0.064, pP0 = 0.0, erase = 0.08, mid = 0.07, bad = 0.0, mult = 1.0;
-    int chains = 1000, minutes = 30;
+    double p10b = -1.0, pP1b = -1.0, pP0b = -1.0;
+    int chains = 1000, minutes = 30, step = -1;
     unsigned long long seed = 1;
     wwv_td_config_t cfg;
     wwv_td_default_config(&cfg);
@@ -116,6 +120,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(k, "mid")) mid = v;
         else if (!strcmp(k, "bad")) bad = v;
         else if (!strcmp(k, "mult")) mult = v;
+        else if (!strcmp(k, "p10b")) p10b = v;
+        else if (!strcmp(k, "pP1b")) pP1b = v;
+        else if (!strcmp(k, "pP0b")) pP0b = v;
+        else if (!strcmp(k, "step")) step = (int)v;
         else if (!strcmp(k, "chains")) chains = (int)v;
         else if (!strcmp(k, "minutes")) minutes = (int)v;
         else if (!strcmp(k, "seed")) seed = (unsigned long long)v;
@@ -158,8 +166,12 @@ int main(int argc, char **argv) {
             wwv_td_encode(g_truth.year, g_truth.doy, g_truth.hour, g_truth.minute, g_status.dut1,
                           g_status.dst55, g_status.dst2, g_status.lsw, f);
             double m = (urand() < bad) ? mult : 1.0;
-            double q01 = fmin(0.5, p01 * m), q10 = fmin(0.5, p10 * m), qP1 = fmin(0.5, pP1 * m);
-            double qP0 = fmin(0.5 - qP1, pP0 * m);
+            int stepped = step >= 0 && k >= step;
+            double r10 = (stepped && p10b >= 0.0) ? p10b : p10;
+            double rP1 = (stepped && pP1b >= 0.0) ? pP1b : pP1;
+            double rP0 = (stepped && pP0b >= 0.0) ? pP0b : pP0;
+            double q01 = fmin(0.5, p01 * m), q10 = fmin(0.5, r10 * m), qP1 = fmin(0.5, rP1 * m);
+            double qP0 = fmin(0.5 - qP1, rP0 * m);
             float start = 5000.0f + 60000.0f * k;
             g_nmin = k < 64 ? k + 1 : 64;
             if (k < 64) { memcpy(g_sent[k], f, 61); memset(g_got[k], '_', 60); g_got[k][60] = 0; }
@@ -201,6 +213,8 @@ int main(int argc, char **argv) {
     char a[64], b[64];
     pct(t_tod, chains, minutes, a, sizeof a);
     pct(t_date, chains, minutes, b, sizeof b);
+    if (step >= 0) printf("from minute %d: p10 %.3f pP1 %.3f pP0 %.3f | ", step, p10b >= 0.0 ? p10b : p10,
+                          pP1b >= 0.0 ? pP1b : pP1, pP0b >= 0.0 ? pP0b : pP0);
     printf("%s | true p01 %.3f p10 %.3f pP1 %.3f pP0 %.3f erase %.2f mid %.2f bad %.2f x%.0f | "
            "model %.3f/%.3f pess %.3f/%.3f conf %.2f looks %d | %d chains x %d min | tod CONF: %s | date CONF: %s | "
            "CONFIRMED wrong: %d chains (%.2f per 1000), %d minutes | PREDICTED wrong: %d chains | "
