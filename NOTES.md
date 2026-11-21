@@ -648,6 +648,18 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     long (a muted source, a test file) has them taken as gaps.
   - `docs/WWV_LIVE.md` does not describe GAP / GAPEND, `--anchor-in` or the 3 s hold yet.
 
+- **The SDRplay API service keeps crashing on libusb errno=12 (ENOMEM), and compaction
+  at start and reopen does not prevent it.** 2026-11-21 01:30-06:31 UTC on saga: 132
+  `submit_iso_transfer ... errno=12` lines and 19 core dumps of `sdrplay_apiService`, with
+  `usbfs_memory_mb` 0. The wrapper reopened each time and lock came back in 2.5-3.5 min, but
+  from 06:01 the crashes came in bursts and the 05:50 run used up `--reopen-max 20` at 06:31.
+  `/proc/buddyinfo` Normal zone had no free pages at order 5 or above 40 min after a
+  compaction that had raised order 6-9 to 1914/1097/548/266, so something on saga fragments
+  memory within minutes (12 GB of page cache at the time). Untested remedies, each a saga
+  setting for Alex: a larger `vm.min_free_kbytes`, `vm.compaction_proactiveness`, or
+  periodic compaction while streaming. Check the kernel log for xHCI errors too (none
+  logged 05:50-06:31).
+
 ## Documentation
 
 - The cited source (NIST SP 432, https://tf.nist.gov/general/pdf/1383.pdf) is not filed in
