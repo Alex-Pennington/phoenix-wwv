@@ -326,7 +326,7 @@ mem_wait() {
   while :; do
     sleep 1 & wait $! || true
     if past_end; then say "MEMWAIT: --secs reached while waiting; going ahead"; return 0; fi
-    if [ $((SECONDS - tc)) -ge "$MEM_RECOMPACT_SECS" ]; then
+    if [ $((SECONDS - tc)) -ge "$MEM_RECOMPACT_SECS" ] && [ "${SDRPLAY_COMPACT:-1}" != 0 ]; then
       sdrplay_compact 2> /dev/null; n=$((n + 1)); tc=$SECONDS
     fi
     mem_read

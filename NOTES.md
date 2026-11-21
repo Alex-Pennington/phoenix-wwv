@@ -718,6 +718,17 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   setting for Alex: a larger `vm.min_free_kbytes`, `vm.compaction_proactiveness`, or
   periodic compaction while streaming. Check the kernel log for xHCI errors too (none
   logged 05:50-06:31).
+- **Fragmentation survey, read-only, measured on saga 2026-11-21.** In `/proc/pagetypeinfo`'s
+  Normal zone, Unmovable and Reclaimable had 0 free order-9 and 0 free order-10 blocks, while
+  Movable had 48 free order-10 blocks. `compact_fail` was 97.9% of `compact_stall`. In
+  01:30-06:31 UTC every core dump of `sdrplay_apiService` followed a burst of up to 18 libusb
+  errno=12 lines. systemd restarted the service within about 1 s, so from 06:01 the crashes
+  looped in clusters every 1-3 min. The wrapper's compact-before-open did not prevent them. The
+  buffer order the service needs cannot be determined, because the service is closed-source. The
+  wrapper now waits for a free block at order 9 or above in the Normal zone of `/proc/buddyinfo`,
+  and backs off between crash reopens (docs/WWV_LIVE.md, *Memory compaction*). Neither is tested
+  on the radio. `/proc/buddyinfo` sums the migrate types, so at the survey's state (48 free
+  Movable order-10 blocks) the wait goes ahead at once.
 
 ## Documentation
 

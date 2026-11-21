@@ -37,11 +37,11 @@
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
 #   mem_now       buddyinfo has free order 9-10 blocks: the memory wait goes ahead at once,
 #                 after one compaction
-#   mem_delay     no free block at order >= 9 until 4 s in: the wait re-compacts every 1 s,
+#   mem_delay     no free block at order >= 9 until 2 s in: the wait re-compacts every 1 s,
 #                 goes ahead when the blocks appear, and only then starts the unit
-#   mem_bound     no free block ever: the wait warns after its 3 s bound and goes live
+#   mem_bound     no free block ever: the wait warns after its 2 s bound and goes live
 #   backoff_seq   the vendor service crashes (18 errno=12 lines, a restart) in every segment:
-#                 one ERRNO12 line per burst, backoffs of 1, 2, 4, 4 s (capped), exit 4
+#                 one ERRNO12 line per burst, backoffs of 1, 2, 2 s (doubled, capped), exit 4
 #   errno_burst   12 errno=12 lines and a stall, no restart: one ERRNO12 line, a 1 s backoff,
 #                 segment 2
 #   gap76         the stream exits 76 once (a loss too large to fill): REOPEN, segment 2
@@ -322,7 +322,7 @@ PY
     end_case ;;
   mem_now)
     begin "$c"
-    live STUB_MODE=ok -- --wwv-khz 5000 --secs 3
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 2
     rc_is 0; ended_in 1 5000
     has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 96 22'
     has 'MEMWAIT: 118 free blocks at order >= 9; going ahead'; hasnt 'waiting up to'
@@ -332,15 +332,15 @@ PY
   mem_delay)
     begin "$c"
     buddy 0 0
-    ( sleep 4; buddy 3 0 ) &
-    live STUB_MODE=ok -- --wwv-khz 5000 --secs 3 --mem-wait-secs 30 --mem-recompact-secs 1
+    ( sleep 2; buddy 3 0 ) &
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 30 --mem-recompact-secs 1
     wait
     rc_is 0; ended_in 1 5000
     has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 0'
     has 'MEMWAIT: no free block at order >= 9; waiting up to 30 s, compacting every 1 s'
     t=$(grep -oE 'MEMWAIT: 3 free blocks at order >= 9 after [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+ s$' | cut -d' ' -f1)
-    [ -n "$t" ] && [ "$t" -ge 3 ] && [ "$t" -le 8 ] || fail "the wait did not end 3-8 s in when the blocks appeared (got '${t}')"
-    [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more (one each second of the wait)"
+    [ -n "$t" ] && [ "$t" -ge 1 ] && [ "$t" -le 6 ] || fail "the wait did not end 1-6 s in when the blocks appeared (got '${t}')"
+    [ "$(compactions)" -ge 2 ] || fail "$(compactions) compactions, want 2 or more (one each second of the wait)"
     a=$(grep -n 'MEMWAIT: 3 free blocks' "$D/console.txt" | cut -d: -f1); b=$(grep -n 'starting sdrplay.service$' "$D/console.txt" | head -1 | cut -d: -f1)
     [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || fail 'the unit was started before the wait ended'
     unit_off
@@ -348,28 +348,28 @@ PY
   mem_bound)
     begin "$c"
     buddy 0 0
-    live STUB_MODE=ok -- --wwv-khz 5000 --secs 3 --mem-wait-secs 3 --mem-recompact-secs 1
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: WARNING: no free block at order >= 9 after 3 s'; has 'going ahead: Node 0, zone Normal'
-    [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more"
+    has 'MEMWAIT: WARNING: no free block at order >= 9 after 2 s'; has 'going ahead: Node 0, zone Normal'
+    [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more (one, then one each second)"
     [ $((SECONDS - T0)) -lt 20 ] || fail "took $((SECONDS - T0)) s: the wait was not bounded"
     unit_off
     end_case ;;
   backoff_seq)
     begin "$c"
-    live STUB_MODE=crash_after:1 -- --wwv-khz 5000 --secs 120 --reopen-max 4 --backoff-secs 1 --backoff-max 4
-    rc_is 4; has 'REOPEN: 5 reopens, more than --reopen-max 4; ending the run'; streams_is 5
+    live STUB_MODE=crash_after:1 -- --wwv-khz 5000 --secs 120 --reopen-max 3 --backoff-secs 1 --backoff-max 2
+    rc_is 4; has 'REOPEN: 4 reopens, more than --reopen-max 3; ending the run'; streams_is 4
     seq=$(grep -oE 'BACKOFF: waiting [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+' | paste -sd' ')
-    [ "$seq" = '1 2 4 4' ] || fail "backoffs '$seq', want '1 2 4 4'"
-    has 'BACKOFF: waiting 4 s before the reopen (the service restarted, 18 errno=12 lines in the segment; crash reopen 4 in a row)'
-    n=$(grep -c 'ERRNO12: ' "$D/console.txt"); [ "$n" = 5 ] || fail "$n ERRNO12 lines, want 5 (one per burst)"
-    [ "$(grep -c 'ERRNO12: 18 libusb errno=12 lines from sdrplay.service' "$D/console.txt")" = 5 ] || fail 'an ERRNO12 line without the count 18'
-    [ "$(grep -c 'MEMWAIT: before reopen' "$D/console.txt")" = 4 ] || fail 'no memory wait before every reopen'
+    [ "$seq" = '1 2 2' ] || fail "backoffs '$seq', want '1 2 2'"
+    has 'BACKOFF: waiting 2 s before the reopen (the service restarted, 18 errno=12 lines in the segment; crash reopen 3 in a row)'
+    n=$(grep -c 'ERRNO12: ' "$D/console.txt"); [ "$n" = 4 ] || fail "$n ERRNO12 lines, want 4 (one per burst)"
+    [ "$(grep -c 'ERRNO12: 18 libusb errno=12 lines from sdrplay.service' "$D/console.txt")" = 4 ] || fail 'an ERRNO12 line without the count 18'
+    [ "$(grep -c 'MEMWAIT: before reopen' "$D/console.txt")" = 3 ] || fail 'no memory wait before every reopen'
     unit_off
     end_case ;;
   errno_burst)
     begin "$c"
-    live STUB_MODE=errno_after:2 STUB_ONLY_FIRST=1 STUB_ERRNO=12 -- --wwv-khz 5000 --secs 12 --backoff-secs 1
+    live STUB_MODE=errno_after:2 STUB_ONLY_FIRST=1 STUB_ERRNO=12 -- --wwv-khz 5000 --secs 6 --backoff-secs 1
     rc_is 0; has 'REOPEN: segment 1: rsp2_stream had no samples for 10 s'
     n=$(grep -c 'ERRNO12: ' "$D/console.txt"); [ "$n" = 1 ] || fail "$n ERRNO12 lines, want 1"
     has 'ERRNO12: 12 libusb errno=12 lines from sdrplay.service, '
