@@ -222,8 +222,7 @@ void marker_state_machine_run(marker_detector_t *md) {
                      * follows within seconds is still seen. */
                     printf("[%7.1fs] MARKER rejected: not a tone, flank/centre excess %.2f > %.2f "
                            "(window run %.0fms, start=%.1fms)\n",
-                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
- md->last_flank_ratio,
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0, md->last_flank_ratio,
                            MARKER_MAX_FLANK_RATIO, duration_ms, pulse_start_ms);
                     /* The chain log takes it from here (wwv_chain_log_telem) */
                     telem_sendf(TELEM_MARKERS, "PURITY,%.1f,%.1f,%.0f,%.2f,%.2f",
@@ -292,8 +291,7 @@ void marker_state_machine_run(marker_detector_t *md) {
                     bool tone = (flank <= MARKER_MAX_FLANK_RATIO);
                     printf("[%7.1fs] MARKER short run: window run %.0fms < %.0fms, start=%.1fms "
                            "peak/baseline %.2f flank %.2f%s\n",
-                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
- duration_ms, md->min_duration_ms,
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0, duration_ms, md->min_duration_ms,
                            pulse_start_ms, md->marker_peak_energy / md->baseline_energy, flank,
                            tone ? " (candidate)" : "");
                     if (tone && md->candidate_callback) {
@@ -311,8 +309,7 @@ void marker_state_machine_run(marker_detector_t *md) {
                     break;
                 } else {
                     printf("[%7.1fs] MARKER timed out after %.0fms - resetting baseline\n",
-                           MARKER_FRAMES_TO_MS(frame) / 1000.0,
- duration_ms);
+                           MARKER_FRAMES_TO_MS(frame) / 1000.0, duration_ms);
                     /* Restored from before 7e7805e: without it, sustained in-band
                      * energy keeps the detector cycling IN_MARKER -> timeout. */
                     md->baseline_energy = md->accumulated_energy;

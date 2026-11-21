@@ -16,9 +16,11 @@
  * Take the difference of two stream times in double before narrowing it.
  *
  * A detector stamps an event from its frame count with wwv_frames_to_ms(), which
- * multiplies in integers and divides once, so the time does not drift with run
- * length the way frame_count * a float frame duration does (5.12f is 2.2e-8 off,
- * 3 ms at 40 h). */
+ * multiplies in integers and divides once in double. The float stamp it replaces,
+ * frame_count * a float frame duration, converted the count to float and rounded
+ * the product to float, so its error was the float step: 16 ms at 40 h. (The
+ * count itself rounds once it passes 2^24 frames, 23.9 h at 5.12 ms; 5.12f is
+ * 2.2e-8 off, 3 ms at 40 h, which the step hides.) */
 #ifndef WWV_TIME_H
 #define WWV_TIME_H
 

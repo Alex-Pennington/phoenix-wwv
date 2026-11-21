@@ -403,12 +403,17 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     change mechanical. A sample index would need a conversion at every comparison with a ms
     constant. A double holds integers exactly to 2^53, far beyond any run.
   - **Detectors stamp an event from the frame count** with `wwv_frames_to_ms()`: an integer
-    multiply and one divide. `frame_count * FRAME_DURATION_MS` drifted with run length, because
-    5.12f is 2.2e-8 off (3 ms at 40 h).
+    multiply and one divide in double. The old `frame_count * FRAME_DURATION_MS` converted the
+    count to float and rounded the product to float, so its error was the float step, 16 ms at
+    40 h. The constant's own error (5.12f is 2.2e-8 off) is 3 ms at 40 h, under that step.
   - **Durations and offsets inside a second or a minute stay float** (pulse widths, edge offsets,
     `pulse_offset_ms`). Their difference is taken in double first. `minute_wrap()` and
-    `second_wrap()` in sync take a double, because during holdover an edge's offset from the held
-    anchor is the difference of two stream times hours apart.
+    `second_wrap()` in sync take a double. `second_wrap()`'s argument, an edge less the held
+    anchor, is taken only while LOCKED, so it stays under 20 min (`SYNC_HOLDOVER_MS`,
+    `src/sync/sync_detector.c:50`). A float would do there; double is kept for uniformity.
+    `minute_wrap()` reaches about 80 min in recovery: an anchor up to 20 min old at the loss, then
+    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has no bound, because
+    `sync_detector_full_reset()` keeps `last_confirmed_ms`.
   - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
     routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase

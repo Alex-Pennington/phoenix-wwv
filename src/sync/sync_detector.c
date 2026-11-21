@@ -321,7 +321,10 @@ static void log_confirmed_marker(sync_detector_t *sd, wwv_time_ms_t timestamp_ms
 }
 
 /* Sub-minute part of a phase change, in (-30 s, +30 s]. Takes the difference of
- * two stream times, which can be hours, so it wraps in double. */
+ * two stream times. In recovery that is under about 80 minutes (an anchor up to
+ * SYNC_HOLDOVER_MS old at the loss, then SYNC_RETENTION_WINDOW_MS); from
+ * confirm_marker() it is unbounded, because a full reset keeps last_confirmed_ms.
+ * It wraps in double, as every stream time difference does. */
 static float minute_wrap(double d) {
     return (float)(d - round(d / MARKER_NOMINAL_MS) * MARKER_NOMINAL_MS);
 }
@@ -908,8 +911,10 @@ void sync_detector_tick_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms) {
     }
 }
 
-/* Sub-second part, in (-500 ms, +500 ms]. Takes the difference of two stream
- * times, which can be hours, so it wraps in double. */
+/* Sub-second part, in (-500 ms, +500 ms]. Takes an edge's time less the held
+ * anchor, which only while LOCKED: under SYNC_HOLDOVER_MS (20 min) plus the
+ * debounce. A float would do there (step 0.125 ms at 20 min); it wraps in double
+ * for uniformity with every other stream time difference. */
 static float second_wrap(double d) {
     return (float)(d - round(d / 1000.0) * 1000.0);
 }
