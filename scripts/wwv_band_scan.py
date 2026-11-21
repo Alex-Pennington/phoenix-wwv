@@ -75,6 +75,13 @@ service aborts the process). A read still stuck in the driver HANG_MARGIN_S past
 ends the scan the same way, from a watchdog thread. wwv_rsp2_live.sh restarts sdrplay.service
 on that status.
 
+Antenna: --antenna NAME must be one of the device's listAntennas() (the RSP2 under
+SoapySDRPlay3 0.5.3: "Antenna A", "Antenna B", "Hi-Z"); any other name ends the scan with
+exit status EXIT_USAGE (2) and the list, before any band is read (the module's setAntenna
+ignores an unknown name). It is set once at the open; each band's read logs the antenna
+read back and --json records it per band. wwv_bands.GAIN was tuned on saga's whip on
+Antenna A: another antenna may want other gains (--gain).
+
 Extension: when two or more bands of the choice's tier score above 0 within its margin of
 the best, each of them is read for --extend-secs more and the choice is made again on all
 their seconds. --extend-secs 0 turns it off.
@@ -103,6 +110,7 @@ CLIP = 32700
 CARRIER_DBHZ = 30.0         # below this the "carrier" is the strongest of ~500 noise bins (11-14 dB-Hz)
 READ_MARGIN_S = 10.0        # a band's read ends this long after its due end, samples or not
 HANG_MARGIN_S = 10.0        # a read stuck in the driver past its bound + this: the API is failing
+EXIT_USAGE = 2              # exit status: --antenna is not one of the device's antennas
 EXIT_API = 5                # exit status: the sdrplay API service is failing (restart it)
 
 
@@ -436,8 +444,13 @@ def main():
     nmax = int(round(max(a.secs, a.extend_secs) * a.rate))
     raw = np.empty(2 * nmax, np.int16)
     if dev is not None:
+        ants = list(dev.listAntennas(SOAPY_SDR_RX, ch))
+        if a.antenna not in ants:   # SoapySDRPlay3's setAntenna ignores a name it does not know
+            log(f'--antenna {a.antenna!r}: not an antenna of this device; it has {", ".join(map(repr, ants))}')
+            sys.exit(EXIT_USAGE)
         dev.setSampleRate(SOAPY_SDR_RX, ch, a.rate)
         dev.setAntenna(SOAPY_SDR_RX, ch, a.antenna)
+        log(f'antenna {dev.getAntenna(SOAPY_SDR_RX, ch)} (read back; asked for {a.antenna})')
         dev.setGainMode(SOAPY_SDR_RX, ch, False)
         for k, v in (('biasT_ctrl', 'false'), ('rfnotch_ctrl', 'false'), ('extref_ctrl', 'false'),
                      ('iqcorr_ctrl', 'true')):
@@ -480,7 +493,7 @@ def main():
             tl = np.concatenate([np.load(prefix + '.timelog.npy'), tl])
         np.save(prefix + '.timelog.npy', tl)
         meta = json.load(open(prefix + '.json')) if done else dict(
-            wwv_hz=khz * 1e3, offset_hz=a.offset_khz * 1e3, rate_set=a.rate, antenna=a.antenna,
+            wwv_hz=khz * 1e3, offset_hz=a.offset_khz * 1e3, rate_set=a.rate, antenna=info.get('antenna', a.antenna),
             lna_state=info['lna'], ifgr=info['ifgr'], overflows=0, timeouts=0, reads_utc=[])
         meta['overflows'] += info['overflows']; meta['timeouts'] += info['timeouts']
         meta['samples'] = done + n
@@ -498,6 +511,7 @@ def main():
         dev.setGain(SOAPY_SDR_RX, ch, 'RFGR', lna)
         dev.setGain(SOAPY_SDR_RX, ch, 'IFGR', ifgr)
         info = dict(khz=khz, lna=lna, ifgr=ifgr, tuner_hz=dev.getFrequency(SOAPY_SDR_RX, ch),
+                    antenna=dev.getAntenna(SOAPY_SDR_RX, ch),
                     lna_readback=dev.getGain(SOAPY_SDR_RX, ch, 'RFGR'),
                     ifgr_readback=dev.getGain(SOAPY_SDR_RX, ch, 'IFGR'))
         errs0 = API['activate_errors']
@@ -553,7 +567,7 @@ def main():
         else:
             lna, ifgr = wwv_bands.gain_for(khz, gains)
             log(f'{khz / 1000:g} MHz: tuner {(khz - a.offset_khz) / 1000:g} MHz, LNA {lna}, IFGR {ifgr}, '
-                f'reading {secs:g} s')
+                f'antenna {dev.getAntenna(SOAPY_SDR_RX, ch)}, reading {secs:g} s')
             tu = time.strftime('%H:%M:%S', time.gmtime())
             WATCH['deadline'] = time.time() + 1.0 + secs + READ_MARGIN_S + HANG_MARGIN_S
             WATCH['khz'] = khz

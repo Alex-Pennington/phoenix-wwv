@@ -24,6 +24,9 @@ MODE: stall_after:S  data for S s, then timeouts forever
                      --record: cumulative samples, arrival ns, ret, flags), each at its
                      recorded arrival time from the first, carrying its true index as true:
                      does; the rate from PATH.json. Timeouts and overflows are replayed.
+The device lists the RSP2's antennas under SoapySDRPlay3 0.5.3 ("Antenna A", "Antenna B",
+"Hi-Z"; FAKE_ANTENNAS, comma-separated, overrides), and, as that module does, setAntenna
+ignores a name it does not list; getAntenna reads back the one set (default "Antenna A").
 FAKE_VCLOCK=1: time.time, time.time_ns, time.monotonic and time.sleep run on a virtual
 clock that a sleep advances at once, so a long stream runs as fast as it is processed
 (true: and timelog: arrivals are exact; processing takes no time).
@@ -74,6 +77,7 @@ if os.environ.get('FAKE_VCLOCK') == '1':
     time.monotonic = lambda: _VC.t - _wall0 + 1000.0
     time.sleep = _sleep
 MTU = int(os.environ.get('FAKE_MTU', '4096'))
+ANTENNAS = os.environ.get('FAKE_ANTENNAS', 'Antenna A,Antenna B,Hi-Z').split(',')
 TL = None
 if kind == 'timelog':
     TL = np.load(val + '.timelog.npy')
@@ -83,6 +87,11 @@ if kind == 'timelog':
 class Dev:
     def __init__(s, *a): s.rate = 2e6; s.t0 = None; s.sent = 0; s.k = 0; s.last = 0.0; s.ramp_acc = 0.0
     def setSampleRate(s, d, c, r): s.rate = r
+    ant = 'Antenna A'
+    def listAntennas(s, d, c): return ANTENNAS
+    def setAntenna(s, d, c, name):
+        if name in ANTENNAS: s.ant = name
+    def getAntenna(s, d, c): return s.ant
     def getSampleRate(s, *a): return s.rate
     def __getattr__(s, k): return lambda *a, **kw: 0
     def getHardwareInfo(s): return {}

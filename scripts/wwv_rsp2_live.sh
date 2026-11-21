@@ -20,6 +20,12 @@
 #                       2026-11-19); the carrier correction is X * f_MHz Hz
 #   --carrier-hz HZ     fine carrier correction added to the 100 kHz shift, instead of
 #                       the --ppm one (5.45 at 5 MHz)
+#   --antenna NAME      RSP2 input: "Antenna A" (default), "Antenna B" or "Hi-Z", for the
+#                       scan, every segment and every reopen. A name the device does not
+#                       list ends the run with exit status 2 and the list (rsp2_stream.py or
+#                       wwv_band_scan.py, at the open); the antenna read back is in each
+#                       segment's settings line. The per-band gains were tuned on saga's whip
+#                       on Antenna A
 #   --lna N, --ifgr N   gain for the live band, instead of the band's default
 #   --gain KHZ:LNA:IFGR a band's gain instead of wwv_bands.GAIN; repeatable, used by
 #                       the scan and the live run
@@ -54,8 +60,9 @@
 # ERRNO12 line with a count.
 #
 # Receiver settings are those of the scored saga capture: tuner 100 kHz below WWV (WWV
-# at +100 kHz), antenna A, AGC off, 2 MS/s. Gain is per band, from scripts/wwv_bands.py:
-# LNA state 2 / IF gain reduction 59 dB at 2.5-15 MHz, LNA 1 / IFGR 59 at 20-25 MHz.
+# at +100 kHz), antenna A (--antenna), AGC off, 2 MS/s. Gain is per band, from
+# scripts/wwv_bands.py: LNA state 2 / IF gain reduction 59 dB at 2.5-15 MHz, LNA 1 / IFGR 59
+# at 20-25 MHz, tuned on saga's whip on Antenna A.
 # wwv_live scales by 32, the level of the 5 MHz capture.
 #
 # A band switch stops the streamer and wwv_live (its sync and decoder start again),
@@ -105,7 +112,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(dirname "$HERE")
 BUILD=$REPO/build
-SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=
+SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=; ANTENNA="Antenna A"
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
 SCAN_TIMEOUT=
 STALL_SECS=10; REOPEN_MAX=20
@@ -128,6 +135,7 @@ while [ $# -gt 0 ]; do
     --carrier-hz) CARRIER=$2; shift 2 ;;
     --ppm) PPM=$2; shift 2 ;;
     --wwv-khz) WWV_KHZ=$2; shift 2 ;;
+    --antenna) ANTENNA=$2; shift 2 ;;
     --lna) LNA=$2; shift 2 ;;
     --ifgr) IFGR=$2; shift 2 ;;
     --gain) GAINS+=(--gain "$2"); shift 2 ;;
@@ -460,7 +468,8 @@ scan_once() {
   sj=$(seg_name "${SCAN_JSON:-$FIFODIR/scan.json}" "$SEG")
   /bin/rm -f "$sj"
   say "scanning the WWV bands, $SCAN_SECS s each${1:+, avoiding $2 kHz}; figures in $sj (bound $SCAN_TIMEOUT s)"
-  "$HERE/wwv_band_scan.sh" --no-service --secs "$SCAN_SECS" --json "$sj" "${GAINS[@]}" --ppm "$PPM" "$@" >&2 &
+  "$HERE/wwv_band_scan.sh" --no-service --secs "$SCAN_SECS" --json "$sj" "${GAINS[@]}" --ppm "$PPM" \
+    --antenna "$ANTENNA" "$@" >&2 &
   SCPID=$!
   note_pids
   local src=0 t0=$SECONDS
@@ -485,6 +494,10 @@ scan_once() {
   fi
   errno_poll flush
   [ "$src" = 5 ] && SCAN_FAIL="the band scan reports the sdrplay API failing (exit 5)"
+  if [ "$src" = 2 ]; then
+    say "the band scan refused --antenna '$ANTENNA' (exit 2; its line above lists the device's antennas); not going live"
+    exit 2
+  fi
   BAND=
   [ -z "$SCAN_FAIL" ] &&
     BAND=$(python3 -I -c "import json,sys; b=json.load(open(sys.argv[1])).get('best_khz'); print(b if b else '')" "$sj" 2>/dev/null || true)
@@ -537,13 +550,14 @@ while :; do
   /bin/rm -f "$ANCHOR"
   WL_ARGS+=(--anchor-in "$ANCHOR")
   ST_ARGS=(--wwv-khz "$WWV_KHZ" --offset-khz "$OFFSET_KHZ" --rate "$RATE" --secs "$REMAIN" "${GAINS[@]}"
+           --antenna "$ANTENNA"
            --stall-secs "$STALL_SECS" --heartbeat "$HB" --anchor-out "$ANCHOR")
   if [ "$SEG" = 1 ]; then
     [ -n "$LNA" ] && ST_ARGS+=(--lna "$LNA")
     [ -n "$IFGR" ] && ST_ARGS+=(--ifgr "$IFGR")
   fi
   [ -n "$RECORD" ] && ST_ARGS+=(--record "$(seg_name "$RECORD" "$SEG" append)")
-  say "segment $SEG: WWV $WWV_KHZ kHz, tuner $((WWV_KHZ - OFFSET_KHZ)) kHz, carrier correction $C Hz, shift $SHIFT Hz${LOG:+, log $(seg_name "$LOG" "$SEG")}"
+  say "segment $SEG: WWV $WWV_KHZ kHz, $ANTENNA, tuner $((WWV_KHZ - OFFSET_KHZ)) kHz, carrier correction $C Hz, shift $SHIFT Hz${LOG:+, log $(seg_name "$LOG" "$SEG")}"
 
   # Background processes joined by FIFOs, so a signal to this script alone (Ctrl-C,
   # kill, systemd) reaches the traps at once: `wait` returns on a signal, a foreground
@@ -602,6 +616,9 @@ while :; do
         REOPEN="rsp2_stream had no samples for $STALL_SECS s"
       elif [ "$src" = 76 ]; then
         REOPEN="rsp2_stream lost more samples than it fills (its GAP line says how much)"
+      elif [ "$src" = 2 ]; then
+        say "rsp2_stream refused --antenna '$ANTENNA' (exit 2; its line above lists the device's antennas)"
+        rc=2
       elif [ "$src" != 0 ] && [ "$rc" = 0 ]; then
         rc=$src
       fi

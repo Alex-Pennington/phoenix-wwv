@@ -65,6 +65,15 @@
 #                 held back from sync (recounted from the log); dropped (unfilled), it breaks.
 #                 The replay of the filled log honours its GAP line and holds back the same events.
 #                 A 3 ms/s loss for 3 minutes, filled as rsp2_stream fills it: no break either.
+#   antenna_live  --antenna Hi-Z: the first stream and its reopen (an exit 75) both get it, and the
+#                 segment line names it; fixed_end checks the default, Antenna A
+#   antenna_scan  auto, --antenna Hi-Z: the band scan and the live stream both get it
+#   antenna_bad   --antenna Bogus: the stream refuses it (exit 2): the run ends with 2, no reopen
+#   antenna_bad_scan  auto, --antenna Bogus: the scan refuses it (exit 2): the run ends with 2, no
+#                 retry, not live
+#   antenna_py    rsp2_stream.py and wwv_band_scan.py on the fake module (which lists Antenna A,
+#                 Antenna B, Hi-Z): Hi-Z is set and read back in the settings line and per band;
+#                 Bogus exits 2 with the list, before streaming or reading a band
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
@@ -109,6 +118,12 @@ ended_in() {
     fail "no closing history line for segment $1 on $2 kHz"
   grep -qE "segment $(($1 + 1)): WWV" "$D/console.txt" && fail "a segment $(($1 + 1)) started"
   return 0
+}
+# antennas_are NAME...: the --antenna of each stream start, in order
+antennas_are() {
+  local got; got=$(paste -sd '|' "$D/antennas" 2>/dev/null)
+  local want; want=$(IFS='|'; echo "$*")
+  [ "$got" = "$want" ] || fail "stream antennas '$got', want '$want'"
 }
 unit_off() { [ "$(cat "$D/state" 2>/dev/null)" = inactive ] || fail "fake sdrplay.service is $(cat "$D/state" 2>/dev/null)"; }
 # buddy FREE9 FREE10 [UNMOV9 UNMOV10]: write the case's buddyinfo, saga's three zones
@@ -160,7 +175,8 @@ CASES=("$@")
                                  auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
                                  stream_stall stream_lag scan_keep_raw gap_chain gap76
                                  mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
-                                 stream_gaps stream_ramp stream_drift stream_toobig)
+                                 stream_gaps stream_ramp stream_drift stream_toobig
+                                 antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -168,6 +184,7 @@ for c in "${CASES[@]}"; do
     begin "$c"
     live STUB_MODE=ok -- --wwv-khz 10000 --secs 8
     rc_is 0; ended_in 1 10000; hasnt REOPEN; streams_is 1; unit_off
+    antennas_are 'Antenna A'
     end_case ;;
   stall75)
     begin "$c"
@@ -538,6 +555,56 @@ rd = {x: int(rd.get(x, -1)) for x in want}
 print('gap_chain: gaps', gaps, 'overlap rule', want, 'live GAPEND', got, 'replay', rd, 'inside before GAP', inside)
 sys.exit(0 if gaps and want == got == rd and sum(want.values()) > 0 and inside == 0 else 1)
 PY
+    end_case ;;
+  antenna_live)
+    begin "$c"
+    live STUB_MODE=stall75_after:1 STUB_ONLY_FIRST=1 -- --wwv-khz 5000 --secs 5 --antenna Hi-Z
+    rc_is 0; has 'segment 1: WWV 5000 kHz, Hi-Z,'; has 'REOPEN: segment 1: rsp2_stream had no samples'
+    has 'segment 2: WWV 5000 kHz, Hi-Z,'; ended_in 2 5000; streams_is 2; antennas_are Hi-Z Hi-Z; unit_off
+    end_case ;;
+  antenna_scan)
+    begin "$c"
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 4 --antenna Hi-Z
+    rc_is 0; has "going live on the scan's band: 5000 kHz"; ended_in 1 5000
+    grep -qF -- '--antenna Hi-Z' "$D/scans" 2>/dev/null || fail 'the band scan did not get --antenna Hi-Z'
+    streams_is 1; antennas_are Hi-Z; unit_off
+    end_case ;;
+  antenna_bad)
+    begin "$c"
+    live STUB_MODE=ok -- --wwv-khz 5000 --secs 30 --antenna Bogus
+    rc_is 2; has "rsp2_stream refused --antenna 'Bogus' (exit 2"
+    has "not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'"
+    hasnt REOPEN; streams_is 1; unit_off
+    [ $((SECONDS - T0)) -lt 15 ] || fail "took $((SECONDS - T0)) s"
+    end_case ;;
+  antenna_bad_scan)
+    begin "$c"
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --secs 30 --antenna Bogus
+    rc_is 2; has "the band scan refused --antenna 'Bogus' (exit 2"
+    has "not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'"
+    hasnt 'scanning once more'; streams_is 0; unit_off
+    [ "$(cat "$D/scans" 2>/dev/null | wc -l)" = 1 ] || fail "$(cat "$D/scans" 2>/dev/null | wc -l) scans, want 1"
+    end_case ;;
+  antenna_py)
+    begin "$c"
+    : > "$D/console.txt"
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" ok -- \
+        --secs 1 --rate 200000 --no-fill --antenna Hi-Z > /dev/null 2>> "$D/console.txt"
+    has '"antenna": "Hi-Z"'; has '[harness] exit 0'
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" ok -- \
+        --secs 1 --rate 200000 --no-fill --antenna Bogus > "$D/bogus.cs16" 2> "$D/bogus.txt"
+    cat "$D/bogus.txt" >> "$D/console.txt"
+    has "[rsp2_stream] --antenna 'Bogus': not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'"
+    has '[harness] exit 2'
+    grep -qF '[rsp2_stream] streaming' "$D/bogus.txt" && fail 'rsp2_stream streamed on an unknown antenna'
+    [ -s "$D/bogus.cs16" ] && fail 'rsp2_stream wrote samples for an unknown antenna'
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/wwv_band_scan.py" ok -- \
+        --bands 5000 --secs 1 --extend-secs 0 --rate 200000 --antenna Hi-Z --json "$D/hiz.json" > /dev/null 2>> "$D/console.txt"
+    has 'antenna Hi-Z (read back; asked for Hi-Z)'; has '5 MHz: tuner 4.9 MHz, LNA 2, IFGR 59, antenna Hi-Z, reading 1 s'
+    env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/wwv_band_scan.py" ok -- \
+        --bands 5000 --secs 1 --extend-secs 0 --rate 200000 --antenna Bogus > /dev/null 2>> "$D/console.txt"
+    has "[wwv_band_scan] --antenna 'Bogus': not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'"
+    [ "$(grep -c '\[harness\] exit 2' "$D/console.txt")" = 2 ] || fail 'wwv_band_scan.py did not exit 2 on Bogus'
     end_case ;;
   *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;
   esac

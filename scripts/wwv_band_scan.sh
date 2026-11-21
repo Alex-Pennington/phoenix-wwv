@@ -9,6 +9,10 @@
 #   --bands LIST           kHz, comma-separated (default 2500,5000,10000,15000,20000,25000)
 #   --gain KHZ:LNA:IFGR    a band's gain instead of wwv_bands.GAIN; repeatable
 #   --ppm X                TCXO error used to place the carrier (default 1.09)
+#   --antenna NAME         RSP2 input: "Antenna A" (default), "Antenna B" or "Hi-Z"; a name the
+#                          device does not list ends the scan with exit status 2 and the list.
+#                          The per-band gains (wwv_bands.GAIN) were tuned on saga's whip on
+#                          Antenna A
 #   --json FILE            write every figure as JSON
 #   --keep-raw DIR         keep each band's raw I/Q (8 MB/s, 200 MB per band at 25 s)
 #                          for wwv_band_scan.py --replay
@@ -19,9 +23,10 @@
 #   --no-service           do not start or stop sdrplay.service (the caller holds it)
 #
 # Prints the ranked table and a last stdout line `BEST <kHz>` (`BEST none` when no band
-# could be measured without overload). Exit 0 with a band, 3 without one, 5 when the
-# sdrplay API is failing (two bands in a row with a failed activateStream or no samples,
-# ServiceNotResponding, or a read stuck in the driver: restart sdrplay.service). Each
+# could be measured without overload). Exit 0 with a band, 2 for an unknown --antenna, 3
+# without a band, 5 when the sdrplay API is failing (two bands in a row with a failed
+# activateStream or no samples, ServiceNotResponding, or a read stuck in the driver:
+# restart sdrplay.service). Each
 # band's read ends by the wall clock, samples or not (wwv_band_scan.py). The choice:
 # among bands with 40% of seconds over a 10 dB tick contrast and 50% over a 10 dB BCD
 # contrast, the lowest band within 20 points of the best BCD score (wwv_band_scan.py,
@@ -40,11 +45,11 @@ SERVICE=1
 PY_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --secs|--extend-secs|--avoid|--bands|--gain|--ppm|--json|--keep-raw) PY_ARGS+=("$1" "$2"); shift 2 ;;
+    --secs|--extend-secs|--avoid|--bands|--gain|--ppm|--json|--keep-raw|--antenna) PY_ARGS+=("$1" "$2"); shift 2 ;;
     --overload-plugin) PLUGIN=$2; shift 2 ;;
     --no-overload-plugin) PLUGIN=; shift ;;
     --no-service) SERVICE=; shift ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
