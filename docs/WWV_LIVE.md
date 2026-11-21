@@ -203,6 +203,21 @@ read. The antenna read back is in `rsp2_stream.py`'s settings line and in each b
 line. The per-band gains in `scripts/wwv_bands.py` were tuned on saga's whip on Antenna A.
 Another antenna or input may want other gains: check the scan's ADC columns and use `--gain`.
 
+**awk.** `wwv_live`'s stdout passes through an awk filter on a FIFO. The filter writes
+the sync state and the LOCKED flag that the LOCKED log line, the `--lock-mins` check and the
+band cache's `locked_utc` stamp read, and passes each line on to the console. The filter
+needs an awk that acts on each line as it arrives. Plain mawk does not: it reads a pipe in
+blocks, so a line whose writer stays open waits in mawk's buffer until more data comes.
+On saga, mawk 1.3.4 20240123 had not seen a `SYNC ... -> LOCKED` line written into such a
+FIFO 2 s later, while gawk, `mawk -W interactive` and `busybox awk` had. On gangleri, whose
+`/usr/bin/awk` is mawk, this held LOCKED back on 2026-11-21's runH1: `wwv_live` printed
+LOCKED at 14:21, and `--lock-mins` switched the band at 14:26:12Z. At start-up the wrapper
+takes the first of `gawk`, `mawk -W interactive` and `busybox awk` that runs, and logs it
+(`line filter on wwv_live's stdout: ...`). If none of them runs, it exits with status 2
+before it starts anything; install gawk to fix that. The script's other awk calls each read
+one here-string and exit, so any awk serves them. The stub case `lock_awk` runs the filter
+under gawk and under mawk.
+
 `--record PREFIX` also writes the raw stream, at 8 MB/s. Example, 90 minutes at 5 MHz:
 
 ```
