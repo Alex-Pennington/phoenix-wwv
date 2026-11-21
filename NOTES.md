@@ -505,8 +505,7 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
       fit holds those. With no contrast floor, noise events under 1 dB read 1 or P where the edge
       width read 0. With no ceiling (measured before the rise dating), runG's date was first
       CONFIRMED 60 s later, as at ceiling 4. Taken from the event's own start, a late start on a
-      slow rise reads a 1 as
-      0. Dating the event from the box's rise fixes that and `test_bcd_time_width`'s lowrise end
+      slow rise reads a 1 as 0. Dating the event from the box's rise fixes that and `test_bcd_time_width`'s lowrise end
       check. The late-rise test (`BCD_TIME_FIT_LATE_RISE_MS`) stops an event that starts on the
       low level just before a pulse from being fitted across that pulse (`test_bcd_time_width`
       fade: a carried event). At ceiling 3, with the old replay ordering, it cost 765 right
