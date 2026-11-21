@@ -250,15 +250,20 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 20] ...
   logged: `rsp2_stream did not stop in 10 s after SIGTERM; killing it`.
 - **`behind wall clock`.** Every `--report-secs` (60 s) rsp2_stream logs how far its sample
   count (fills included) is behind the wall clock since streaming began, how much it filled,
-  and how long its writes to stdout blocked:
+  how long its writes to stdout blocked, and the lag rate it tracks (`lag rate`, ppm; see
+  *Lost samples: the gap fill*):
 
   ```
-  [rsp2_stream] behind wall clock +1250 ms (+300 in 60 s), filled 0 ms in 0 gaps, write wait 4 ms (max 1), 0 overflows, 0 timeouts; samples lost upstream (USB or API service), no overflow reported
+  [rsp2_stream] behind wall clock +1250 ms (+300 in 60 s), filled 0 ms in 0 gaps, write wait 4 ms (max 1), 0 overflows, 0 timeouts, lag rate +0 ppm; samples lost upstream (USB or API service), no overflow reported
   ```
 
-  When "behind" grows by more than 100 ms in an interval, the line names the cause. With
-  little write wait, it reads `samples lost upstream (USB or API service), no overflow
-  reported`. With a long write wait, it reads `the reader is not keeping up`.
+  When "behind" grows by more than 100 ms in an interval, samples have not arrived: lost
+  upstream, or delivered late. With little write wait, the line reads `samples lost upstream
+  (USB or API service), no overflow reported`. With a write wait of half the growth or more,
+  it reads `delivery delay growing (samples late or lost upstream), with a long write wait`.
+  The write wait does not show `wwv_live` at fault: on run3h it was a steady 1.5-3 s per
+  60 s whatever the loss. A steady `lag rate` makes "behind" grow by that rate (about 1 s
+  over runG's 2.6 h at 110 ppm) and is not filled.
   The last line gives the figure at the end. Read it with `wwv_live`'s `LAG` lines: a `LAG`
   with upstream loss here means UTC from the sample counter is late by the samples lost.
 - **Kill guard.** At start the wrapper starts a guard process in its own session, so a signal
@@ -375,9 +380,28 @@ SoapySDRPlay3 0.5.3 passes on no sign of lost samples (it drops the API's
 `firstSampleNum` and reset flag and never sets `timeNs`), so without help a loss
 upstream shortens the stream and every later sample is early by what was lost. rsp2_stream
 detects losses from arrival time: arrival (CLOCK_MONOTONIC) minus stream time has a floor,
-and a loss raises it by exactly the samples lost. It fills each loss with zeros, so a
-sample's index stays its true time since the start. Details and margins are in
+and a loss raises it by exactly the samples lost, as a step. It fills each loss with zeros,
+so a sample's index stays its true time since the start. Details and margins are in
 `scripts/rsp2_stream.py`'s header.
+
+- **The floor moves at a tracked rate.** On live runs the delivery delay grows steadily, 50
+  to 170 ppm, with no sample lost: the radio's sample count keeps WWV's time and the host's
+  clock keeps UTC, so the lag rises because samples arrive later and later (NOTES.md, *Stream
+  slip*; where the queue is is not known). Filling that ramp put runG's stream time 1 s ahead
+  of UTC in 2.6 h. So rsp2_stream fits the lag's rate: the least lag of each 10 s bin, over the
+  last 300 s (Theil-Sen, once 120 s of bins are in), capped at ±1000 ppm. The floor is the least
+  of the last 60 s of bins, carried forward at that rate. A steady rate is never filled.
+- **Two stages measure against that floor.** The fast stage fills a step over 30 ms (the
+  least lag over 2 s, less a 15 ms margin) at the block where the lag rose. The slow stage
+  fills what it left (the least lag over 30 s over 4.5 ms, less a 2.5 ms margin): a fast
+  fill's margin, or a loss under the fast stage's threshold. The slow stage fills at most once
+  per 30 s, since a fill moves only held blocks and a second look in the same window would fill
+  the same excess again; until the rate is known (the first 120 s) it fills only within 60 s
+  of a fast fill.
+- **The trade-off.** By arrival times a steady real loss cannot be told from a growing delay.
+  A loss under 1000 ppm that keeps up is now taken as a rate and not filled. A loss once a
+  queue is at its cap (run3h's tail) is invisible to arrival times either way. A step in the
+  rate (over about 60 ppm) fills a few ms until the fit catches up.
 
 - **Hold (`--hold-secs`, default 3).** rsp2_stream's output runs that many seconds behind the
   radio, so a fill lands where the loss was. The least is 2.5 s: a smaller value is refused
@@ -401,8 +425,8 @@ sample's index stays its true time since the start. Details and margins are in
   ```
 
   The cause is `overflow (SOAPY_SDR_OVERFLOW)` or `timeout (K readStream timeouts)` when one came
-  with the loss, else `upstream, no report (USB or API service)`, or `remainder over 30 s ...` for
-  the slow stage. `--gap-log FILE` appends each fill to FILE as one JSON line (`utc`, `stream_s`,
+  with the loss, else `upstream, no report (USB or API service)`, or `remainder over 30 s (a fast
+  fill's margin, or a loss under the fast stage's threshold)` for the slow stage. `--gap-log FILE` appends each fill to FILE as one JSON line (`utc`, `stream_s`,
   `sample`, `samples`, `ms`, `cause`).
 
   `wwv_live` prints on the console:
@@ -426,10 +450,13 @@ sample's index stays its true time since the start. Details and margins are in
   `GAPS     N filled gaps, X ms in all`. `start` is a detector time in ms.
   `tests/air/replay_events` honours them (`GAPDROPS` at the end equals the sum of the `GAPEND`
   counts).
-- **What normal looks like.** No fills with cause `upstream, no report`. `behind wall
-  clock` stays within about ±30 ms with `filled 0 ms in 0 gaps`. A few-ms `remainder over
-  30 s` fill now and then is the radio's clock against the host's. On 2026-11-21 01:37 UTC
-  (5 MHz) the first 6 minutes showed 0 fills and `behind` between −20 and +1 ms.
+- **What normal looks like.** No fills with cause `upstream, no report`, and no `remainder
+  over 30 s` fill without a fast fill shortly before it. `filled 0 ms in 0 gaps`, `lag rate`
+  steady (50-170 ppm on saga's live runs), and `behind wall clock` growing by that rate,
+  within about ±30 ms of it. Before the rate was tracked, a stream of 2-3 ms `remainder over
+  30 s` fills was that delay growth filled as loss, not the radio's clock: runG had 378 of
+  them, 1054.6 ms. On 2026-11-21 01:37 UTC (5 MHz) the first 6 minutes showed 0 fills and
+  `behind` between −20 and +1 ms.
 - **Too big (`--gap-max-secs`, default 10).** A loss over that ends the stream with exit
   status 76, and the wrapper reopens it as a new segment (`REOPEN: ... rsp2_stream lost more
   samples than it fills`). rsp2_stream logs `GAP too large to fill: ...; ending the stream

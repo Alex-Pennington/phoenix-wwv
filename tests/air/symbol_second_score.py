@@ -1,17 +1,22 @@
 """Check the BCD symbol second-in-minute index against UTC.
 Usage: python3 -I symbol_second_score.py harness_out.txt conv.json
 For each SYMCB line (t = window centre, sec = reported second), compare sec with
-the UTC second of the window centre; also checks TELEM BCDS SYMBOL lines carry it."""
+the UTC second of the window centre (corrected for the stream's slip against the anchor,
+stream_utc.py); also checks TELEM BCDS SYMBOL lines carry it."""
 import sys, re, json, math, collections
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); sys.dont_write_bytecode = True
+from stream_utc import StreamUTC
 L = open(sys.argv[1]).read().splitlines()
 U0 = json.load(open(sys.argv[2]))['out_utc0_unix']
+SU = StreamUTC(L, U0)
 d = collections.Counter(); n = 0
 for l in L:
     if not l.startswith('SYMCB'): continue
     m = re.search(r'sec=(-?\d+)', l)
     if not m: continue
     t = float(re.search(r' t=([\d.]+)', l).group(1))
-    utc_sec = math.floor(U0 + t / 1000) % 60
+    utc_sec = SU.second(t) % 60
     diff = (int(m.group(1)) - utc_sec + 30) % 60 - 30
     d[diff] += 1; n += 1
 sym = [l for l in L if l.startswith('TELEM BCDS SYMBOL,')]
