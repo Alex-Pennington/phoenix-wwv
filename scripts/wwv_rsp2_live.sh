@@ -219,6 +219,21 @@ SDRPLAY_TAG=wwv_rsp2_live
 WWV_LIVE=$BUILD/wwv_live
 [ -x "$WWV_LIVE" ] || { echo "wwv_live not found at $WWV_LIVE (cmake -S $REPO -B $BUILD && cmake --build $BUILD)" >&2; exit 2; }
 
+# LINE_AWK: an awk that acts on each line of a pipe or FIFO as it arrives, for the filter on
+# wwv_live's stdout. Plain mawk reads a pipe in blocks: a line whose writer stays open waits
+# in its buffer until more data comes, so LOCKED reached the wrapper minutes late on a host
+# whose awk is mawk. gawk, mawk -W interactive and busybox awk see the line at once. The
+# first of them that runs is used; with none, the run ends here (exit 2).
+LINE_AWK=()
+for _a in gawk 'mawk -W interactive' 'busybox awk'; do
+  read -ra _c <<< "$_a"
+  if command -v "${_c[0]}" > /dev/null && "${_c[@]}" 'BEGIN { exit 0 }' < /dev/null > /dev/null 2>&1; then
+    LINE_AWK=("${_c[@]}"); break
+  fi
+done
+[ ${#LINE_AWK[@]} -gt 0 ] ||
+  { echo "no line-buffered awk: install gawk, or mawk (run as mawk -W interactive), or busybox; plain mawk would see LOCKED late" >&2; exit 2; }
+
 if [ -n "$RECORD" ]; then
   mkdir -p "$(dirname "$RECORD")"
   free=$(df -B1 --output=avail "$(dirname "$RECORD")" | tail -1)
@@ -234,6 +249,7 @@ if [ -n "$RECORD" ]; then
 fi
 
 say() { echo "[wwv_rsp2_live] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >&2; }
+say "line filter on wwv_live's stdout: ${LINE_AWK[*]}"
 
 # seg_name NAME K [append]: NAME for segment 1; NAME with .segK before its extension
 # (or appended, for a --record prefix or a name without one) for segment K.
@@ -734,12 +750,12 @@ while :; do
 
   # Background processes joined by FIFOs, so a signal to this script alone (Ctrl-C,
   # kill, systemd) reaches the traps at once: `wait` returns on a signal, a foreground
-  # pipeline would not. wwv_live's stdout passes through awk, which marks LOCKED.
+  # pipeline would not. wwv_live's stdout passes through LINE_AWK, which marks LOCKED.
   /bin/rm -f "$FIFODIR/iq" "$FIFODIR/out" "$FIFODIR/locked" "$FIFODIR/state"
   mkfifo "$FIFODIR/iq" "$FIFODIR/out"
   # $FIFODIR/state: the sync state of wwv_live's last SYNC line, written before the line is
   # passed on
-  awk -v flag="$FIFODIR/locked" -v state="$FIFODIR/state" '
+  "${LINE_AWK[@]}" -v flag="$FIFODIR/locked" -v state="$FIFODIR/state" '
     /^SYNC .* -> / { for (i = 1; i < NF; i++) if ($i == "->") st = $(i + 1)
                      printf "%s\n", st > state; close(state) }
     { print; fflush() } /^SYNC .* -> LOCKED / { printf "" > flag; close(flag) }' \

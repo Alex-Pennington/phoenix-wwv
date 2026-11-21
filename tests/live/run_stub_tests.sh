@@ -87,6 +87,9 @@
 #                 stops it, a SIGKILL ends the run; the scan's utc is then set 45 min back (the
 #                 crash 45 min after the scan); the restart uses the cached band at once (the
 #                 last LOCKED is fresh), and its reopened segment stamps on its own LOCKED
+#   lock_awk      the stub wwv_live prints LOCKED at 0.2 s and then nothing, its stdout open: the
+#                 wrapper logs "LOCKED after" within 2 s, run twice, with awk as gawk and as mawk
+#                 (a PATH shim: awk execs mawk, gawk exits 127), which reads a pipe in blocks
 # fixed_end also puts a fresh cache beside --log: a fixed --wwv-khz neither reads nor writes it.
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
@@ -218,7 +221,7 @@ CASES=("$@")
                                  mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
                                  stream_gaps stream_ramp stream_drift stream_toobig
                                  antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py
-                                 cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh)
+                                 cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh lock_awk)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -766,6 +769,29 @@ PY
     has 'BANDCACHE: segment 2: 10000 kHz LOCKED: locked_utc '
     ended_in 2 10000; streams_is 2; unit_off
     cat "$D/console1.txt" "$D/console.txt" > "$D/console.all"; mv -f "$D/console.all" "$D/console.txt"
+    end_case ;;
+  lock_awk)
+    begin "$c"
+    : > "$D/console.all"
+    for m in gawk mawk; do
+      # the PATH shim: awk is $m; for mawk, gawk is hidden, so the wrapper cannot pick it
+      A=$D/awk_$m; mkdir -p "$A"
+      printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v $m)" > "$A/awk"
+      [ $m = mawk ] && printf '#!/bin/sh\necho "gawk: hidden by the test" >&2; exit 127\n' > "$A/gawk"
+      chmod +x "$A"/*
+      [ "$(PATH=$A:$STUB_PATH awk -W version 2>&1 | head -1 | cut -d' ' -f1)" = "$( [ $m = mawk ] && echo mawk || echo GNU)" ] ||
+        fail "$m: the shim's awk is not $m"
+      /bin/rm -f "$D/streams" "$D/antennas"
+      live PATH="$A:$STUB_PATH" STUB_MODE=ok STUB_SYNC=0.2:LOCKED -- --build "$FAKEBUILD" --wwv-khz 5000 --secs 3
+      rc_is 0; has 'ACQUIRING -> LOCKED'
+      [ $m = mawk ] && has "line filter on wwv_live's stdout: mawk -W interactive"
+      [ $m = gawk ] && has "line filter on wwv_live's stdout: gawk"
+      n=$(grep -oE 'segment 1: 5000 kHz LOCKED after [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+ s$' | cut -d' ' -f1)
+      [ -n "$n" ] && [ "$n" -le 2 ] || fail "$m: LOCKED at 0.2 s, logged after '${n:-never}' s, want 2 s or less"
+      ended_in 1 5000; streams_is 1; unit_off
+      { echo "--- awk: $m"; cat "$D/console.txt"; } >> "$D/console.all"
+    done
+    mv -f "$D/console.all" "$D/console.txt"
     end_case ;;
   *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;
   esac
