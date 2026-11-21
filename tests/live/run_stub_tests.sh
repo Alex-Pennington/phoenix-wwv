@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # wwv_rsp2_live.sh and rsp2_stream.py against stubs: no radio, no sdrplay.service.
 #
-#   tests/live/run_stub_tests.sh BUILD_DIR WORK_DIR [CASE ...]
+#   tests/live/run_stub_tests.sh BUILD_DIR WORK_DIR [CASE | group:NAME ...]
 #
-# BUILD_DIR holds wwv_live. WORK_DIR gets a copy of the wrapper with a stub band scan
-# beside it, and one directory per case (console.txt, the fake unit's calls). The stubs
+# BUILD_DIR holds wwv_live. With no CASE it runs every case; group:NAME runs one group (the
+# groups are below the case list; ctest runs each as its own entry, in parallel). WORK_DIR gets
+# a copy of the wrapper with a stub band scan beside it, and one directory per case
+# (console.txt, the fake unit's calls, its TMPDIR); one run at a time may use a WORK_DIR. The stubs
 # in tests/live/fakebin stand in for systemctl, sudo and journalctl: the fake sdrplay.service
 # and its journal live in the case directory, and every check fails before a case runs if
 # the PATH would reach the real ones. The stub sudo logs the memory compaction instead of
@@ -95,6 +97,30 @@
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
 
+# Every case, in the order a run with no CASE runs them.
+ALL_CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
+           auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
+           stream_stall stream_lag scan_keep_raw gap_chain gap76
+           mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
+           stream_gaps stream_ramp stream_drift stream_toobig
+           antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py
+           cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh lock_awk)
+# Groups: a CASE of group:NAME runs that group's cases. tests/CMakeLists.txt makes one ctest
+# entry, live_stubs_NAME, of each `group NAME ...` line below, so a new group needs no CMake
+# edit (re-run cmake). Every case is in exactly one group; a run checks that before it starts.
+# Keep each group under about 200 s (tests/CMakeLists.txt has the measured times).
+declare -A GROUP; GROUP_NAMES=()
+group() { GROUP[$1]="${*:2}"; GROUP_NAMES+=("$1"); }
+group wrapper fixed_end stall75 svc_restart hang reopen_max deaf kill9 backoff_seq errno_burst mem_now mem_delay mem_bound mem_unmovable antenna_live antenna_scan antenna_bad antenna_bad_scan
+group scan scan_hang scan_apifail scan_apifail_retry scan_py_api scan_keep_raw
+group auto auto_end auto_switch auto_rescan_end auto_none cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh lock_awk
+group stream stream_stall stream_lag stream_gaps stream_drift stream_toobig antenna_py
+group gap gap_chain gap76 stream_ramp
+grouped=$(for g in "${GROUP_NAMES[@]}"; do printf '%s\n' ${GROUP[$g]}; done | sort)
+[ "$grouped" = "$(printf '%s\n' "${ALL_CASES[@]}" | sort)" ] ||
+  { echo "FATAL: the groups do not hold every case exactly once:" >&2
+    diff <(printf '%s\n' "${ALL_CASES[@]}" | sort) <(echo "$grouped") >&2; exit 1; }
+
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 BUILD=${1:?usage: run_stub_tests.sh BUILD_DIR WORK_DIR [CASE ...]}
@@ -104,6 +130,10 @@ BUILD=$(cd "$BUILD" && pwd)
 [ -x "$BUILD/wwv_live" ] || { echo "no wwv_live in $BUILD" >&2; exit 1; }
 mkdir -p "$WORK"
 WORK=$(cd "$WORK" && pwd)
+# One run per WORK_DIR at a time: a run replaces WORK_DIR/scripts and WORK_DIR/fakebuild and
+# each case's directory. Parallel runs (the ctest entries) get a WORK_DIR each.
+exec 9> "$WORK/.lock"
+flock -n 9 || { echo "FATAL: another run_stub_tests.sh is using $WORK" >&2; exit 1; }
 
 # The wrapper and its helpers, with the stub scan as wwv_band_scan.sh.
 SCR=$WORK/scripts
@@ -111,7 +141,6 @@ SCR=$WORK/scripts
 /bin/cp -f "$REPO/scripts/wwv_rsp2_live.sh" "$REPO/scripts/sdrplay_service.sh" "$REPO/scripts/wwv_bands.py" "$SCR/"
 /bin/cp -f "$HERE/stub_band_scan.sh" "$SCR/wwv_band_scan.sh"
 chmod +x "$SCR/wwv_rsp2_live.sh" "$SCR/wwv_band_scan.sh"
-mkdir -p "$WORK/tmp"
 # A build directory whose wwv_live is the stub that prints scheduled SYNC lines.
 FAKEBUILD=$WORK/fakebuild
 mkdir -p "$FAKEBUILD"
@@ -192,12 +221,22 @@ buddy() {
   mv -f "$D/buddyinfo.new" "$D/buddyinfo"
 }
 begin() {
-  D=$WORK/$1; /bin/rm -rf "$D"; mkdir -p "$D"; CASE_OK=1; T0=$SECONDS
+  D=$WORK/$1; /bin/rm -rf "$D"; mkdir -p "$D/tmp"; CASE_OK=1; T0=$SECONDS
   buddy 96 22
   echo '2026-11-21T00:00:00+00:00 saga systemd[1]: Started sdrplay.service' > "$D/journal"
   echo "== $1"
 }
 compactions() { cat "$D/compactions" 2>/dev/null | wc -l; }
+# case_procs PATTERN: the PIDs of this case's processes (STUB_DIR=$D in their environment,
+# inherited from live or the case's own env) whose command line holds PATTERN. Another
+# case's, running in parallel in another ctest entry, are not this case's.
+case_procs() {
+  local p
+  for p in $(pgrep -f -- "$1"); do
+    tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qxF "STUB_DIR=$D" && echo "$p"
+  done
+  return 0
+}
 end_case() {
   if [ -n "$CASE_OK" ]; then PASS=$((PASS + 1)); echo "  ok ($((SECONDS - T0)) s)"; else
     FAIL=$((FAIL + 1))
@@ -207,21 +246,23 @@ end_case() {
 live() {
   local envs=()
   while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
-  env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" \
+  env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$D/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" \
       WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
       SOAPY_SDR_PLUGIN_PATH=/nonexistent "${envs[@]}" \
       "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --log "$D/run.log" "$@" -- -p 0 > "$D/console.txt" 2>&1
   RC=$?
 }
-want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
-CASES=("$@")
-[ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
-                                 auto_rescan_end auto_none scan_hang scan_apifail scan_apifail_retry scan_py_api
-                                 stream_stall stream_lag scan_keep_raw gap_chain gap76
-                                 mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
-                                 stream_gaps stream_ramp stream_drift stream_toobig
-                                 antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py
-                                 cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh lock_awk)
+CASES=()
+for a in "$@"; do
+  if [[ $a == group:* ]]; then
+    g=${a#group:}
+    [ -n "${GROUP[$g]:-}" ] || { echo "unknown group: $g (groups: ${GROUP_NAMES[*]})" >&2; exit 1; }
+    read -r -a gc <<< "${GROUP[$g]}"; CASES+=("${gc[@]}")
+  else
+    CASES+=("$a")
+  fi
+done
+[ ${#CASES[@]} -eq 0 ] && CASES=("${ALL_CASES[@]}")
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -270,7 +311,7 @@ for c in "${CASES[@]}"; do
     end_case ;;
   kill9)
     begin "$c"
-    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
+    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$D/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
         WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
         SOAPY_SDR_PLUGIN_PATH=/nonexistent \
         "$SCR/wwv_rsp2_live.sh" --build "$BUILD" --wwv-khz 5000 --secs 60 -- -p 0 > "$D/console.txt" 2>&1 &
@@ -279,8 +320,8 @@ for c in "${CASES[@]}"; do
     kill -KILL "$W"; wait "$W" 2>/dev/null
     for _ in $(seq 150); do grep -q 'guard\] .*sdrplay.service:' "$D/console.txt" && break; sleep 0.1; done
     has 'exited without its cleanup; stopping what it started'; has 'guard]'; unit_off
-    pgrep -f "$HERE/stub_stream.py" > /dev/null && fail 'stub_stream.py is still running'
-    pgrep -f "$BUILD/wwv_live" > /dev/null && fail 'wwv_live is still running'
+    [ -n "$(case_procs "$HERE/stub_stream.py")" ] && fail 'stub_stream.py is still running'
+    [ -n "$(case_procs "$BUILD/wwv_live")" ] && fail 'wwv_live is still running'
     end_case ;;
   auto_end)
     begin "$c"
@@ -721,7 +762,7 @@ PY
     end_case ;;
   lock_refresh)
     begin "$c"
-    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
+    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$D/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
         WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
         SOAPY_SDR_PLUGIN_PATH=/nonexistent STUB_SCAN_BANDS=10000 STUB_SCAN_SECS=0 STUB_SYNC=0.5:LOCKED,4.5:RECOVERING \
         WWV_LOCK_REFRESH_SECS=1 \
