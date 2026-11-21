@@ -36,8 +36,8 @@
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
-#   mem_now       free Unmovable order 9-10 blocks in pagetypeinfo: the memory wait goes
-#                 ahead at once, after one compaction
+#   mem_now       the default, --mem-wait-secs 0: one compaction and a MEM line (Unmovable,
+#                 Movable and Reclaimable free blocks per order) before the start, no wait
 #   mem_delay     no free block at order >= 9 (pagetypeinfo) until 2 s in: the wait re-compacts every 1 s,
 #                 goes ahead when the blocks appear, and only then starts the unit
 #   mem_bound     pagetypeinfo unreadable, no free block in buddyinfo ever: the wait falls back
@@ -178,7 +178,7 @@ for c in "${CASES[@]}"; do
     wait
     rc_is 0; has 'REOPEN: segment 1: sdrplay.service restarted under the stream'
     has 'BACKOFF: waiting 1 s before the reopen (the service restarted; crash reopen 1 in a row)'
-    has 'MEMWAIT: before reopen 1, Normal zone: '
+    has 'MEM: before reopen 1: Normal zone free blocks at order 0-10: Unmovable '
     ended_in 2 5000; streams_is 2; unit_off
     end_case ;;
   hang)
@@ -343,10 +343,10 @@ PY
     begin "$c"
     live STUB_MODE=ok -- --wwv-khz 5000 --secs 2
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 96 22'
-    has 'MEMWAIT: pagetypeinfo: Node 0, zone Normal, type Unmovable 3473 296 466 724 289 44 0 1 0 96 22 | Node 0, zone Normal, type Reclaimable'
-    has 'MEMWAIT: 118 free blocks at order >= 9 (Unmovable + Reclaimable); going ahead'; hasnt 'waiting up to'
-    hasnt 'pagetypeinfo unreadable'
+    has 'MEM: before starting sdrplay.service: Normal zone free blocks at order 0-10: Unmovable 3473 296 466 724 289 44 0 1 0 96 22; Movable 12846 2184 398 2125 1445 421 15 0 0 0 0; Reclaimable 1081 408 11 11 0 1 0 0 0 0 0'
+    hasnt MEMWAIT; hasnt 'pagetypeinfo unreadable'
+    a=$(grep -n 'MEM: before starting' "$D/console.txt" | cut -d: -f1); b=$(grep -n 'starting sdrplay.service$' "$D/console.txt" | head -1 | cut -d: -f1)
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || fail 'no MEM line before the unit was started'
     [ "$(compactions)" = 1 ] || fail "$(compactions) compactions, want 1 (compacted once, not again by sdrplay_start)"
     unit_off
     end_case ;;
@@ -357,7 +357,7 @@ PY
     live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 30 --mem-recompact-secs 1
     wait
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 0'
+    has 'MEM: before starting sdrplay.service: Normal zone free blocks at order 0-10: Unmovable 3473 296 466 724 289 44 0 1 0 0 0;'
     has 'MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 30 s, compacting every 1 s'
     t=$(grep -oE 'MEMWAIT: 3 free blocks at order >= 9 \(Unmovable \+ Reclaimable\) after [0-9]+ s' "$D/console.txt" | grep -oE '[0-9]+ s$' | cut -d' ' -f1)
     [ -n "$t" ] && [ "$t" -ge 1 ] && [ "$t" -le 6 ] || fail "the wait did not end 1-6 s in when the blocks appeared (got '${t}')"
@@ -371,7 +371,7 @@ PY
     buddy 0 0
     live STUB_MODE=ok WWV_PAGETYPEINFO="$D/no-such-file" -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: pagetypeinfo unreadable, using buddyinfo (every migrate type)'
+    has 'MEM: before starting sdrplay.service: pagetypeinfo unreadable, using buddyinfo: Normal zone free blocks at order 0-10: all types 3989 16137 11122 5590 3206 995 222 54 53 0 0'
     has 'MEMWAIT: WARNING: no free block at order >= 9 (buddyinfo) after 2 s'; has 'going ahead: Node 0, zone Normal 3989'
     [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more (one, then one each second)"
     [ $((SECONDS - T0)) -lt 20 ] || fail "took $((SECONDS - T0)) s: the wait was not bounded"
@@ -382,10 +382,11 @@ PY
     buddy 0 48 0 0
     live STUB_MODE=ok -- --wwv-khz 5000 --secs 2 --mem-wait-secs 2 --mem-recompact-secs 1
     rc_is 0; ended_in 1 5000
-    has 'MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 48'
+    has 'MEM: before starting sdrplay.service: Normal zone free blocks at order 0-10: Unmovable 3473 296 466 724 289 44 0 1 0 0 0; Movable 12846 2184 398 2125 1445 421 15 0 0 0 48;'
     has 'MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 2 s'
     has 'MEMWAIT: WARNING: no free block at order >= 9 (Unmovable + Reclaimable) after 2 s'
-    hasnt 'pagetypeinfo unreadable'; hasnt 'free blocks at order'
+    hasnt 'pagetypeinfo unreadable'
+    grep -qE 'MEMWAIT: [0-9]+ free blocks' "$D/console.txt" && fail 'the wait went ahead on free blocks'
     unit_off
     end_case ;;
   backoff_seq)
@@ -397,15 +398,18 @@ PY
     has 'BACKOFF: waiting 2 s before the reopen (the service restarted, 18 errno=12 lines in the segment; crash reopen 3 in a row)'
     n=$(grep -c 'ERRNO12: ' "$D/console.txt"); [ "$n" = 4 ] || fail "$n ERRNO12 lines, want 4 (one per burst)"
     [ "$(grep -c 'ERRNO12: 18 libusb errno=12 lines from sdrplay.service' "$D/console.txt")" = 4 ] || fail 'an ERRNO12 line without the count 18'
-    [ "$(grep -c 'MEMWAIT: before reopen' "$D/console.txt")" = 3 ] || fail 'no memory wait before every reopen'
+    [ "$(grep -c 'MEM: before reopen' "$D/console.txt")" = 3 ] || fail 'no MEM line before every reopen'
+    [ "$(grep -c 'MEM: at the ERRNO12 burst: Normal zone free blocks at order 0-10: Unmovable' "$D/console.txt")" = 4 ] ||
+      fail 'no MEM line at every ERRNO12 burst'
     unit_off
     end_case ;;
   errno_burst)
     begin "$c"
-    live STUB_MODE=errno_after:2 STUB_ONLY_FIRST=1 STUB_ERRNO=12 -- --wwv-khz 5000 --secs 6 --backoff-secs 1
+    live STUB_MODE=errno_after:2 STUB_ONLY_FIRST=1 STUB_ERRNO=12 -- --wwv-khz 5000 --secs 9 --backoff-secs 1
     rc_is 0; has 'REOPEN: segment 1: rsp2_stream had no samples for 10 s'
     n=$(grep -c 'ERRNO12: ' "$D/console.txt"); [ "$n" = 1 ] || fail "$n ERRNO12 lines, want 1"
     has 'ERRNO12: 12 libusb errno=12 lines from sdrplay.service, '
+    has 'MEM: at the ERRNO12 burst: Normal zone free blocks at order 0-10: Unmovable '
     has 'BACKOFF: waiting 1 s before the reopen (12 errno=12 lines in the segment; crash reopen 1 in a row)'
     ended_in 2 5000; streams_is 2; unit_off
     end_case ;;

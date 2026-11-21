@@ -724,14 +724,17 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   01:30-06:31 UTC every core dump of `sdrplay_apiService` followed a burst of up to 18 libusb
   errno=12 lines. systemd restarted the service within about 1 s, so from 06:01 the crashes
   looped in clusters every 1-3 min. The wrapper's compact-before-open did not prevent them. The
-  buffer order the service needs cannot be determined, because the service is closed-source. The
-  wrapper now waits for a free block at order 9 or above in the Normal zone's Unmovable and
-  Reclaimable rows of `/proc/pagetypeinfo`, read with `sudo -n`, falling back to the
-  `/proc/buddyinfo` total. It also backs off between crash reopens (docs/WWV_LIVE.md, *Memory
-  compaction*). Neither is tested on the radio. Counting Unmovable and Reclaimable rests on an
-  inference, not a measurement: that the service's libusb URB buffers are unmovable kernel
-  allocations. At 11:20 UTC the same day those two rows had 0 free blocks at order 9 or above,
-  so in that state the wait runs to its 60 s bound before every start and reopen.
+  buffer order the service needs cannot be determined, because the service is closed-source.
+- **The order-9 Unmovable + Reclaimable wait is falsified (2026-11-21).** At 11:20 UTC, read with
+  `sudo -n cat /proc/pagetypeinfo`, the Normal zone's Unmovable and Reclaimable rows together had
+  0 free blocks at order 9 or above (46 at order 5 or above). Meanwhile wwv-runG ran from 09:58
+  with 0 errno=12 lines. So the service does not need an unmovable order-9 block, and a wait for
+  one is only delay. That the URB buffers are unmovable allocations was an inference and was
+  never measured. **The needed order is NOT DETERMINABLE until MEM lines from a crash exist.**
+  The wrapper now logs one MEM line (free blocks per order in the Unmovable, Reclaimable and
+  Movable rows) at every start, reopen and ERRNO12 burst. The wait is off by default
+  (`--mem-wait-secs 0`) and stays available as an option. The reopen backoff stays on
+  (docs/WWV_LIVE.md, *Memory compaction*). None of it is tested on the radio.
 
 ## Documentation
 

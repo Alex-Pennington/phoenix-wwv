@@ -31,11 +31,11 @@
 #   --stall-secs N      reopen the stream when no sample has come for N s (default 10;
 #                       0: never)
 #   --reopen-max N      end the run after N reopens (default 20)
-#   --mem-order N       before starting sdrplay.service and before each reopen, wait for
-#                       a free Unmovable or Reclaimable block at order N or above in the
-#                       Normal zone (default 9: the pageblock order, 2 MiB; 0-10)
-#   --mem-wait-secs N   bound on that wait; past it the wrapper warns and goes ahead
-#                       (default 60; 0: no wait)
+#   --mem-wait-secs N   before starting sdrplay.service and before each reopen, wait up
+#                       to N s for a free Unmovable or Reclaimable block at --mem-order or
+#                       above in the Normal zone; past it the wrapper warns and goes ahead
+#                       (default 0: no wait, observe only)
+#   --mem-order N       the order that wait asks for (default 9; 0-10)
 #   --mem-recompact-secs N  compact memory again every N s while waiting (default 5)
 #   --backoff-secs N    wait N s before a reopen caused by a service crash or libusb
 #                       errno=12, doubling for each such reopen in a row (default 5; 0: none)
@@ -43,11 +43,13 @@
 #   --backoff-reset-secs N  a segment that runs N s starts the doubling over (default 600)
 #
 # Memory: before every start of sdrplay.service (the first, and the scan's restart) and
-# before each reopen, memory is compacted and the wrapper waits as --mem-order says. It
-# counts the Normal zone's Unmovable and Reclaimable rows of /proc/pagetypeinfo (sudo -n
-# cat), or, when that fails, every type in /proc/buddyinfo ("pagetypeinfo unreadable, using
-# buddyinfo"). It logs the buddyinfo line it started on (MEMWAIT). WWV_BUDDYINFO and
-# WWV_PAGETYPEINFO name other files to read (for the tests). The wrapper reads sdrplay.service's journal every 3 s and at the
+# before each reopen, memory is compacted, and at those times and at every ERRNO12 line the
+# wrapper logs a MEM line: the Normal zone's free blocks at order 0-10 in the Unmovable,
+# Reclaimable and Movable rows of /proc/pagetypeinfo (sudo -n cat), or, when that fails,
+# /proc/buddyinfo's total ("pagetypeinfo unreadable, using buddyinfo"). The order the vendor
+# service needs is not known; the MEM lines at a crash are the evidence to choose one. With
+# --mem-wait-secs it also waits (MEMWAIT), counting the Unmovable and Reclaimable rows.
+# WWV_BUDDYINFO and WWV_PAGETYPEINFO name other files to read (for the tests). The wrapper reads sdrplay.service's journal every 3 s and at the
 # end of each segment and scan, and logs each burst of libusb errno=12 lines there as one
 # ERRNO12 line with a count.
 #
@@ -107,7 +109,7 @@ SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
 SCAN_TIMEOUT=
 STALL_SECS=10; REOPEN_MAX=20
-MEM_ORDER=9; MEM_WAIT_SECS=60; MEM_RECOMPACT_SECS=5
+MEM_ORDER=9; MEM_WAIT_SECS=0; MEM_RECOMPACT_SECS=5
 BACKOFF_SECS=5; BACKOFF_MAX=120; BACKOFF_RESET_SECS=600
 # The streamer; a test may point this at a stub that takes the same options.
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
@@ -308,11 +310,19 @@ svc_ready() {
 # Reclaimable rows together, MEM_SRC "Unmovable + Reclaimable". When that cannot be read,
 # from /proc/buddyinfo's Normal zone, every migrate type, MEM_SRC "buddyinfo". MEM_BUDDY is
 # buddyinfo's Normal zone either way. MEM_FREE is empty when there is no Normal zone.
+# MEM_ROWS is the MEM line's body: the Normal zone's free blocks at order 0-10, per row
+# (Unmovable, Reclaimable, Movable) from pagetypeinfo, or buddyinfo's total.
 mem_read() {
   local bi pt
   bi=$(cat "$BUDDYINFO" 2>/dev/null || true)
   MEM_BUDDY=$(awk '$4 == "Normal" { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$bi")
   pt=$(sudo -n cat "$PAGETYPEINFO" 2>/dev/null || true)
+  MEM_ROWS=$(awk '$4 == "Normal," && ($6 == "Unmovable" || $6 == "Reclaimable" || $6 == "Movable") {
+                    r = ($2 == "0," ? "" : "node " $2 " ") $6; for (k = 7; k <= NF; k++) r = r " " $k
+                    printf "%s%s", (n++ ? "; " : ""), r }' <<< "$pt")
+  [ -n "$MEM_ROWS" ] ||
+    MEM_ROWS=$(awk '$4 == "Normal" { r = ($2 == "0," ? "" : "node " $2 " ") "all types"; for (k = 5; k <= NF; k++) r = r " " $k
+                                     printf "%s%s", (n++ ? "; " : ""), r }' <<< "$bi")
   MEM_LINE=$(awk '$4 == "Normal," && ($6 == "Unmovable" || $6 == "Reclaimable") { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$pt")
   if [ -n "$MEM_LINE" ]; then
     MEM_SRC="Unmovable + Reclaimable"
@@ -325,21 +335,25 @@ mem_read() {
                                       END { if (z) print s + 0 }' <<< "$bi")
   fi
 }
-# mem_wait WHAT: compact memory, then wait up to --mem-wait-secs for a free block at
-# --mem-order or above (mem_read says where it counts), compacting again every
-# --mem-recompact-secs. Past the bound, or at --secs, it warns and goes ahead: it never
-# blocks the run.
+# mem_log WHEN: one MEM line, the Normal zone's free blocks at order 0-10 per migrate type
+# (mem_read), for comparing the state at a crash with the state at a clean start.
+mem_log() {
+  mem_read
+  if [ "$MEM_SRC" = buddyinfo ]; then
+    say "MEM: $1: pagetypeinfo unreadable, using buddyinfo: Normal zone free blocks at order 0-10: ${MEM_ROWS:-none read}"
+  else
+    say "MEM: $1: Normal zone free blocks at order 0-10: $MEM_ROWS"
+  fi
+}
+# mem_wait WHAT: compact memory and log a MEM line. With --mem-wait-secs (default 0: observe
+# only), then wait that long at most for a free block at --mem-order or above (mem_read says
+# where it counts), compacting again every --mem-recompact-secs. Past the bound, or at
+# --secs, it warns and goes ahead: it never blocks the run.
 mem_wait() {
   sdrplay_compact
+  mem_log "before $1"
   [ "$MEM_WAIT_SECS" = 0 ] && return 0
-  mem_read
   if [ -z "$MEM_FREE" ]; then say "MEMWAIT: no Normal zone in $BUDDYINFO or $PAGETYPEINFO; going ahead"; return 0; fi
-  say "MEMWAIT: before $1, Normal zone: $MEM_BUDDY"
-  if [ "$MEM_SRC" = buddyinfo ]; then
-    say "MEMWAIT: pagetypeinfo unreadable, using buddyinfo (every migrate type)"
-  else
-    say "MEMWAIT: pagetypeinfo: $MEM_LINE"
-  fi
   if [ "$MEM_FREE" -gt 0 ]; then
     say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER ($MEM_SRC); going ahead"; return 0
   fi
@@ -391,6 +405,7 @@ errno_poll() {
   fi
   if [ "$ERR_N" -gt 0 ] && { [ "$n" = 0 ] || [ -n "${1:-}" ]; }; then
     say "ERRNO12: $ERR_N libusb errno=12 lines from sdrplay.service, $ERR_FIRST-$ERR_LAST UTC"
+    mem_log "at the ERRNO12 burst"
     ERR_N=0; ERR_FIRST=; ERR_LAST=
   fi
   return 0

@@ -185,53 +185,58 @@ crashed on libusb `errno=12` (ENOMEM) during isochronous transfer submission, wi
 
 Compaction alone does not prevent the crashes. A read-only survey on 2026-11-21 found that
 the Normal zone's Unmovable and Reclaimable lists had no free order-9 or order-10 blocks, and
-that 97.9% of compaction stalls failed. See NOTES.md. So after compacting, the wrapper waits
-for free high-order blocks and backs off between crash reopens.
+that 97.9% of compaction stalls failed. See NOTES.md.
+
+**The free-block order the service needs is NOT DETERMINABLE yet.** The service is
+closed-source. A wait for an Unmovable or Reclaimable block at order 9 or above was tried and
+falsified the same day. At 11:20 UTC those two rows together had 0 free blocks at order 9 or
+above, while the validation run wwv-runG ran from 09:58 with no errno=12 at all. So the
+service does not need such a block, and at order 9 the wait was only delay. By default the
+wrapper now only observes: it logs a MEM line at every start, every reopen and every ERRNO12
+line. The state at a crash, compared with the state at a clean start, is the evidence for
+choosing an order. The wait stays available as an option. The wrapper also backs off between
+crash reopens.
 
 ```
-scripts/wwv_rsp2_live.sh [--mem-order 9] [--mem-wait-secs 60] [--mem-recompact-secs 5]
+scripts/wwv_rsp2_live.sh [--mem-wait-secs 0] [--mem-order 9] [--mem-recompact-secs 5]
                          [--backoff-secs 5] [--backoff-max 120] [--backoff-reset-secs 600] ...
 ```
 
-- **The memory wait.** Before every start of `sdrplay.service` (the first start, and the
-  restart before a scan retry) and before each reopen, the wrapper compacts once. It logs the
-  Normal zone line of `/proc/buddyinfo`. It then reads `/proc/pagetypeinfo` with `sudo -n cat`,
-  because only root can read it (mode 0400 on saga), and logs the Normal zone's Unmovable and
-  Reclaimable rows. It counts the free blocks at `--mem-order` or above in those two rows
-  together. If there are none, it waits, compacting again every `--mem-recompact-secs` (those
-  re-compactions log nothing of their own). It goes ahead as soon as a block shows, or after
-  `--mem-wait-secs` with a warning. It never waits past the bound or past `--secs`.
-
-  When `sudo -n cat` fails, the wrapper logs `pagetypeinfo unreadable, using buddyinfo` and
-  counts buddyinfo's Normal zone instead. That count sums every migrate type, Movable
-  included. In the survey the Movable list still had 48 free order-10 blocks, so a buddyinfo
-  count would have gone ahead at once.
+- **MEM lines.** Before every start of `sdrplay.service` (the first start, and the restart
+  before a scan retry) and before each reopen, the wrapper compacts once and then logs one MEM
+  line. It also logs one after every ERRNO12 line. The line gives the Normal zone's free
+  blocks at order 0 to 10 in the Unmovable, Movable and Reclaimable rows of
+  `/proc/pagetypeinfo`. It reads that file with `sudo -n cat`, because only root can read it
+  (mode 0400 on saga):
 
   ```
-  [wwv_rsp2_live] 2026-11-21T11:21:41Z MEMWAIT: before starting sdrplay.service, Normal zone: Node 0, zone Normal 3989 16137 11122 5590 3206 995 222 54 53 0 48
-  [wwv_rsp2_live] 2026-11-21T11:21:41Z MEMWAIT: pagetypeinfo: Node 0, zone Normal, type Unmovable 3473 296 466 724 289 44 0 1 0 0 0 | Node 0, zone Normal, type Reclaimable ...
+  [wwv_rsp2_live] 2026-11-21T11:40:55Z MEM: at the ERRNO12 burst: Normal zone free blocks at order 0-10: Unmovable 3473 296 466 724 289 44 0 1 0 96 22; Movable 12846 2184 398 2125 1445 421 15 0 0 0 0; Reclaimable 1081 408 11 11 0 1 0 0 0 0 0
+  ```
+
+  When `sudo -n cat` fails, the line reads
+  `MEM: ...: pagetypeinfo unreadable, using buddyinfo: Normal zone free blocks at order 0-10: all types ...`.
+  It then gives buddyinfo's Normal zone, which sums every migrate type. (These lines are from
+  the stub tests.)
+- **The memory wait (off by default).** With `--mem-wait-secs N` over 0, after the MEM line
+  the wrapper counts the free blocks at `--mem-order` or above in the Unmovable and
+  Reclaimable rows together. If there are none, it waits, compacting again every
+  `--mem-recompact-secs` (those re-compactions log nothing of their own). It goes ahead as soon
+  as a block shows, or after N s with a warning. It never waits past N or past `--secs`. With
+  pagetypeinfo unreadable, it counts the buddyinfo total instead.
+
+  ```
   [wwv_rsp2_live] 2026-11-21T11:21:41Z MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 2 s, compacting every 1 s
   [wwv_rsp2_live] 2026-11-21T11:21:43Z MEMWAIT: WARNING: no free block at order >= 9 (Unmovable + Reclaimable) after 2 s (2 re-compactions); going ahead: ...
-  [wwv_rsp2_live] 2026-11-21T11:21:36Z MEMWAIT: pagetypeinfo unreadable, using buddyinfo (every migrate type)
   ```
 
-  (These lines are from the stub tests: the survey's state, buddyinfo free and Unmovable empty,
-  holds the wait to its bound.) **The wait counts Unmovable and Reclaimable blocks on an
-  inference, not a measurement:** that the libusb URB buffers the service submits are
-  unmovable kernel allocations. The service is closed-source, and neither the allocation
-  type nor the order it needs has been measured.
+  Counting Unmovable and Reclaimable rests on an inference, not a measurement: that the
+  libusb URB buffers the service submits are unmovable kernel allocations.
 
   Options:
-  - **`--mem-order N`** (default 9; 0-10). 9 is saga's pageblock order: 2 MiB
-    (`/sys/kernel/mm/transparent_hugepage/hpage_pmd_size` 2097152), the block size by which the
-    kernel groups pages by migrate type. Orders 9 and 10 are where the survey found the
-    Unmovable and Reclaimable lists empty. Order 10 alone would make the wrapper wait for the
-    scarcest blocks.
-  - **`--mem-wait-secs N`** (default 60; 0: no wait, compaction only). Crash clusters came
-    every 1-3 min, so a minute's wait stays within one cluster interval. On saga at 11:20 UTC on
-    2026-11-21, Unmovable and Reclaimable together had 0 free blocks at order 9 or above (46
-    at order 5 or above). In that state the wait runs to its bound before every start and
-    reopen.
+  - **`--mem-wait-secs N`** (default 0: observe only, no wait).
+  - **`--mem-order N`** (default 9; 0-10), the order the wait asks for. 9 is saga's pageblock
+    order, 2 MiB (`/sys/kernel/mm/transparent_hugepage/hpage_pmd_size` 2097152). The
+    falsification above shows it is too high a bar for the Unmovable and Reclaimable rows.
   - **`--mem-recompact-secs N`** (default 5).
   - **`WWV_BUDDYINFO=FILE`** and **`WWV_PAGETYPEINFO=FILE`** read other files in place of
     `/proc/buddyinfo` and `/proc/pagetypeinfo`. The stub tests use them.
@@ -342,7 +347,7 @@ after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_strea
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
-8 minutes: 485 s on saga, 2026-11-21, 29 cases). The stubs in `tests/live/fakebin` stand in for
+8 minutes: 488 s on saga, 2026-11-21, 29 cases). The stubs in `tests/live/fakebin` stand in for
 `systemctl`, `sudo` and `journalctl`, and the script refuses to run unless the PATH reaches
 them. The stub `sudo` logs the memory compaction instead of running it, and each case reads
 its own fake buddyinfo (`WWV_BUDDYINFO`). Its cases cover each reopen reason
@@ -353,7 +358,8 @@ retry), rsp2_stream's stall exit and `behind wall clock` line, its gap fill (los
 outage, a slow ramp, a loss too large), `wwv_live`'s handling of a fill on synthetic WWV, and
 the scan's `--keep-raw` round trip, and the memory wait (satisfied at once, after a delay,
 and past its bound, the buddyinfo fallback, and the survey's state, where only
-Unmovable decides), one ERRNO12 line per burst, and the backoff sequence (doubling, capped).
+Unmovable decides), the MEM line (at the start, each reopen and each burst), one ERRNO12
+line per burst, and the backoff sequence (doubling, capped).
 
 ### Band
 
