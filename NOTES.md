@@ -866,7 +866,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   not the radio clock alone; the cause is not found. From t=4200 to 5100 s it lost 3.7 s more, with
   one 1.2 s timeout. The pulse phase held over the first 70 minutes, so that drift lost no sample:
   see "Stream slip" below.
-- **rsp2_stream's "the reader is not keeping up" label is wrong on run3h.** The write wait is a
+- **rsp2_stream's "the reader is not keeping up" label was wrong on run3h** (it now reads
+  `delivery delay growing (samples late or lost upstream), with a long write wait`). The write wait is a
   steady 1.5-3 s per 60 s whatever the loss, so a growth under twice that reads as the reader's
   fault: the +159 ms and +225 ms minutes of the 3.7 s loss were labelled so, with a write-wait
   maximum of 12 ms. The label is unchanged on fix/wwv-gap-fill; the gap fill does not use it.
@@ -930,17 +931,31 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     fills a few ms until it catches up. The live path still has no rate correction, so a growing
     delay now shows as "behind" growing by the rate (about 1 s on a runG), which the report line
     names as `lag rate`.
-  - **Scoring.** `tests/air/decode_score.py` took a symbol's truth as floor(U0 + t), t being
-    about 400 ms into the decoder's second, so a slip past about 600 ms read the next second. Its
-    truth is now the decoder's label (SYMMIN `sec`) in the UTC minute nearest U0 + minute_start;
-    the 250 ms pulse test already ties the label to the pulse. runG: sent 1 read as 0 334/1704 ->
-    94/1816 (5.2%), sent 0 read as 1 473/5242 -> 112/5327 (2.1%), one 0 more than the confirm
-    worker's 111/5326 (not traced). Of the other live logs only those whose stream time left the
-    anchor move, all by unfilled loss: run3h 1->0 459/1371 -> 134/1454, 0->1 500/4171 -> 107/4372;
-    run90d 552/869 -> 72/942, 515/2480 -> 77/2770; run90g segment 2 172/286 -> 157/322, 165/758 ->
-    93/713. run90, run90c, run90f, runF (segments 1, 2, 5, 6), runF3 and runN1 are unchanged, as are
-    every frame score and FALSE CONFIRM (0 in all). `symbol_second_score.py` and
-    `bcd_window_trace.py` still take floor(U0 + t) and have the same fault on a slipped run.
+  - **Scoring.** The scorers took a symbol's or window's truth as floor(U0 + t), t being about
+    400-500 ms into the decoder's second, so a slip past about 500 ms read the next second.
+    `decode_score.py`, `symbol_second_score.py` and `bcd_window_trace.py` now share
+    `tests/air/stream_utc.py`: U0 re-anchored at the decoder's minute starts (offset to the
+    nearest UTC minute, median of 11 anchors, the run's first 11 as baseline, a 40 ms deadband;
+    its docstring). It does not use the decoder's second labels, so `symbol_second_score.py`
+    still checks them. Against the scorers before the fix, only logs whose stream time left the
+    anchor change; frame scores and FALSE CONFIRM (0 in all) do not:
+    - runG: 1->0 334/1704 -> 94/1816 (5.2%), 0->1 473/5242 -> 112/5327 (2.1%), one 0 more than the
+      confirm worker's 111/5326 (not traced); second labels exact 6583 -> 9245 of 9245; windows
+      wrong 1404 -> 433.
+    - run3h (5.3 s unfilled loss): 1->0 459/1371 -> 137/1452, 0->1 500/4171 -> 111/4370; labels
+      exact 4381 -> 7839 of 7901; windows wrong 1821 -> 557.
+    - run90d (1.1 s timeout loss): 1->0 552/869 -> 72/942, 0->1 515/2480 -> 77/2771; labels exact
+      958 -> 5270 of 5272; windows wrong 2196 -> 523.
+    - run90g segment 2: 1->0 172/286 -> 160/320, 0->1 165/758 -> 101/721; labels exact 1135 -> 2600
+      of 2662; windows wrong 789 -> 664.
+    - runF segment 5 (164 ms ahead on slow fills): `bcd_window_trace.py` only, its ms-level
+      offsets (right-by-pulse 1863 -> 1911, wrong 175 either way).
+    run90, run90c, run90f, run90g segment 1, runF (segments 1, 2, 6), runF3, runN1 and the four air
+    wirings score identically. Near a loss step the median switches halfway between minute
+    anchors, so a few symbols there differ from the decoder-label truth this replaced (run3h 4 and
+    3, run90d 1, run90g segment 2 8 and 3), and run3h keeps 62 and run90g segment 2 keeps 62
+    second labels off by 1-2 s. run90c's real 35 ms loss at 2950 s is under the deadband and not
+    corrected.
 
 - **The SDRplay API service keeps crashing on libusb errno=12 (ENOMEM), and compaction
   at start and reopen does not prevent it.** 2026-11-21 01:30-06:31 UTC on saga: 132

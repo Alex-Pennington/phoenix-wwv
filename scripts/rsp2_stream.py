@@ -75,9 +75,11 @@ Every --report-secs the stream logs how far its sample count (fills included) is
 behind the wall clock since streaming began ("behind"), what was filled, how
 long its writes to stdout blocked, and the tracked lag rate ("lag rate", ppm; a
 steady positive rate makes "behind" grow by that much and is not filled).
-Behind growing with little write wait means samples were lost upstream of this
-process (USB or the API service) without an overflow report; a long write wait
-means the reader (wwv_live) is not keeping up.
+Behind growing means samples have not arrived: lost upstream (USB or the API
+service) without an overflow report, or delivered late, a growing delivery delay.
+With little write wait the line names loss; with a write wait of half the growth or
+more it names the delay. The write wait does not show the reader at fault: on run3h
+it was a steady 1.5-3 s per 60 s whatever the loss (NOTES.md).
 """
 import os, sys, json, time, argparse, signal, collections, itertools
 import numpy as np
@@ -425,7 +427,7 @@ try:
             what = ''
             if grew > 100.0:
                 what = ('; samples lost upstream (USB or API service), no overflow reported'
-                        if wait_s < 0.5 * grew / 1000.0 else '; the reader is not keeping up')
+                        if wait_s < 0.5 * grew / 1000.0 else '; delivery delay growing (samples late or lost upstream), with a long write wait')
             log(f'behind wall clock {b:+.0f} ms ({grew:+.0f} in {a.report_secs:.0f} s), '
                 f'filled {filled / a.rate * 1000:.0f} ms in {len(fills)} gaps, '
                 f'write wait {wait_s * 1000:.0f} ms (max {wait_max * 1000:.0f}), '
