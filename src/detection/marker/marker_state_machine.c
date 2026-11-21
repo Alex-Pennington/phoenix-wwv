@@ -223,6 +223,10 @@ void marker_state_machine_run(marker_detector_t *md) {
                            "(window run %.0fms, start=%.1fms)\n",
                            frame * FRAME_DURATION_MS / 1000.0f, md->last_flank_ratio,
                            MARKER_MAX_FLANK_RATIO, duration_ms, pulse_start_ms);
+                    /* The chain log takes it from here (wwv_chain_log_telem) */
+                    telem_sendf(TELEM_MARKERS, "PURITY,%.1f,%.1f,%.0f,%.2f,%.2f",
+                                frame * FRAME_DURATION_MS, pulse_start_ms, duration_ms,
+                                md->last_flank_ratio, md->marker_peak_energy / md->baseline_energy);
                     md->state = STATE_IDLE;
                     break;
                 }

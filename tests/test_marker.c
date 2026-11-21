@@ -20,12 +20,22 @@
  *    30 ms of its leading edge. Case 3 also checks the voice bursts give none.
  * 7. Voice short runs: weaker voice bursts (no markers) give short runs, which
  *    fail the purity test and so give no candidate.
+ * 8. Purity rejections reach telemetry (TELEM_MARKERS "PURITY," lines, which the
+ *    chain log writes): case 3's voice bursts give one per rejection.
  * Cases 3 and 4 run white noise through the sync channel filter, as on air.
  */
 #include <stdio.h>
 #include <math.h>
 #include "marker_detector.h"
 #include "channel_filters.h"
+#include "telemetry.h"
+#include <string.h>
+
+static int n_purity;
+static void purity_tap(telem_channel_t ch, const char *line, void *u) {
+    (void)u;
+    if (ch == TELEM_MARKERS && strncmp(line, "PURITY,", 7) == 0) n_purity++;
+}
 
 #define FS 50000.0
 #define BLIP_A 0.16   /* window run 343 ms, peak 3.44x baseline: a short run */
@@ -155,9 +165,13 @@ int main(void) {
     md = marker_detector_create(NULL);
     marker_detector_set_callback(md, on_marker, NULL);
     marker_detector_set_candidate_callback(md, on_candidate, NULL);
-    n_ev = 0; n_cand = 0;
+    n_ev = 0; n_cand = 0; n_purity = 0;
+    telem_set_tap(purity_tap, NULL);
     run_noise(md, 200.0, 20000.0, 0.3, 0.1, 0.6);
+    telem_set_tap(NULL, NULL);
     int stray, hit = on_time(20000.0, &stray);
+    printf("%-4s purity rejections on telemetry: %d\n", n_purity > 0 ? "ok" : "FAIL", n_purity);
+    if (n_purity == 0) fails++;
     printf("%-4s voice: %d of 3 markers found, %d events and %d candidates on voice bursts\n",
            (hit == 3 && stray == 0 && n_cand == 0) ? "ok" : "FAIL", hit, stray, n_cand);
     if (hit != 3 || stray != 0 || n_cand != 0) fails++;

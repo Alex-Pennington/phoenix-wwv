@@ -71,6 +71,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     1200 Hz sits at bin 6.1 (195.3 Hz bins), between the centre (bin 5) and the flank (bin 7).
     Its effect on the purity test is not measured.
 - **A purity rejection is printed to stdout only.** It reaches no CSV or telemetry line.
+  - **Fixed (fix/wwv-tick-marker-cleanup).** It is also sent on `TELEM_MARKERS` as
+    `PURITY,<end ms>,<pulse start ms>,<window run ms>,<flank/centre>,<peak/baseline>`, and the
+    chain log (`wwv_live --log`) writes that line as `TELEM MARK PURITY,...`. The air harness
+    prints TELEM BCDS lines only, so its logs do not carry it; its stdout already has the
+    `MARKER rejected` line. A UDP subscriber to the markers channel now sees PURITY lines among
+    the marker CSV lines.
 - **A marker-detector run shorter than `min_duration_ms` still takes the 30 s cooldown.** A
   short in-band blip in the seconds before :00 would hide that minute's marker, as the voice
   runs did before the purity test. Not seen on air.
