@@ -41,9 +41,16 @@
 # PREFIX.seg2).
 # --carrier-hz, --lna and --ifgr hold for the first band only.
 #
+# Gaps: rsp2_stream fills samples lost upstream with zeros, so wwv_live's sample
+# clock stays on true time, and wwv_live holds the events in a filled span back from
+# sync (GAP lines on the console and in the log). rsp2_stream holds its output 3 s to
+# place each fill; it passes its anchor, measured before the hold, to wwv_live through
+# a file (--anchor-out / --anchor-in).
+#
 # Reopen: the stream is stopped and opened again on the same band, as a new segment
-# (wwv_live's sample-counter clock cannot carry across a gap), when
+# (wwv_live's sample-counter clock cannot carry across a gap it cannot fill), when
 #   - rsp2_stream ends because no sample came for --stall-secs (exit status 75);
+#   - rsp2_stream ends because it lost more than it fills (over 10 s; exit status 76);
 #   - sdrplay.service's MainPID or NRestarts changes (the vendor service crashed and
 #     systemd restarted it under the stream);
 #   - rsp2_stream's heartbeat file is older than 2 x --stall-secs + 15 s (a hang).
@@ -308,8 +315,11 @@ while :; do
   [ -n "$TIMEBASE" ] && WL_ARGS+=(-j "$(seg_name "$TIMEBASE" "$SEG")")
   HB=$FIFODIR/heartbeat
   touch "$HB"
+  ANCHOR=$FIFODIR/anchor.json
+  /bin/rm -f "$ANCHOR"
+  WL_ARGS+=(--anchor-in "$ANCHOR")
   ST_ARGS=(--wwv-khz "$WWV_KHZ" --offset-khz "$OFFSET_KHZ" --rate "$RATE" --secs "$REMAIN" "${GAINS[@]}"
-           --stall-secs "$STALL_SECS" --heartbeat "$HB")
+           --stall-secs "$STALL_SECS" --heartbeat "$HB" --anchor-out "$ANCHOR")
   if [ "$SEG" = 1 ]; then
     [ -n "$LNA" ] && ST_ARGS+=(--lna "$LNA")
     [ -n "$IFGR" ] && ST_ARGS+=(--ifgr "$IFGR")
@@ -371,6 +381,8 @@ while :; do
       SPID=
       if [ "$src" = 75 ]; then
         REOPEN="rsp2_stream had no samples for $STALL_SECS s"
+      elif [ "$src" = 76 ]; then
+        REOPEN="rsp2_stream lost more samples than it fills (its GAP line says how much)"
       elif [ "$src" != 0 ] && [ "$rc" = 0 ]; then
         rc=$src
       fi

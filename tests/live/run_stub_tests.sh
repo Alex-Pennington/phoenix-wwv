@@ -24,6 +24,13 @@
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
+#   gap76         the stream exits 76 once (a loss too large to fill): REOPEN, segment 2
+#   stream_gaps   rsp2_stream.py: losses of 0.3 s and 1.05 s and a 5 s outage (timeouts), 30 ms
+#                 arrival jitter: every sample's stream index stays within 25 ms of its true
+#                 time, within 6 ms at the end; each fill logged (GAP) with its cause
+#   stream_ramp   rsp2_stream.py: 3 ms/s lost for 30 s as a little before every block: the same
+#   stream_toobig rsp2_stream.py, --stall-secs 20: a 12 s outage, over --gap-max-secs 10: exit 76,
+#                 and no sample from after the loss is sent
 #   gap_chain     wwv_live on synthetic WWV with a 1.05 s loss after LOCKED: filled (zeros), the
 #                 held phase stays (no break, no re-anchor) and every event overlapping the span is
 #                 held back from sync (recounted from the log); dropped (unfilled), it breaks.
@@ -95,7 +102,8 @@ live() {
 want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
 CASES=("$@")
 [ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
-                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw gap_chain)
+                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw gap_chain gap76
+                                 stream_gaps stream_ramp stream_toobig)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -196,7 +204,7 @@ for c in "${CASES[@]}"; do
   stream_lag)
     begin "$c"
     env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" lossy:0.5 -- \
-        --secs 4 --report-secs 1 --stall-secs 0 > /dev/null 2> "$D/console.txt"
+        --secs 4 --report-secs 1 --stall-secs 0 --no-fill > /dev/null 2> "$D/console.txt"
     has '[harness] exit 0'; has 'behind wall clock'; has 'samples lost upstream'
     end_case ;;
   scan_keep_raw)
@@ -217,6 +225,45 @@ bad = [(k, f) for k in a for f in ('tick_contrasts_db', 'bcd_contrasts_db', 'cn0
 print('replay check:', 'same' if not bad else f'differs: {bad}')
 sys.exit(1 if bad or not a else 0)
 PY
+    end_case ;;
+  gap76)
+    begin "$c"
+    live STUB_MODE=gap76_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
+    rc_is 0; has 'REOPEN: segment 1: rsp2_stream lost more samples than it fills'
+    ended_in 2 10000; streams_is 2; unit_off
+    end_case ;;
+  stream_gaps|stream_ramp)
+    begin "$c"
+    if [ "$c" = stream_gaps ]; then
+      spec='true:jitter:30;loss@6:0.3;loss@14:1.05;outage@24:5'; secs=72; ngaps=3
+    else
+      spec='true:jitter:30;ramp@8-38:0.003'; secs=74; ngaps=5
+    fi
+    env FAKE_MTU=16384 SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" \
+        "$spec" -- --rate 500000 --secs "$secs" --stall-secs 10 --report-secs 30 --gap-log "$D/gaps.jsonl" \
+        --anchor-out "$D/anchor.json" > "$D/stream.cs16" 2> "$D/console.txt"
+    has '[harness] exit 0'; has '] GAP '
+    [ "$c" = stream_gaps ] && has 'cause: timeout'
+    python3 -I "$HERE/check_gapfill.py" "$D/stream.cs16" 500000 "$D/console.txt" --gaps "$ngaps" \
+        >> "$D/console.txt" 2>&1 || fail 'the stream is not gap-exact (check_gapfill)'
+    grep -q '"hold_s": 3.0' "$D/anchor.json" 2>/dev/null || fail 'no --anchor-out file'
+    [ "$(wc -l < "$D/gaps.jsonl")" -ge "$ngaps" ] || fail 'too few --gap-log lines'
+    /bin/rm -f "$D/stream.cs16"
+    end_case ;;
+  stream_toobig)
+    begin "$c"
+    env FAKE_MTU=16384 SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" \
+        'true:outage@5:12' -- --rate 500000 --secs 40 --stall-secs 20 > "$D/stream.cs16" 2> "$D/console.txt"
+    has '[harness] exit 76'; has 'GAP too large to fill: lost about'
+    python3 -I - "$D/stream.cs16" >> "$D/console.txt" 2>&1 <<'PY' || fail 'samples after the loss were sent'
+import sys, numpy as np
+x = np.fromfile(sys.argv[1], np.int16).reshape(-1, 2).astype(np.int64)
+k = (x[:, 0] & 0x7fff) | ((x[:, 1] - 1) << 15)
+d = np.diff(k)
+print('stream_toobig: samples', len(k), 'steps in k', int((d != 1).sum()))
+sys.exit(0 if len(k) and (d == 1).all() else 1)
+PY
+    /bin/rm -f "$D/stream.cs16"
     end_case ;;
   gap_chain)
     begin "$c"

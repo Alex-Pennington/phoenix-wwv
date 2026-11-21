@@ -2,6 +2,7 @@
   ok               stream until --secs (wall clock) or a signal
   hang_after:S     stop writing and stop the heartbeat after S s, stay alive
   stall75_after:S  exit 75 (rsp2_stream's stall status) after S s
+  gap76_after:S    exit 76 (rsp2_stream: a loss too large to fill) after S s
   dead             write nothing, keep the heartbeat, until --secs
 STUB_ONLY_FIRST=1 applies the mode to the first start only; STUB_DEAF=1 ignores SIGTERM
 and --secs. Each start appends one byte to $STUB_DIR/streams."""
@@ -43,6 +44,9 @@ while not stop:
     if kind == 'stall75_after' and el >= float(v):
         sys.stderr.write('[stub_stream] stalled, exit 75\n')
         sys.exit(75)
+    if kind == 'gap76_after' and el >= float(v):
+        sys.stderr.write('[stub_stream] GAP too large to fill, exit 76\n')
+        sys.exit(76)
     if kind == 'hang_after' and el >= float(v):
         time.sleep(0.2)
         continue
