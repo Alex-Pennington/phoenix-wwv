@@ -342,6 +342,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   every 30 s). That lag is flat to t=1290 s and reaches +5.3 s by 3090 s. Uncorrected,
   `bcd_window_trace.py` and `btime_start_forensics.py` put every second after 1330 s against
   the wrong UTC second.
+  - **To reproduce** (R=~/wwv-live/run90g; `--seg "segment 1:"` and `tb.json` for run90f):
+    - `btime_replay $R/frames.seg2.txt bt.f32 $R/log.seg2.txt btlog.txt`
+    - `replay_events btlog.txt > cur.txt`
+    - `tests/air/seg_attr.py cur.txt btlog.txt bt.f32 $R/tb.seg2.json $R/console.txt --seg "segment 2:"`
+      gives the phase split, the contrast bins and the lead.
+    - `tests/air/shift_loss.py btlog.txt $R/console.txt "segment 2:" > filled.txt`, then
+      `replay_events` on it, gives the gap-fill emulation. Pass `-` for the console to
+      `seg_attr.py` on that output.
+    - `tests/air/confusion_causes.py` tabulates `bcd_window_trace.py --rows` by cause. That
+      script's truth is not loss-corrected, so use it before the loss or on a gap-filled log.
   - **Current chain on seg2: 1->0 108/285 (37.9%), P->1 30/141 (21.3%)**, against 156/321 (48.6%)
     and 55/157 (35.0%) in the live log. Date 3 right, 8 wrong; time of day 25/25; FALSE CONFIRM 0.
   - **Lost samples: 30 of the 108 1->0 and 8 of the 30 P->1** fall in seconds whose held second is
