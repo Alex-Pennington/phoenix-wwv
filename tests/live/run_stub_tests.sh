@@ -26,7 +26,7 @@
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
 #   gap76         the stream exits 76 once (a loss too large to fill): REOPEN, segment 2
 #   stream_gaps   rsp2_stream.py: losses of 0.3 s and 1.05 s and a 5 s outage (timeouts), 30 ms
-#                 arrival jitter: every sample's stream index stays within 25 ms of its true
+#                 arrival jitter: every sample's stream index stays within 40 ms of its true
 #                 time, within 6 ms at the end; each fill logged (GAP) with its cause
 #   stream_ramp   rsp2_stream.py: 3 ms/s lost for 30 s as a little before every block: the same
 #   stream_toobig rsp2_stream.py, --stall-secs 20: a 12 s outage, over --gap-max-secs 10: exit 76,
@@ -35,6 +35,7 @@
 #                 held phase stays (no break, no re-anchor) and every event overlapping the span is
 #                 held back from sync (recounted from the log); dropped (unfilled), it breaks.
 #                 The replay of the filled log honours its GAP line and holds back the same events.
+#                 A 3 ms/s loss for 3 minutes, filled as rsp2_stream fills it: no break either.
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
@@ -244,7 +245,7 @@ PY
         --anchor-out "$D/anchor.json" > "$D/stream.cs16" 2> "$D/console.txt"
     has '[harness] exit 0'; has '] GAP '
     [ "$c" = stream_gaps ] && has 'cause: timeout'
-    python3 -I "$HERE/check_gapfill.py" "$D/stream.cs16" 500000 "$D/console.txt" --gaps "$ngaps" \
+    python3 -I "$HERE/check_gapfill.py" "$D/stream.cs16" 500000 "$D/console.txt" --gaps "$ngaps" --max-ms 40 \
         >> "$D/console.txt" 2>&1 || fail 'the stream is not gap-exact (check_gapfill)'
     grep -q '"hold_s": 3.0' "$D/anchor.json" 2>/dev/null || fail 'no --anchor-out file'
     [ "$(wc -l < "$D/gaps.jsonl")" -ge "$ngaps" ] || fail 'too few --gap-log lines'
@@ -279,6 +280,14 @@ PY
     grep -qE '^PHASE .* breaks=0 epoch=0$' "$D/fill.rep" || fail "filled: the phase broke: $(grep ^PHASE "$D/fill.rep")"
     grep -qE '^PHASE .* breaks=[1-9]' "$D/drop.rep" || fail "dropped: no break, so the test shows nothing: $(grep ^PHASE "$D/drop.rep")"
     grep -q '^GAP ' "$D/drop.log" && fail 'a GAP line in the unfilled stream'
+    # 3 ms/s lost for 3 minutes after LOCKED, filled as rsp2_stream's fast stage fills it
+    python3 -I "$HERE/wwv_synth.py" 330 --ramp 130:310:0.003 |
+      "$BUILD/wwv_live" -r 50000 -p 0 --no-tones -S 60 -T 1795000000 --log "$D/ramp.log" > "$D/ramp.con" 2>&1 ||
+      fail 'wwv_live on the ramp failed'
+    "$BUILD/tests/replay_events" "$D/ramp.log" > "$D/ramp.rep" 2>&1 || fail 'replay of the ramp failed'
+    grep -E '^(GAPS|PHASE)' "$D/ramp.con" "$D/ramp.rep" >> "$D/console.txt"
+    grep -qE '^GAPS     [1-9][0-9]* filled gaps' "$D/ramp.con" || fail 'ramp: no fills'
+    grep -qE '^PHASE .* breaks=0 epoch=0$' "$D/ramp.rep" || fail "ramp: the phase broke: $(grep ^PHASE "$D/ramp.rep")"
     python3 -I - "$D/fill.log" "$D/fill.rep" "$REPO/include/wwv_detector_manager.h" >> "$D/console.txt" 2>&1 <<'PY' || fail 'held-back events differ from the overlap rule'
 import re, sys
 log, rep, hdr = sys.argv[1:4]

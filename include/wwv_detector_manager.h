@@ -274,8 +274,8 @@ void wwv_detector_manager_log_display_gain(wwv_detector_manager_t *mgr, float di
  * window with no event is an erasure. Abutting or overlapping spans merge. Up to
  * WWV_GAP_SPANS spans are kept; the oldest is dropped first.
  */
-#define WWV_GAP_GUARD_MS      50.0
-#define WWV_GAP_SETTLE_MIN_MS 200.0
+#define WWV_GAP_GUARD_MS      20.0
+#define WWV_GAP_SETTLE_MIN_MS 100.0
 #define WWV_GAP_SETTLE_MS     1500.0
 #define WWV_GAP_SPANS      8
 void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms, double len_ms);

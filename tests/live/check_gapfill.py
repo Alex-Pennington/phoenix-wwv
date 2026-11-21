@@ -1,6 +1,6 @@
 """tests/live: check that a stream from stream_fake_soapy.py true:... is gap-exact.
 
-    python3 -I check_gapfill.py STREAM.cs16 RATE CONSOLE [--max-ms 25] [--end-ms 6] [--gaps N]
+    python3 -I check_gapfill.py STREAM.cs16 RATE CONSOLE [--max-ms 40] [--end-ms 6] [--gaps N]
 
 Each non-zero sample carries its true index k; its index in the stream is p. p - (k - k0)
 is the error, k0 the first sample's k (the stream starts after its settling discard). Zero samples are fills. Checks: |p - k| <= --max-ms for every sample (no
@@ -12,7 +12,7 @@ import sys, re, argparse
 import numpy as np
 ap = argparse.ArgumentParser()
 ap.add_argument('stream'); ap.add_argument('rate', type=float); ap.add_argument('console')
-ap.add_argument('--max-ms', type=float, default=25.0)
+ap.add_argument("--max-ms", type=float, default=40.0)
 ap.add_argument('--end-ms', type=float, default=6.0)
 ap.add_argument('--gaps', type=int, default=1)
 ap.add_argument('--min-filled-ms', type=float, default=0.0)

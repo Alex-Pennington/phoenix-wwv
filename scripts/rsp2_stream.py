@@ -31,7 +31,7 @@ no earlier than its last sample's time plus the least USB/API latency, so
 upstream raise the floor by what was lost. Two stages, each filling only the
 excess over a margin, so a fill is never too large:
   fast: the least lag over the last 2 s against the floor (the least lag seen);
-        over 15 ms margin + 5 ms, the excess less the margin is filled, at the
+        over 15 ms margin + 15 ms, the excess less the margin is filled, at the
         block where the lag rose (to within a block, 33 ms at 2 MS/s);
   slow: the least lag over the last 30 s; over 2.5 ms margin + 2 ms, the excess
         less the margin is filled ahead of the held blocks (the remainder of a
@@ -194,7 +194,7 @@ def behind_ms(tn_s):
     return ((tn_s - t_start_ns / 1e9) * a.rate - idx) / a.rate * 1000.0
 
 # ---- gap fill ----
-FAST_W, FAST_B, FAST_T = 2.0, 0.015, 0.005     # window s, margin s, least fill s
+FAST_W, FAST_B, FAST_T = 2.0, 0.015, 0.015     # window s, margin s, least fill s
 SLOW_W, SLOW_B, SLOW_T = 30.0, 0.0025, 0.002
 REFINE_S = 10.0                                 # wwv_live's anchor refinement
 EX_GAP = 76
