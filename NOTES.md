@@ -646,7 +646,6 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     WWV, where the onset events fall within 40 ms of the span's end. It is not measured on air.
   - wwv_live reads 0.5 ms of exact (0,0) as a fill. Any producer that sends real zeros that
     long (a muted source, a test file) has them taken as gaps.
-  - `docs/WWV_LIVE.md` does not describe GAP / GAPEND, `--anchor-in` or the 3 s hold yet.
 
 - **The SDRplay API service keeps crashing on libusb errno=12 (ENOMEM), and compaction
   at start and reopen does not prevent it.** 2026-11-21 01:30-06:31 UTC on saga: 132

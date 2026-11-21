@@ -39,6 +39,10 @@ system clock as follows.
 2. For 10 s the anchor follows the least-delayed block (arrival minus stream time).
 3. The anchor is then fixed and logged again.
 
+With `--anchor-in FILE`, the anchor taken at the end of the 10 s is the one rsp2_stream measured
+before its output hold (see *Lost samples: the gap fill*). If the file holds no anchor, `wwv_live`
+keeps its own and says so on stderr: it is late by the hold.
+
 With `-T UNIX` (a recording), the anchor is the time given. UTC(t) = anchor - group delay +
 t/1000. The anchor is printed in `ANCHOR` lines, sent as `CONS,ANCHOR`, and written by `-j FILE`
 as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-rate correction.
@@ -85,8 +89,8 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
 `scripts/wwv_rsp2_live.sh` drives the run. Its sequence:
 
 1. It starts `sdrplay.service`, once for the whole run.
-2. With `--wwv-khz auto`, it runs the band scan below under that same start, and takes the
-   band the scan chooses.
+2. With `--wwv-khz auto`, it runs the band scan below under that same start, bounded by
+   `--scan-timeout`, and takes the band the scan chooses (see *Band scan bound and retry*).
 3. It streams the RSP2 through `scripts/rsp2_stream.py` into `wwv_live`. The settings are those
    of the scored capture, at the chosen band: antenna A, tuner 100 kHz below WWV, AGC off,
    2 MS/s, scale 32, and the band's gain.
@@ -107,7 +111,7 @@ scripts/wwv_rsp2_live.sh --secs 5400 --log run.log --timebase run.json
 ### Run length, stalls and reopen
 
 ```
-scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
+scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 20] ...
 ```
 
 - **`--secs N` is wall clock.** The run ends N seconds after it starts, however many samples
@@ -123,6 +127,7 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
   band as a new segment. `wwv_live`'s sample-counter clock cannot carry across a gap, so its
   sync and decoder start again. The wrapper reopens when:
   - rsp2_stream exits 75;
+  - rsp2_stream exits 76 (a loss over `--gap-max-secs`; see *Lost samples: the gap fill*);
   - `sdrplay.service`'s MainPID or NRestarts changes (systemd restarted the vendor service
     under the stream);
   - rsp2_stream's heartbeat file is older than 2 × `--stall-secs` + 15 s (a stream hung
@@ -135,19 +140,21 @@ scripts/wwv_rsp2_live.sh [--secs N] [--stall-secs 10] [--reopen-max 5] ...
   [wwv_rsp2_live] 2026-11-20T22:29:26Z REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 5)
   ```
 
-  The reasons read `rsp2_stream had no samples for N s` and `rsp2_stream heartbeat is N s old:
+  The reasons read `rsp2_stream had no samples for N s`, `rsp2_stream lost more samples than it
+  fills (its GAP line says how much)` (exit status 76) and `rsp2_stream heartbeat is N s old:
   the stream is hung`. The `--lock-mins` timer starts again in a reopened segment. A reopened
   segment's files take the `.segK` names, as after a band switch.
-- **`--reopen-max N`** (default 20). After N reopens the run ends with exit status 4. The vendor service can crash several times within seconds (three reopens at 2026-11-21 02:55 UTC), so 5 was too few.
+- **`--reopen-max N`** (default 20). The reopen that would be number N + 1 ends the run with exit status 4
+  (`REOPEN: N+1 reopens, more than --reopen-max N; ending the run`). The vendor service can crash several times within seconds (three reopens at 2026-11-21 02:55 UTC), so 5 was too few.
 - **Bounded stops.** Every stop is SIGTERM, then SIGKILL if the process has not exited in 10 s
   (rsp2_stream, the band scan), 5 s (`wwv_live`) or 2 s (the output filter). A kill is
   logged: `rsp2_stream did not stop in 10 s after SIGTERM; killing it`.
 - **`behind wall clock`.** Every `--report-secs` (60 s) rsp2_stream logs how far its sample
-  count is behind the wall clock since streaming began, and how long its writes to stdout
-  blocked:
+  count (fills included) is behind the wall clock since streaming began, how much it filled,
+  and how long its writes to stdout blocked:
 
   ```
-  [rsp2_stream] behind wall clock +1250 ms (+300 in 60 s), write wait 4 ms (max 1), 0 overflows, 0 timeouts; samples lost upstream (USB or API service), no overflow reported
+  [rsp2_stream] behind wall clock +1250 ms (+300 in 60 s), filled 0 ms in 0 gaps, write wait 4 ms (max 1), 0 overflows, 0 timeouts; samples lost upstream (USB or API service), no overflow reported
   ```
 
   When "behind" grows by more than 100 ms in an interval, the line names the cause. With
@@ -186,9 +193,13 @@ and a loss raises it by exactly the samples lost. It fills each loss with zeros,
 sample's index stays its true time since the start. Details and margins are in
 `scripts/rsp2_stream.py`'s header.
 
-- **Hold.** Output runs `--hold-secs` (3 s) behind the radio, so a fill lands where the loss
-  was. `wwv_live --anchor-in` takes the anchor rsp2_stream measured before the hold (the
-  wrapper passes it by default):
+- **Hold (`--hold-secs`, default 3).** rsp2_stream's output runs that many seconds behind the
+  radio, so a fill lands where the loss was. The least is 2.5 s: a smaller value is refused
+  unless `--no-fill` is given. The wrapper passes `--anchor-out FILE` to rsp2_stream and
+  `--anchor-in FILE` to `wwv_live` on every segment. rsp2_stream writes the file (JSON:
+  `source`, `in_sample0_unix`, `hold_s`, `anchor`) before the first sample past 10 s leaves. `wwv_live` reads it when
+  its own 10 s refinement ends, and takes the anchor measured before the hold. Its arrival lag
+  then leaves the hold out:
 
   ```
   ANCHOR   input sample 0 = 2026-11-21T01:37:10.400733Z: rsp2_stream: least-delayed block over the first 10 s, before its 3.000 s hold line
@@ -197,40 +208,66 @@ sample's index stays its true time since the start. Details and margins are in
 - **Fills.** Each one is logged by rsp2_stream, then by `wwv_live`, which takes a run of
   exact zeros (0.5 ms or more) out as a gap. The manager holds every detector event that
   overlaps the span back from sync, the correlator and the decoder, so those seconds become
-  erasures. `GAPEND` gives the counts held back:
+  erasures. rsp2_stream logs on stderr:
 
   ```
   [rsp2_stream] GAP <UTC> at stream S s (sample N): X ms filled with zeros; cause: ...
-  GAP      start=<ms> len=<ms>
-  GAPEND   start=<ms> len=<ms> tick= tmark= mark= cand= btime= bfreq=
   ```
 
-  The chain log carries the `GAP` and `GAPEND` lines too, and `tests/air/replay_events`
-  honours them (`GAPDROPS` at the end equals the sum of the `GAPEND` counts).
+  The cause is `overflow (SOAPY_SDR_OVERFLOW)` or `timeout (K readStream timeouts)` when one came
+  with the loss, else `upstream, no report (USB or API service)`, or `remainder over 30 s ...` for
+  the slow stage. `--gap-log FILE` appends each fill to FILE as one JSON line (`utc`, `stream_s`,
+  `sample`, `samples`, `ms`, `cause`).
+
+  `wwv_live` prints on the console:
+
+  ```
+  GAP      <UTC> stream S s: X ms of samples lost upstream (filled); events there are not evidence
+  GAPEND   stream S s, X ms: held back tick N, tick-marker N, marker N, candidate N, BTIME N, BFREQ N
+  ```
+
+  `GAPEND` comes 6.5 s of stream time after the span's end (`WWV_GAP_SETTLE_MS` 1.5 s plus 5 s for the
+  slowest event report), or earlier when the span table is full or the input ends. The counts are
+  the events held back since the last `GAPEND`, so spans that overlap in time share them. With
+  `-l`, the chain log carries the same two events in its own form:
+
+  ```
+  GAP start=<ms> len=<ms>
+  GAPEND start=<ms> len=<ms> tick= tmark= mark= cand= btime= bfreq=
+  ```
+
+  At the end of the run `wwv_live` closes every open span and, when there was a fill, prints
+  `GAPS     N filled gaps, X ms in all`. `start` is a detector time in ms.
+  `tests/air/replay_events` honours them (`GAPDROPS` at the end equals the sum of the `GAPEND`
+  counts).
 - **What normal looks like.** No fills with cause `upstream, no report`. `behind wall
   clock` stays within about ±30 ms with `filled 0 ms in 0 gaps`. A few-ms `remainder over
   30 s` fill now and then is the radio's clock against the host's. On 2026-11-21 01:37 UTC
   (5 MHz) the first 6 minutes showed 0 fills and `behind` between −20 and +1 ms.
-- **Too big.** A loss over `--gap-max-secs` (10 s) ends the stream with exit status 76, and
-  the wrapper reopens it as a new segment (`REOPEN: ... rsp2_stream lost more samples than
-  it fills`).
-- **`--no-fill`** (rsp2_stream) keeps the old behaviour: no hold and no fill.
+- **Too big (`--gap-max-secs`, default 10).** A loss over that ends the stream with exit
+  status 76, and the wrapper reopens it as a new segment (`REOPEN: ... rsp2_stream lost more
+  samples than it fills`). rsp2_stream logs `GAP too large to fill: ...; ending the stream
+  (exit 76)`. What it holds from after the loss is not sent; what it holds from before is.
+- **`--no-fill`** (rsp2_stream) keeps the old behaviour: no hold and no fill. The wrapper has
+  no option for it.
 - With `--record PREFIX`, `PREFIX.json` lists the fills (`gaps`), `hold_s`, and `samples`
   against `samples_radio`. `tests/live/stream_fake_soapy.py` replays a recording's arrival
   times through the fill offline.
 
-Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when an
-`auto` scan finds no band, 4 after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else
-`wwv_live`'s or rsp2_stream's own.
+Exit status: 0 at the end of the run, 2 for bad options or a missing `wwv_live`, 3 when the
+first `auto` scan finds no band or a scan (first or re-scan) fails again after the restart, 4
+after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_stream's own.
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
-radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`,
-about 2.5 minutes). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
-script refuses to run unless the PATH reaches them. Its cases cover each reopen reason,
-`--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto` scan going live and
-ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan, a scan that finds
-no band, rsp2_stream's stall exit and `behind wall clock` line, and the scan's `--keep-raw`
-round trip.
+radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
+7.5 minutes: 437 s on saga, 2026-11-21). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
+script refuses to run unless the PATH reaches them. Its cases cover each reopen reason
+(including the 76 exit), `--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto`
+scan going live and ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan,
+a scan that finds no band, a stuck scan and a failing API (the bound, the restart and the
+retry), rsp2_stream's stall exit and `behind wall clock` line, its gap fill (losses, an
+outage, a slow ramp, a loss too large), `wwv_live`'s handling of a fill on synthetic WWV, and
+the scan's `--keep-raw` round trip.
 
 ### Band
 
@@ -269,6 +306,27 @@ only mixes the carrier at `-s` Hz to DC, and `wwv_live` uses the PHXI centre fre
   was seen on them. 20 MHz peaks at -6 to -10 dBFS at LNA 1 with no carrier, the most of any
   band, and has not clipped. The scan's ADC columns say whether the values hold. `--gain KHZ:LNA:IFGR` (repeatable) overrides a band in the scan and in the live
   run, and `--lna` / `--ifgr` override the live band.
+
+### Band scan bound and retry
+
+With `--wwv-khz auto` the wrapper runs `wwv_band_scan.sh --no-service` in the background, so a
+signal reaches its traps at once. Options (all `auto` only):
+
+- **`--scan-secs N`** (default 25): seconds per band.
+- **`--scan-json FILE`**: keep the scan's figures (default: a temporary file).
+- **`--scan-timeout N`**: stop a scan that runs past N seconds of wall clock. The default is
+  bands × (`--scan-secs` + 15) + bands × (35 + 15), the second term for a 35 s extension of
+  every band: 240 + 300 = 540 s at the defaults.
+
+A scan fails when it runs past the bound (`SCAN: the band scan ran past its N s bound; stopping
+it`) or exits 5 (the sdrplay API failing, from `wwv_band_scan.py`). Past the bound, the wrapper
+stops the scan (SIGTERM, then SIGKILL after 10 s) and kills (SIGKILL) any of its child processes
+still running. On either failure it stops `sdrplay.service`, starts it again (memory compacted
+first), and scans once more (`SCAN: restarting sdrplay.service and scanning once more`). If that fails too, the run logs `not going
+live` and ends with exit status 3. That holds for the first scan and for a band switch's re-scan
+(the history then reads `re-scan for segment K: <reason>`). A scan that ends without failing but
+finds no band logs `the band scan found no band (exit N)`. At the first scan that is exit status
+3 too. At a re-scan the run stays on its band. The retry is not made once `--secs` has run out.
 
 ### Band scan
 
@@ -471,6 +529,7 @@ reached LOCKED `--lock-mins` minutes (default 8; 0 turns it off) after it went l
 2. re-scans with `--avoid` on that band, under the same service start;
 3. goes live again on the scan's choice, as a new segment. If no other band is in the
    running, it stays on the same band and restarts the timer.
+   If the re-scan fails (see *Band scan bound and retry*), the run ends with exit status 3.
 
 Once a band has locked it is kept, even if it loses lock later.
 
