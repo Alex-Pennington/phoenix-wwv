@@ -59,8 +59,8 @@ static float median_of(float *v, int n) {
 /* The step fit (BCD_TIME_FIT_* in bcd_time_detector.h) over the log energy of
  * frames [sf - pre, sf + span). Returns the box's width in ms, or -1 when the
  * window is not held or no box rises above the outside level; *contrast gets
- * exp(inside - outside mean log energy). */
-static float fit_width(const bcd_time_detector_t *td, uint64_t sf, float *contrast) {
+ * exp(inside - outside mean log energy), *rise the box's rise in frames from sf. */
+static float fit_width(const bcd_time_detector_t *td, uint64_t sf, float *contrast, int *rise) {
     const int pre = MS_TO_FRAMES(BCD_TIME_FIT_PRE_MS);
     const int span = MS_TO_FRAMES(BCD_TIME_FIT_SPAN_MS);
     const int rise_max = MS_TO_FRAMES(BCD_TIME_FIT_RISE_MAX_MS);
@@ -87,23 +87,44 @@ static float fit_width(const bcd_time_detector_t *td, uint64_t sf, float *contra
         }
     }
     if (br < 0) return -1.0f;
+
+    /* The best box with its rise anywhere in the window: one rising more than
+     * BCD_TIME_FIT_LATE_RISE_MS after the latest rise allowed above means the event
+     * started before the pulse (on the low level), not at its rise */
+    double fb = -1.0;
+    int fr = -1;
+    for (int r = 0; r < n - min_width; r++) {
+        for (int e = r + min_width; e <= n - BCD_TIME_FIT_TAIL_FRAMES; e++) {
+            double si = ps[e] - ps[r], so = tot - si;
+            int ni = e - r, no = n - ni;
+            if (si / ni <= so / no) continue;
+            double f = si * si / ni + so * so / no;
+            if (fb < 0.0 || f > fb) { fb = f; fr = r; }
+        }
+    }
+    if (fr > pre + rise_max + MS_TO_FRAMES(BCD_TIME_FIT_LATE_RISE_MS)) return -1.0f;
+
     *contrast = (float)exp(bh - bl);
+    *rise = br - pre;
     return (be - br) * FRAME_DURATION_MS;
 }
 
 /* Print, log and call back one valid event */
 static void report_event(bcd_time_detector_t *td, const bcd_time_pending_t *p) {
-    wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(p->start_frame);
+    uint64_t start_frame = p->start_frame;
     float duration_ms = p->duration_ms;
 
     if (p->fit) {
         float contrast = 0.0f;
-        float w = fit_width(td, p->start_frame, &contrast);
+        int rise = 0;
+        float w = fit_width(td, p->start_frame, &contrast, &rise);
         if (w > 0.0f && contrast >= BCD_TIME_FIT_CONTRAST_MIN &&
             contrast < BCD_TIME_FIT_CONTRAST_MAX) {
             duration_ms = w + BCD_TIME_FIT_OFFSET_MS;
+            start_frame = (uint64_t)((int64_t)p->start_frame + rise);
         }
     }
+    wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(start_frame);
 
     printf("[BCD_TIME] Pulse #%d at %.1fms  dur=%.0fms  SNR=%.1fdB\n",
            p->pulse_num, timestamp_ms, duration_ms, p->snr_db);
