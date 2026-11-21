@@ -86,7 +86,7 @@ void wwv_detector_manager_process_detector_sample(wwv_detector_manager_t *mgr,
     if (mgr->bcd_freq) bcd_freq_detector_process_sample(mgr->bcd_freq, d_i, d_q);
     
     if (n % WWV_PERIODIC_CHECK_SAMPLES == 0) {
-        float now = (float)mgr->now_ms;
+        wwv_time_ms_t now = mgr->now_ms;
         if (mgr->sync_detector) sync_detector_periodic_check(mgr->sync_detector, now);
         if (mgr->bcd_correlator) bcd_correlator_periodic_check(mgr->bcd_correlator, now);
         if (mgr->time_decoder) wwv_time_decoder_periodic(mgr->time_decoder, now);
@@ -97,7 +97,7 @@ void wwv_detector_manager_process_detector_sample(wwv_detector_manager_t *mgr,
             frame_time_t ft = sync_detector_get_frame_time(mgr->sync_detector);
             bool locked = (ft.state == SYNC_LOCKED);
             if (locked) {
-                float ep = fmodf(ft.second_start_ms, 1000.0f);
+                float ep = (float)fmod(ft.second_start_ms, 1000.0);
                 if (ep < 0.0f) ep += 1000.0f;
                 if (fabsf(ep - tick_detector_get_epoch(mgr->tick_detector)) > 0.5f)
                     tick_detector_set_epoch_with_source(mgr->tick_detector, ep, EPOCH_SOURCE_MARKER, ft.confidence);
@@ -129,7 +129,7 @@ void wwv_detector_manager_process_display_sample(wwv_detector_manager_t *mgr,
 
 void wwv_detector_manager_process_display_fft(wwv_detector_manager_t *mgr,
                                                const kiss_fft_cpx *fft_out,
-                                               float timestamp_ms) {
+                                               wwv_time_ms_t timestamp_ms) {
     if (!mgr || !fft_out) return;
     
     if (mgr->slow_marker) {
@@ -141,9 +141,9 @@ void wwv_detector_manager_process_display_fft(wwv_detector_manager_t *mgr,
  * Filled gaps
  *============================================================================*/
 
-void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms, double len_ms) {
+void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, wwv_time_ms_t start_ms, double len_ms) {
     if (!mgr || !(len_ms > 0.0)) return;
-    double end_ms = start_ms + len_ms;
+    wwv_time_ms_t end_ms = start_ms + len_ms;
     if (mgr->n_gaps > 0) {
         /* a span that abuts or overlaps the newest one extends it */
         int last = (mgr->gap_next + WWV_GAP_SPANS - 1) % WWV_GAP_SPANS;
@@ -159,9 +159,10 @@ void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms,
     if (mgr->n_gaps < WWV_GAP_SPANS) mgr->n_gaps++;
 }
 
-bool wwv_gap_covers(const wwv_detector_manager_t *mgr, double lo_ms, double hi_ms) {
+bool wwv_gap_covers(const wwv_detector_manager_t *mgr, wwv_time_ms_t lo_ms, wwv_time_ms_t hi_ms) {
     if (!mgr) return false;
-    if (hi_ms < lo_ms) { double t = lo_ms; lo_ms = hi_ms; hi_ms = t; }
+    if (hi_ms < lo_ms) { wwv_time_ms_t t = lo_ms; lo_ms = hi_ms; hi_ms = t; }
+
     for (int k = 0; k < mgr->n_gaps; k++) {
         double len = mgr->gaps[k].end_ms - mgr->gaps[k].start_ms;
         double settle = WWV_GAP_SETTLE_MIN_MS + len;
@@ -236,7 +237,8 @@ uint64_t wwv_detector_manager_get_detector_samples(wwv_detector_manager_t *mgr) 
     return mgr ? mgr->detector_samples : 0;
 }
 
-double wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr) {
+wwv_time_ms_t wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr) {
+
     return mgr ? mgr->now_ms : 0.0;
 }
 

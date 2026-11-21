@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "wwv_time.h"
 
 /* Forward declaration for optional wwv_clock integration */
 struct wwv_clock;
@@ -56,7 +57,7 @@ typedef enum {
  */
 typedef struct {
     int current_second;         /* 0-59, authoritative position in minute */
-    float second_start_ms;      /* When this second began (stream timestamp) */
+    wwv_time_ms_t second_start_ms; /* When this second began (stream timestamp) */
     float confidence;           /* 0.0 - 1.0, sync quality indicator */
     uint32_t evidence_mask;     /* Which signals contributed to this position */
     sync_state_t state;         /* Current sync state */
@@ -86,7 +87,7 @@ void sync_detector_destroy(sync_detector_t *sd);
  * @param sd Detector handle
  * @param timestamp_ms When tick occurred
  */
-void sync_detector_tick_event(sync_detector_t *sd, float timestamp_ms);
+void sync_detector_tick_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms);
 
 /* Edges that mark whole seconds, for sync_detector_second_edge() */
 typedef enum {
@@ -111,7 +112,7 @@ typedef struct {
  * cannot follow drops sync to RECOVERING until a marker re-locks. Ignored when
  * not LOCKED. See PHASE_* in sync_detector.c.
  */
-void sync_detector_second_edge(sync_detector_t *sd, float timestamp_ms, sync_edge_kind_t kind);
+void sync_detector_second_edge(sync_detector_t *sd, wwv_time_ms_t timestamp_ms, sync_edge_kind_t kind);
 
 /**
  * Phase epoch: incremented whenever the held phase moves by 100 ms or more (a
@@ -139,7 +140,7 @@ sync_phase_stats_t sync_detector_get_phase_stats(sync_detector_t *sd);
  * @param duration_ms Duration of the pulse (should be ~800ms)
  * @param corr_ratio Correlation ratio from tick detector
  */
-void sync_detector_tick_marker(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_tick_marker(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                 float duration_ms, float corr_ratio);
 
 /**
@@ -151,7 +152,7 @@ void sync_detector_tick_marker(sync_detector_t *sd, float timestamp_ms,
  * @param accum_energy Accumulated energy in detection window
  * @param duration_ms Duration of accumulated energy above threshold
  */
-void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_marker_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                  float accum_energy, float duration_ms);
 
 /**
@@ -167,7 +168,7 @@ void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
  *        start and from its end (equal if one)
  * @param source Label for the console and the marker CSV ("CANDT" tick path, "CANDM" marker detector)
  */
-void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float lead_b_ms,
+void sync_detector_marker_candidate(sync_detector_t *sd, wwv_time_ms_t lead_a_ms, wwv_time_ms_t lead_b_ms,
                                     const char *source);
 
 /**
@@ -192,7 +193,7 @@ const char *sync_state_name(sync_state_t state);
 /**
  * Get timestamp of last confirmed marker (backward compatibility)se (~800ms)
  */
-void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
+void sync_detector_p_marker_event(sync_detector_t *sd, wwv_time_ms_t timestamp_ms,
                                    float duration_ms);
 
 /**
@@ -201,7 +202,7 @@ void sync_detector_p_marker_event(sync_detector_t *sd, float timestamp_ms,
  * @param sd Detector handle
  * @param current_ms Current stream timestamp
  */
-void sync_detector_periodic_check(sync_detector_t *sd, float current_ms);
+void sync_detector_periodic_check(sync_detector_t *sd, wwv_time_ms_t current_ms);
 
 /**
  * Get current sync state
@@ -216,7 +217,8 @@ const char *sync_state_name(sync_state_t state);
 /**
  * Get timestamp of last confirmed marker
  */
-float sync_detector_get_last_marker_ms(sync_detector_t *sd);
+wwv_time_ms_t sync_detector_get_last_marker_ms(sync_detector_t *sd);
+
 
 /**
  * Get count of confirmed markers
@@ -277,7 +279,8 @@ int sync_detector_get_good_intervals(sync_detector_t *sd);
  * @param duration_ms Output: tick marker duration (can be NULL)
  * @return true if tick marker is pending, false otherwise
  */
-bool sync_detector_get_pending_tick(sync_detector_t *sd, float *timestamp_ms, float *duration_ms);
+bool sync_detector_get_pending_tick(sync_detector_t *sd, wwv_time_ms_t *timestamp_ms, float *duration_ms);
+
 
 /*============================================================================
  * Runtime Parameter Tuning

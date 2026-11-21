@@ -27,6 +27,7 @@
  *============================================================================*/
 
 #define FRAME_DURATION_MS   ((float)BCD_TIME_FFT_SIZE * 1000.0f / BCD_TIME_SAMPLE_RATE)
+#define TIME_FRAMES_TO_MS(f) wwv_frames_to_ms((f), BCD_TIME_FFT_SIZE, BCD_TIME_SAMPLE_RATE)  /* stream time */
 
 /* Detection timing */
 #define BCD_TIME_COOLDOWN_MS        200.0f
@@ -148,7 +149,8 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
             if (td->consecutive_low_frames >= MIN_LOW_FRAMES) {
                 /* Pulse ended - check validity */
                 float duration_ms = td->pulse_duration_frames * FRAME_DURATION_MS;
-                float timestamp_ms = td->pulse_start_frame * FRAME_DURATION_MS;
+                wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(td->pulse_start_frame);
+
                 float snr_db = 10.0f * log10f(td->pulse_peak_energy / td->noise_floor);
 
                 if (duration_ms >= BCD_TIME_PULSE_MIN_MS &&

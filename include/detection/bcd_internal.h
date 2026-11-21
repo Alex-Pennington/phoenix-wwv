@@ -166,9 +166,10 @@ struct bcd_freq_detector {
 /**
  * Get wall clock time string for CSV output
  */
-static inline void bcd_get_wall_time_str(time_t start_time, float timestamp_ms, 
+static inline void bcd_get_wall_time_str(time_t start_time, wwv_time_ms_t timestamp_ms, 
                                          char *buf, size_t buflen) {
-    time_t event_time = start_time + (time_t)(timestamp_ms / 1000.0f);
+    time_t event_time = start_time + (time_t)(timestamp_ms / 1000.0);
+
     struct tm *tm_info = localtime(&event_time);
     strftime(buf, buflen, "%H:%M:%S", tm_info);
 }

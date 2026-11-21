@@ -22,7 +22,7 @@
 /**
  * Check if timing gate is open (tick expected in this window)
  */
-bool tick_state_is_gate_open(tick_detector_t *td, float current_ms) {
+bool tick_state_is_gate_open(tick_detector_t *td, wwv_time_ms_t current_ms) {
     if (!td->gate.enabled) {
         return true;  /* Gate disabled - always open */
     }
@@ -32,7 +32,7 @@ bool tick_state_is_gate_open(tick_detector_t *td, float current_ms) {
     }
 
     /* Position within the current second, in [TICK_GATE_START_MS, 1000 + TICK_GATE_START_MS) */
-    float ms_into_second = fmodf(current_ms - td->gate.epoch_ms - TICK_GATE_START_MS, 1000.0f);
+    float ms_into_second = (float)fmod(current_ms - td->gate.epoch_ms - TICK_GATE_START_MS, 1000.0);
     if (ms_into_second < 0.0f) ms_into_second += 1000.0f;
     ms_into_second += TICK_GATE_START_MS;
 
@@ -117,7 +117,7 @@ void tick_state_machine_run(tick_detector_t *td) {
         case STATE_IDLE:
             if (energy > td->threshold_high) {
                 /* Check timing gate before transitioning */
-                float current_ms = frame * FRAME_DURATION_MS;
+                wwv_time_ms_t current_ms = TICK_FRAMES_TO_MS(frame);
                 if (!tick_state_is_gate_open(td, current_ms)) {
                     /* Gate closed - ignore this detection (BCD harmonic) */
                     break;
@@ -146,7 +146,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                 float duration_ms = td->tick_duration_frames * FRAME_DURATION_MS;
                 float interval_ms = (td->last_tick_frame > 0) ?
                     (td->tick_start_frame - td->last_tick_frame) * FRAME_DURATION_MS : 0.0f;
-                float timestamp_ms = frame * FRAME_DURATION_MS;
+                wwv_time_ms_t timestamp_ms = TICK_FRAMES_TO_MS(frame);
                 float corr_ratio = (td->corr_noise_floor > 0.001f) ?
                     td->corr_peak / td->corr_noise_floor : 0.0f;
 
@@ -175,7 +175,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                      * Leading edge = trailing edge - duration - filter delay.
                      * timestamp_ms is when energy dropped below threshold (trailing edge).
                      * The actual WWV marker START is the on-time reference. */
-                    float leading_edge_ms = timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS;
+                    wwv_time_ms_t leading_edge_ms = timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS;
                     if (fabsf(duration_ms - MARKER_CLEAN_RUN_MS) > MARKER_RUN_TOLERANCE_MS) {
                         /* Run started late or early: anchor on its end (tick_internal.h) */
                         leading_edge_ms = timestamp_ms - MARKER_CLEAN_RUN_MS - TICK_FILTER_DELAY_MS;
@@ -304,7 +304,7 @@ void tick_state_machine_run(tick_detector_t *td) {
                     if (candidate && td->candidate_callback) {
                         /* Leads as the TMARK path takes them (above) */
                         tick_marker_candidate_t c = {
-                            .start_ms = td->tick_start_frame * FRAME_DURATION_MS,
+                            .start_ms = TICK_FRAMES_TO_MS(td->tick_start_frame),
                             .end_ms = timestamp_ms,
                             .lead_from_start_ms = timestamp_ms - duration_ms - TICK_FILTER_DELAY_MS,
                             .lead_from_end_ms = timestamp_ms - MARKER_CLEAN_RUN_MS - TICK_FILTER_DELAY_MS
@@ -320,9 +320,9 @@ void tick_state_machine_run(tick_detector_t *td) {
                         printf("[%7.1fs] REJECTED: dur=%.0fms (gap zone 50-600ms) start=%.1fms end=%.1fms "
                                "idle=%.0fms prev_end=%.1fms\n",
                                timestamp_ms / 1000.0f, duration_ms,
-                               td->tick_start_frame * FRAME_DURATION_MS, timestamp_ms,
+                               TICK_FRAMES_TO_MS(td->tick_start_frame), timestamp_ms,
                                (td->tick_start_frame - td->idle_since_frame) * FRAME_DURATION_MS,
-                               td->last_run_end_frame * FRAME_DURATION_MS);
+                               TICK_FRAMES_TO_MS(td->last_run_end_frame));
                         /* Too long for a tick and too short for a marker: the
                          * background has risen. Re-learn the floor from it. */
                         tick_state_reset_floor(td);
@@ -347,7 +347,8 @@ void tick_state_machine_run(tick_detector_t *td) {
                 /* Pulse WAY too long (>1s) - something is wrong, bail out */
                 td->ticks_rejected++;
                 printf("[%7.1fs] REJECTED: pulse >1s, bailing out\n",
-                       frame * FRAME_DURATION_MS / 1000.0f);
+                       TICK_FRAMES_TO_MS(frame) / 1000.0);
+
                 tick_state_reset_floor(td);
                 td->last_run_end_frame = frame;
                 td->state = STATE_COOLDOWN;

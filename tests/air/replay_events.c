@@ -63,7 +63,7 @@ static double next_check = 0.0;
 static void advance_to(double t) {
     while (next_check < t - 0.01) {
         mgr->now_ms = next_check;
-        float now = (float)next_check;
+        wwv_time_ms_t now = next_check;
         if (mgr->sync_detector) sync_detector_periodic_check(mgr->sync_detector, now);
         if (mgr->bcd_correlator) bcd_correlator_periodic_check(mgr->bcd_correlator, now);
         if (mgr->time_decoder) wwv_time_decoder_periodic(mgr->time_decoder, now);
@@ -82,9 +82,9 @@ static void deliver_candidates_before(double t, double *now) {
         if (c.end > *now) *now = c.end;
         advance_to(*now);
         const double clean = MARKER_ACTUAL_DURATION_MS + 2.0 * TICK_FFT_SIZE * 1000.0 / TICK_SAMPLE_RATE;
-        tick_marker_candidate_t e = { .start_ms = (float)(c.end - c.dur), .end_ms = (float)c.end,
-                                      .lead_from_start_ms = (float)(c.end - c.dur - TICK_FILTER_DELAY_MS),
-                                      .lead_from_end_ms = (float)(c.end - clean - TICK_FILTER_DELAY_MS) };
+        tick_marker_candidate_t e = { .start_ms = c.end - c.dur, .end_ms = c.end,
+                                      .lead_from_start_ms = c.end - c.dur - TICK_FILTER_DELAY_MS,
+                                      .lead_from_end_ms = c.end - clean - TICK_FILTER_DELAY_MS };
         wwv_routing_on_tick_marker_candidate(&e, mgr);
     }
 }
@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
             deliver_candidates_before(t, &now);
             if (t > now) now = t;
             advance_to(now);
-            tick_event_t e = { .tick_number = (int)n, .timestamp_ms = (float)t,
+            tick_event_t e = { .tick_number = (int)n, .timestamp_ms = t,
                                .interval_ms = (float)in, .duration_ms = (float)d, .peak_energy = 1.0f };
             wwv_routing_on_tick_event(&e, mgr);
             n_tick++;
@@ -169,8 +169,8 @@ int main(int argc, char **argv) {
             deliver_candidates_before(t, &now);
             if (t > now) now = t;
             advance_to(now);
-            tick_marker_event_t e = { .marker_number = (int)n, .timestamp_ms = (float)t,
-                                      .start_timestamp_ms = (float)l, .duration_ms = (float)d,
+            tick_marker_event_t e = { .marker_number = (int)n, .timestamp_ms = t,
+                                      .start_timestamp_ms = l, .duration_ms = (float)d,
                                       .corr_ratio = 1.0f };
             wwv_routing_on_tick_marker_event(&e, mgr);
             n_tmark++;
@@ -180,17 +180,18 @@ int main(int argc, char **argv) {
             deliver_candidates_before(t, &now);
             if (t > now) now = t;
             advance_to(now);
-            marker_event_t e = { .marker_number = (int)n, .timestamp_ms = (float)t,
+            marker_event_t e = { .marker_number = (int)n, .timestamp_ms = t,
                                  .accumulated_energy = 1.0f, .peak_energy = 1.0f,
-                                 .duration_ms = (float)d, .start_timestamp_ms = (float)l };
+                                 .duration_ms = (float)d, .start_timestamp_ms = l };
             wwv_routing_on_marker_event(&e, mgr);
+
             n_mark++;
         } else if (strncmp(line, "BTIME ", 6) == 0 && field(line, "t", &t) &&
                    field(line, "dur", &d) && field(line, "at", &a)) {
             deliver_candidates_before(a, &now);
             if (a > now) now = a;
             advance_to(now);
-            bcd_time_event_t e = { .timestamp_ms = (float)t, .duration_ms = (float)d, .peak_energy = 1.0f };
+            bcd_time_event_t e = { .timestamp_ms = t, .duration_ms = (float)d, .peak_energy = 1.0f };
             wwv_routing_on_bcd_time_event(&e, mgr);
             n_bt++;
         } else if (strncmp(line, "BFREQ ", 6) == 0 && field(line, "t", &t) &&
@@ -198,23 +199,24 @@ int main(int argc, char **argv) {
             deliver_candidates_before(a, &now);
             if (a > now) now = a;
             advance_to(now);
-            bcd_freq_event_t e = { .timestamp_ms = (float)t, .duration_ms = (float)d, .accumulated_energy = 1.0f };
+            bcd_freq_event_t e = { .timestamp_ms = t, .duration_ms = (float)d, .accumulated_energy = 1.0f };
             wwv_routing_on_bcd_freq_event(&e, mgr);
             n_bf++;
         } else if (strncmp(line, "CANDT ", 6) == 0 && field(line, "start", &l) && field(line, "end", &t)) {
             double ls = 0.0, le = 0.0; field(line, "lead_s", &ls); field(line, "lead_e", &le);
             if (t > now) now = t;
             advance_to(now);
-            tick_marker_candidate_t e = { .start_ms = (float)l, .end_ms = (float)t,
-                                          .lead_from_start_ms = (float)ls, .lead_from_end_ms = (float)le };
+            tick_marker_candidate_t e = { .start_ms = l, .end_ms = t,
+                                          .lead_from_start_ms = ls, .lead_from_end_ms = le };
             wwv_routing_on_tick_marker_candidate(&e, mgr);
             n_tmarkw++;
         } else if (strncmp(line, "CANDM ", 6) == 0 && field(line, "t", &t) &&
                    field(line, "lead", &l) && field(line, "dur", &d)) {
             if (t > now) now = t;
             advance_to(now);
-            marker_event_t e = { .timestamp_ms = (float)t, .accumulated_energy = 1.0f, .peak_energy = 1.0f,
-                                 .duration_ms = (float)d, .start_timestamp_ms = (float)l };
+            marker_event_t e = { .timestamp_ms = t, .accumulated_energy = 1.0f, .peak_energy = 1.0f,
+                                 .duration_ms = (float)d, .start_timestamp_ms = l };
+
             wwv_routing_on_marker_candidate(&e, mgr);
             n_markw++;
         } else if (strncmp(line, "GAP ", 4) == 0 && field(line, "start", &t) && field(line, "len", &d)) {

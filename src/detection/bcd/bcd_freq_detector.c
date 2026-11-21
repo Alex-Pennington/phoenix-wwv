@@ -178,7 +178,8 @@ void bcd_freq_detector_print_stats(bcd_freq_detector_t *fd) {
 
     float frame_duration_ms = bcd_freq_detector_get_frame_duration_ms();
     int window_frames = (int)(BCD_FREQ_WINDOW_MS / frame_duration_ms);
-    float elapsed = fd->frame_count * frame_duration_ms / 1000.0f;
+    float elapsed = (float)(wwv_frames_to_ms(fd->frame_count, BCD_FREQ_FFT_SIZE, BCD_FREQ_SAMPLE_RATE) / 1000.0);
+
 
     printf("\n=== BCD FREQ DETECTOR STATS ===\n");
     printf("FFT: %d (%.2fms), Window: %d frames (%.0fms)\n",

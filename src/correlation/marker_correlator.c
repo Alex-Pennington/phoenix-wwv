@@ -22,7 +22,7 @@
 struct marker_correlator {
     /* Pending fast detection (waiting for slow confirmation) */
     bool fast_pending;
-    float fast_timestamp_ms;
+    wwv_time_ms_t fast_timestamp_ms;
     float fast_duration_ms;
 
     /* Slow path state during fast event window */
@@ -79,7 +79,7 @@ void marker_correlator_destroy(marker_correlator_t *mc) {
 }
 
 void marker_correlator_fast_event(marker_correlator_t *mc,
-                                   float timestamp_ms,
+                                   wwv_time_ms_t timestamp_ms,
                                    float duration_ms) {
     if (!mc) return;
 
@@ -93,7 +93,7 @@ void marker_correlator_fast_event(marker_correlator_t *mc,
 }
 
 void marker_correlator_slow_frame(marker_correlator_t *mc,
-                                   float timestamp_ms,
+                                   wwv_time_ms_t timestamp_ms,
                                    float energy,
                                    float snr_db,
                                    bool above_threshold) {
@@ -110,7 +110,7 @@ void marker_correlator_slow_frame(marker_correlator_t *mc,
 
     /* Check for correlation if fast detection pending */
     if (mc->fast_pending) {
-        float elapsed = timestamp_ms - mc->fast_timestamp_ms;
+        float elapsed = (float)(timestamp_ms - mc->fast_timestamp_ms);
 
         /* Within correlation window? */
         if (elapsed > CORRELATION_WINDOW_MS) {
@@ -138,7 +138,8 @@ void marker_correlator_slow_frame(marker_correlator_t *mc,
                        marker_num, mc->fast_duration_ms, mc->slow_peak_energy,
                        mc->slow_peak_snr, conf_str);
 
-                time_t event_time = mc->start_time + (time_t)(mc->fast_timestamp_ms / 1000.0f);
+                time_t event_time = mc->start_time + (time_t)(mc->fast_timestamp_ms / 1000.0);
+
                 struct tm *tm_info = localtime(&event_time);
                 char time_str[16];
                 strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);

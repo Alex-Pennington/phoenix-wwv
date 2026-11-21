@@ -66,7 +66,7 @@ static const field_t FIELDS[NFIELDS] = {
 };
 
 typedef struct {
-    float start_ms;
+    wwv_time_ms_t start_ms;
     int index;                  /* chain minute */
     signed char sym[60];
     bool boundary[60];
@@ -227,7 +227,7 @@ const char *wwv_td_state_name(wwv_td_state_t state) {
 
 static bool is_p_second(int s) { return s % 10 == 9; }
 
-static void frame_reset(frame_t *f, float start_ms) {
+static void frame_reset(frame_t *f, wwv_time_ms_t start_ms) {
     memset(f, 0, sizeof(*f));
     f->start_ms = start_ms;
     for (int s = 0; s < 60; s++) f->sym[s] = SYM_MISSING;
@@ -740,9 +740,9 @@ static void close_frame(wwv_time_decoder_t *td) {
     /* Chain: a whole number of minutes after the previous frame */
     if (td->nhist > 0) {
         const frame_t *p = &td->hist[td->nhist - 1];
-        float d = f->start_ms - p->start_ms;
-        int n = (int)lroundf(d / MINUTE_MS);
-        if (n >= 1 && fabsf(d - n * MINUTE_MS) < CHAIN_TOLERANCE_MS) f->index = p->index + n;
+        double d = f->start_ms - p->start_ms;
+        int n = (int)lround(d / MINUTE_MS);
+        if (n >= 1 && fabs(d - n * (double)MINUTE_MS) < CHAIN_TOLERANCE_MS) f->index = p->index + n;
         else reset_chain(td);
     }
     if (td->nhist == 0) f->index = 0;
@@ -800,14 +800,14 @@ static void close_frame(wwv_time_decoder_t *td) {
  * Input
  *============================================================================*/
 
-void wwv_time_decoder_symbol(wwv_time_decoder_t *td, float minute_start_ms, int second,
+void wwv_time_decoder_symbol(wwv_time_decoder_t *td, wwv_time_ms_t minute_start_ms, int second,
                              char symbol, float pulse_offset_ms) {
     if (!td || second < 0 || second > 59) return;
     /* No minute anchor: sync never anchors at or before stream time 0. The
      * correlator's old destroy path closed its last window with minute_start_ms
      * 0, which closed the open frame early and opened one at 0.0 (saga). */
-    if (!(minute_start_ms > 0.0f)) return;
-    if (td->cur_open && fabsf(minute_start_ms - td->cur.start_ms) >= SAME_FRAME_MS) close_frame(td);
+    if (!(minute_start_ms > 0.0)) return;
+    if (td->cur_open && fabs(minute_start_ms - td->cur.start_ms) >= SAME_FRAME_MS) close_frame(td);
     if (!td->cur_open) {
         frame_reset(&td->cur, minute_start_ms);
         td->cur_open = true;
@@ -852,6 +852,7 @@ void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *e, void *user_data)
     td->cur_epoch = e->phase_epoch;
 }
 
-void wwv_time_decoder_periodic(wwv_time_decoder_t *td, float now_ms) {
+void wwv_time_decoder_periodic(wwv_time_decoder_t *td, wwv_time_ms_t now_ms) {
+
     if (td && td->cur_open && now_ms >= td->cur.start_ms + FRAME_CLOSE_MS) close_frame(td);
 }

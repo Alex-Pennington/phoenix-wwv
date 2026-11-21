@@ -26,6 +26,7 @@
  *============================================================================*/
 
 #define FRAME_DURATION_MS   ((float)BCD_FREQ_FFT_SIZE * 1000.0f / BCD_FREQ_SAMPLE_RATE)
+#define FREQ_FRAMES_TO_MS(f) wwv_frames_to_ms((f), BCD_FREQ_FFT_SIZE, BCD_FREQ_SAMPLE_RATE)  /* stream time */
 #define WINDOW_FRAMES       ((int)(BCD_FREQ_WINDOW_MS / FRAME_DURATION_MS))
 
 /* Detection timing */
@@ -81,7 +82,7 @@ void bcd_freq_run_state_machine(bcd_freq_detector_t *fd) {
     }
 
     /* No pulses in first few seconds - baseline still stabilizing */
-    float timestamp_ms = fd->frame_count * FRAME_DURATION_MS;
+    wwv_time_ms_t timestamp_ms = FREQ_FRAMES_TO_MS(fd->frame_count);
     if (timestamp_ms < BCD_FREQ_MIN_STARTUP_MS) {
         fd->baseline_energy += BCD_FREQ_NOISE_ADAPT_RATE * (fd->accumulated_energy - fd->baseline_energy);
         fd->threshold = fd->baseline_energy * BCD_FREQ_THRESHOLD_MULT;
@@ -125,7 +126,8 @@ void bcd_freq_run_state_machine(bcd_freq_detector_t *fd) {
             }
 
             if ((fd->consecutive_low_frames >= MIN_LOW_FRAMES) || timed_out) {
-                float start_timestamp_ms = fd->pulse_start_frame * FRAME_DURATION_MS;
+                wwv_time_ms_t start_timestamp_ms = FREQ_FRAMES_TO_MS(fd->pulse_start_frame);
+
 
                 if (duration_ms >= BCD_FREQ_PULSE_MIN_MS &&
                     duration_ms <= BCD_FREQ_PULSE_MAX_MS) {

@@ -23,37 +23,37 @@
  * Window Timing Functions
  *============================================================================*/
 
-float bcd_window_get_minute_anchor(bcd_correlator_t *corr) {
-    if (!corr->sync_source) return -1.0f;
-    if (sync_detector_get_state(corr->sync_source) != SYNC_LOCKED) return -1.0f;
+wwv_time_ms_t bcd_window_get_minute_anchor(bcd_correlator_t *corr) {
+    if (!corr->sync_source) return -1.0;
+    if (sync_detector_get_state(corr->sync_source) != SYNC_LOCKED) return -1.0;
     return sync_detector_get_last_marker_ms(corr->sync_source);
 }
 
-int bcd_window_get_index(float timestamp_ms, float anchor_ms) {
+int bcd_window_get_index(wwv_time_ms_t timestamp_ms, wwv_time_ms_t anchor_ms) {
     /* Whole seconds since the anchor's minute, not wrapped: when the anchor is
      * not refreshed for a minute, a window 60 s on is a different window, and
      * its start (and symbol timestamp) must be 60 s on too. */
-    return (int)floorf((timestamp_ms - anchor_ms + WINDOW_LEAD_MS) / WINDOW_DURATION_MS);
+    return (int)floor((timestamp_ms - anchor_ms + WINDOW_LEAD_MS) / WINDOW_DURATION_MS);
 }
 
 int bcd_window_second_of_index(int index) {
     return ((index % 60) + 60) % 60;
 }
 
-int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, float timestamp_ms, float anchor_ms) {
+int bcd_window_get_second_for_timestamp(bcd_correlator_t *corr, wwv_time_ms_t timestamp_ms, wwv_time_ms_t anchor_ms) {
     if (anchor_ms < 0) return -1;
     return bcd_window_second_of_index(bcd_window_get_index(timestamp_ms, anchor_ms));
 }
 
-float bcd_window_get_start(float anchor_ms, int index) {
-    return anchor_ms + (index * WINDOW_DURATION_MS) - WINDOW_LEAD_MS;
+wwv_time_ms_t bcd_window_get_start(wwv_time_ms_t anchor_ms, int index) {
+    return anchor_ms + (index * (double)WINDOW_DURATION_MS) - WINDOW_LEAD_MS;
 }
 
 /*============================================================================
  * Window Management Functions
  *============================================================================*/
 
-void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
+void bcd_window_open(bcd_correlator_t *corr, int index, wwv_time_ms_t anchor_ms) {
     corr->window_open = true;
     corr->window_index = index;
     corr->current_second = bcd_window_second_of_index(index);
@@ -67,17 +67,17 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->time_energy_sum = 0.0f;
     corr->time_duration_sum = 0.0f;
     corr->time_event_count = 0;
-    corr->time_first_ms = 0.0f;
+    corr->time_first_ms = 0.0;
     corr->time_first_dur_ms = 0.0f;
     corr->time_first_prev_end_ms = NAN;
-    corr->time_last_ms = 0.0f;
+    corr->time_last_ms = 0.0;
 
     corr->freq_energy_sum = 0.0f;
     corr->freq_duration_sum = 0.0f;
     corr->freq_event_count = 0;
-    corr->freq_first_ms = 0.0f;
+    corr->freq_first_ms = 0.0;
     corr->freq_first_dur_ms = 0.0f;
-    corr->freq_last_ms = 0.0f;
+    corr->freq_last_ms = 0.0;
 
     /* A trailing edge noted before this window opened */
     corr->edge_valid = false;
@@ -93,8 +93,8 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     }
 }
 
-void bcd_window_note_edge(bcd_correlator_t *corr, float start_ms, float end_ms) {
-    float anchor_ms = bcd_window_get_minute_anchor(corr);
+void bcd_window_note_edge(bcd_correlator_t *corr, wwv_time_ms_t start_ms, wwv_time_ms_t end_ms) {
+    wwv_time_ms_t anchor_ms = bcd_window_get_minute_anchor(corr);
     if (anchor_ms < 0) return;
     int si = bcd_window_get_index(start_ms, anchor_ms);
     int ei = bcd_window_get_index(end_ms, anchor_ms);
@@ -116,11 +116,11 @@ void bcd_window_close(bcd_correlator_t *corr) {
     /* The trailing edge of this second's pulse, from an event that started in an
      * earlier window (see EDGE_MIN_END_MS). It gives the symbol when no event of
      * this window starts before it. */
-    float second_ms = corr->window_start_ms + WINDOW_LEAD_MS;
+    wwv_time_ms_t second_ms = corr->window_start_ms + WINDOW_LEAD_MS;
     bool edge = corr->edge_valid && corr->edge_end_ms - second_ms >= EDGE_MIN_END_MS &&
                 !(corr->time_event_count > 0 && corr->time_first_ms < corr->edge_end_ms) &&
                 !(corr->freq_event_count > 0 && corr->freq_first_ms < corr->edge_end_ms);
-    float edge_width_ms = corr->edge_end_ms - second_ms - EDGE_LEAD_MS;
+    float edge_width_ms = (float)(corr->edge_end_ms - second_ms - EDGE_LEAD_MS);
     if (edge && bcd_symbol_classify_duration(edge_width_ms, corr->current_second) == BCD_CORR_SYM_NONE)
         edge = false;
 
@@ -166,17 +166,17 @@ void bcd_window_close(bcd_correlator_t *corr) {
     /* If no events at all, symbol stays NONE (no 100Hz detected this second) */
 
     /* Calculate timestamp for this symbol (center of window) */
-    float symbol_timestamp_ms = corr->window_start_ms + (WINDOW_DURATION_MS / 2.0f);
+    wwv_time_ms_t symbol_timestamp_ms = corr->window_start_ms + (WINDOW_DURATION_MS / 2.0f);
 
     /* Where the window's first event starts, from the start of its second. A
      * BCD pulse starts at the second; an event that starts mid-second is not
      * that second's pulse. NAN when the window holds no event. */
-    float pulse_offset_ms = NAN;
-    if (corr->time_event_count > 0) pulse_offset_ms = corr->time_first_ms;
+    wwv_time_ms_t first_ms = NAN;
+    if (corr->time_event_count > 0) first_ms = corr->time_first_ms;
     if (corr->freq_event_count > 0 &&
-        (isnan(pulse_offset_ms) || corr->freq_first_ms < pulse_offset_ms))
-        pulse_offset_ms = corr->freq_first_ms;
-    pulse_offset_ms -= corr->window_start_ms + WINDOW_LEAD_MS;
+        (isnan(first_ms) || corr->freq_first_ms < first_ms))
+        first_ms = corr->freq_first_ms;
+    float pulse_offset_ms = (float)(first_ms - second_ms);
 
     /* The pulse ran through the second inside an event that started earlier:
      * its width is the trailing edge's, and it started at that event's start,
@@ -184,7 +184,7 @@ void bcd_window_close(bcd_correlator_t *corr) {
     if (edge) {
         duration_ms = edge_width_ms;
         symbol = bcd_symbol_classify_trailing(duration_ms, corr->current_second);
-        pulse_offset_ms = corr->edge_start_ms - second_ms;
+        pulse_offset_ms = (float)(corr->edge_start_ms - second_ms);
         source = "EDGE";
         if (confidence == 0.0f) confidence = 0.6f;
     }
@@ -193,13 +193,14 @@ void bcd_window_close(bcd_correlator_t *corr) {
      * just before the second, and the first event started when that cooldown
      * ended: its end is the pulse's trailing edge (see HIDDEN_PREV_END_MS). */
     if (!edge && corr->time_event_count > 0 &&
-        corr->time_first_ms - second_ms <= pulse_offset_ms &&      /* not a BFREQ start */
+        (float)(corr->time_first_ms - second_ms) <= pulse_offset_ms &&  /* not a BFREQ start */
+
         corr->time_first_ms - second_ms >= HIDDEN_START_MIN_MS &&
         !isnan(corr->time_first_prev_end_ms) &&
         corr->time_first_prev_end_ms - second_ms > -HIDDEN_PREV_END_MS &&
         corr->time_first_ms - corr->time_first_prev_end_ms >= HIDDEN_GAP_MIN_MS &&
         corr->time_first_ms - corr->time_first_prev_end_ms <= HIDDEN_GAP_MAX_MS) {
-        float trail_width_ms = corr->time_first_ms + corr->time_first_dur_ms - second_ms - EDGE_LEAD_MS;
+        float trail_width_ms = (float)(corr->time_first_ms + corr->time_first_dur_ms - second_ms - EDGE_LEAD_MS);
         bcd_corr_symbol_t trail = bcd_symbol_classify_trailing(trail_width_ms, corr->current_second);
         if (trail != BCD_CORR_SYM_NONE) {
             duration_ms = trail_width_ms;
@@ -211,7 +212,7 @@ void bcd_window_close(bcd_correlator_t *corr) {
     /* Track intervals */
     float interval_ms = 0.0f;
     if (corr->last_symbol_ms > 0) {
-        interval_ms = symbol_timestamp_ms - corr->last_symbol_ms;
+        interval_ms = (float)(symbol_timestamp_ms - corr->last_symbol_ms);
         if (interval_ms >= 900.0f && interval_ms <= 1100.0f) {
             corr->good_intervals++;
         }
@@ -257,7 +258,7 @@ void bcd_window_close(bcd_correlator_t *corr) {
             .source = source,
             .second = corr->current_second,
             .minute_start_ms = corr->window_anchor_ms +
-                               60000.0f * (float)((corr->window_index - corr->current_second) / 60),
+                               60000.0 * (double)((corr->window_index - corr->current_second) / 60),
             .pulse_offset_ms = pulse_offset_ms,
             .phase_epoch = corr->window_epoch,
             .phase_resets = corr->window_resets
@@ -290,11 +291,11 @@ static void discard_on_break(bcd_correlator_t *corr) {
  * (index 61); closing it and opening another would emit that second twice.
  * An anchor at a different phase changes the second numbering, so the open
  * window is closed. */
-static void follow_anchor(bcd_correlator_t *corr, float anchor_ms) {
+static void follow_anchor(bcd_correlator_t *corr, wwv_time_ms_t anchor_ms) {
     if (!corr->window_open || anchor_ms == corr->window_anchor_ms) return;
-    float delta = anchor_ms - corr->window_anchor_ms;
-    float minutes = roundf(delta / 60000.0f);
-    if (fabsf(delta - minutes * 60000.0f) < WINDOW_DURATION_MS / 2.0f) {
+    double delta = anchor_ms - corr->window_anchor_ms;
+    double minutes = round(delta / 60000.0);
+    if (fabs(delta - minutes * 60000.0) < WINDOW_DURATION_MS / 2.0f) {
         corr->window_index -= 60 * (int)minutes;
         corr->window_anchor_ms = anchor_ms;
     } else {
@@ -302,13 +303,13 @@ static void follow_anchor(bcd_correlator_t *corr, float anchor_ms) {
     }
 }
 
-bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
+bool bcd_window_check_transition(bcd_correlator_t *corr, wwv_time_ms_t timestamp_ms) {
     if (!corr) return false;
 
     discard_on_break(corr);
 
     /* Get current sync state */
-    float anchor_ms = bcd_window_get_minute_anchor(corr);
+    wwv_time_ms_t anchor_ms = bcd_window_get_minute_anchor(corr);
 
     /* If sync not locked, close any open window. Lock did not cover it to its
      * end, so it is sent only if it holds an event. */
@@ -363,10 +364,11 @@ bool bcd_window_check_transition(bcd_correlator_t *corr, float timestamp_ms) {
     return true;
 }
 
-void bcd_window_periodic(bcd_correlator_t *corr, float now_ms) {
+void bcd_window_periodic(bcd_correlator_t *corr, wwv_time_ms_t now_ms) {
     if (!corr) return;
     discard_on_break(corr);
-    float anchor_ms = bcd_window_get_minute_anchor(corr);
+    wwv_time_ms_t anchor_ms = bcd_window_get_minute_anchor(corr);
+
     if (anchor_ms < 0) {
         if (corr->window_open) {
             corr->window_partial = true;   /* lock ended inside it */
