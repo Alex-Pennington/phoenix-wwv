@@ -2,7 +2,8 @@
 # Stub wwv_band_scan.sh for tests/live, installed beside a copy of wwv_rsp2_live.sh. It
 # opens no radio. Scan K (counted in $STUB_DIR/scans, one line of arguments each) chooses
 # the K-th band of STUB_SCAN_BANDS (comma-separated kHz; "none" for no band) after the
-# K-th of STUB_SCAN_SECS seconds (default 1), and writes it to --json as best_khz. The last
+# K-th of STUB_SCAN_SECS seconds (default 1), and writes it to --json as best_khz, with one
+# row for it (score 100%, BCD 90%, usable). The last
 # entry of each list repeats. Two band entries stand for a failing API:
 #   hang     the scan is stuck in the driver: deaf to SIGTERM (a child sleep, its PID in
 #            $STUB_DIR/hang.pids, inherits that), no output, never ends on its own
@@ -44,5 +45,5 @@ fi
 if [ "$b" = none ]; then
   echo '{"best_khz": null}' > "$JSON"; echo "BEST none"; exit 3
 fi
-echo "{\"best_khz\": $b}" > "$JSON"
+echo "{\"best_khz\": $b, \"best_usable\": true, \"rows\": [{\"khz\": $b, \"score_pct\": 100.0, \"bcd_pct\": 90.0, \"usable\": true}]}" > "$JSON"
 echo "BEST $b"

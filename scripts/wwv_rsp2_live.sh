@@ -31,6 +31,12 @@
 #                       the scan and the live run
 #   --scan-secs N       auto: seconds per band in the scan (default 25)
 #   --scan-json FILE    auto: keep the scan's figures as JSON
+#   --band-cache FILE   auto: the band cache, written after every scan that chose a band
+#                       (default wwv_band_cache.json in --log's directory; with no --log,
+#                       none; "none": no cache)
+#   --band-cache-mins N auto: at the start, go live at once on a cached band scanned, or
+#                       last seen LOCKED, less than N minutes ago on the same --antenna, with
+#                       no start-up scan (default 30; 0: never use the cache, still write it)
 #   --scan-timeout N    auto: stop a band scan that runs past N s of wall clock (default
 #                       bands x (--scan-secs + 15) + bands x (35 + 15), the second term
 #                       for close-call extensions of 35 s; 240 + 300 s at the defaults)
@@ -71,6 +77,18 @@
 # K writes them with .segK before the extension (run.log -> run.seg2.log; PREFIX ->
 # PREFIX.seg2).
 # --carrier-hz, --lna and --ifgr hold for the first band only.
+#
+# Band cache (auto only): after a scan that chose a band (the first scan, and a band switch's
+# re-scan), the wrapper writes the band, the scan's scores, the antenna and the UTC time to
+# --band-cache as JSON. While the live band is LOCKED (wwv_live's last SYNC line), it stamps
+# the cache's locked_utc: when a segment first reads LOCKED (a reopened one too), then at most
+# once a minute while it stays LOCKED; never while ACQUIRING, TENTATIVE or RECOVERING. The
+# scan's utc and scores stay as written. The age counts from the later of utc and locked_utc.
+# At the start, a cache younger than --band-cache-mins for the same --antenna replaces the
+# start-up scan: the run goes live on its band at once, and the next
+# scan is the band switch's, when that band has not reached LOCKED within --lock-mins. A
+# missing, expired or other-antenna cache, or one that does not parse (a warning), is
+# ignored and the scan runs. Each outcome is logged (BANDCACHE). A reopen never scans.
 #
 # Gaps: rsp2_stream fills samples lost upstream with zeros, so wwv_live's sample
 # clock stays on true time, and wwv_live holds the events in a filled span back from
@@ -115,6 +133,7 @@ BUILD=$REPO/build
 SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=; ANTENNA="Antenna A"
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
 SCAN_TIMEOUT=
+BAND_CACHE=; BAND_CACHE_SET=; BAND_CACHE_MINS=30
 STALL_SECS=10; REOPEN_MAX=20
 MEM_ORDER=9; MEM_WAIT_SECS=0; MEM_RECOMPACT_SECS=5
 BACKOFF_SECS=5; BACKOFF_MAX=120; BACKOFF_RESET_SECS=600
@@ -122,6 +141,8 @@ BACKOFF_SECS=5; BACKOFF_MAX=120; BACKOFF_RESET_SECS=600
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
 # The free-block counts; a test may point these at files it writes.
 BUDDYINFO=${WWV_BUDDYINFO:-/proc/buddyinfo}
+# Seconds between locked_utc stamps while LOCKED; a test may shorten it.
+LOCK_REFRESH_SECS=${WWV_LOCK_REFRESH_SECS:-60}
 PAGETYPEINFO=${WWV_PAGETYPEINFO:-/proc/pagetypeinfo}
 GAINS=()
 while [ $# -gt 0 ]; do
@@ -142,6 +163,8 @@ while [ $# -gt 0 ]; do
     --scan-secs) SCAN_SECS=$2; shift 2 ;;
     --scan-json) SCAN_JSON=$2; shift 2 ;;
     --scan-timeout) SCAN_TIMEOUT=$2; shift 2 ;;
+    --band-cache) BAND_CACHE=$2; BAND_CACHE_SET=1; shift 2 ;;
+    --band-cache-mins) BAND_CACHE_MINS=$2; shift 2 ;;
     --lock-mins) LOCK_MINS=$2; shift 2 ;;
     --stall-secs) STALL_SECS=$2; shift 2 ;;
     --reopen-max) REOPEN_MAX=$2; shift 2 ;;
@@ -165,6 +188,15 @@ esac
 [[ $STALL_SECS =~ ^[0-9]+$ ]] || { echo "--stall-secs: want whole seconds, not $STALL_SECS" >&2; exit 2; }
 [[ $REOPEN_MAX =~ ^[0-9]+$ ]] || { echo "--reopen-max: want a count, not $REOPEN_MAX" >&2; exit 2; }
 [[ $SCAN_SECS =~ ^[0-9]+$ ]] || { echo "--scan-secs: want whole seconds, not $SCAN_SECS" >&2; exit 2; }
+[[ $BAND_CACHE_MINS =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  { echo "--band-cache-mins: want minutes, not $BAND_CACHE_MINS" >&2; exit 2; }
+if [ -z "$BAND_CACHE_SET" ]; then
+  [ -n "$LOG" ] && BAND_CACHE=$(dirname "$LOG")/wwv_band_cache.json
+elif [ "$BAND_CACHE" = none ]; then
+  BAND_CACHE=
+elif [ -z "$BAND_CACHE" ]; then
+  echo "--band-cache: want a file or none" >&2; exit 2
+fi
 [[ $MEM_ORDER =~ ^([0-9]|10)$ ]] || { echo "--mem-order: want an order 0-10, not $MEM_ORDER" >&2; exit 2; }
 for _o in MEM_WAIT_SECS:--mem-wait-secs BACKOFF_SECS:--backoff-secs BACKOFF_MAX:--backoff-max \
           BACKOFF_RESET_SECS:--backoff-reset-secs; do
@@ -498,7 +530,7 @@ scan_once() {
     say "the band scan refused --antenna '$ANTENNA' (exit 2; its line above lists the device's antennas); not going live"
     exit 2
   fi
-  BAND=
+  BAND=; SCAN_JSON_LAST=$sj
   [ -z "$SCAN_FAIL" ] &&
     BAND=$(python3 -I -c "import json,sys; b=json.load(open(sys.argv[1])).get('best_khz'); print(b if b else '')" "$sj" 2>/dev/null || true)
   [ -n "$BAND" ] || [ -n "$SCAN_FAIL" ] || say "the band scan found no band (exit $src)"
@@ -516,6 +548,137 @@ scan() {
     scan_once "$@"
     [ -n "$SCAN_FAIL" ] && say "SCAN: failed again after the restart: $SCAN_FAIL"
   fi
+  [ -n "$BAND" ] && [ -z "$SCAN_FAIL" ] && band_cache_write "$@"
+  return 0
+}
+
+# band_cache_write [--avoid KHZ]: write BAND, the last scan's scores (khz, score_pct, bcd_pct,
+# usable per band), ANTENNA, the UTC time and the --scan-json file (null when the scan's JSON
+# was a temporary file) to BAND_CACHE, as a temporary file then renamed. A failure is a
+# warning, never the run's end.
+band_cache_write() {
+  [ -n "$BAND_CACHE" ] || return 0
+  local out
+  if out=$(python3 -I - "$BAND_CACHE" "$BAND" "$ANTENNA" "$SCAN_JSON_LAST" "${2:-}" "${SCAN_JSON:+kept}" 2>&1 <<'PY'
+import json, os, sys, time
+path, band, antenna, sj, avoid, kept = sys.argv[1:7]
+try:
+    scan = json.load(open(sj))
+except (OSError, ValueError):
+    scan = {}
+rows = scan.get('rows') if isinstance(scan, dict) else None
+scores = [{k: r.get(k) for k in ('khz', 'score_pct', 'bcd_pct', 'usable')}
+          for r in (rows or []) if isinstance(r, dict)]
+now = time.time()
+d = dict(version=1, band_khz=int(band), antenna=antenna,
+         utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now)),
+         best_usable=scan.get('best_usable') if isinstance(scan, dict) else None,
+         avoid=[int(avoid)] if avoid else [], scores=scores, scan_json=sj if kept else None)
+os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+tmp = f'{path}.tmp{os.getpid()}'
+with open(tmp, 'w') as f:
+    json.dump(d, f, indent=1)
+    f.write('\n')
+os.replace(tmp, path)
+print(d['utc'])
+PY
+  ); then
+    say "BANDCACHE: wrote $BAND_CACHE: $BAND kHz on $ANTENNA, scanned $out"
+  else
+    say "BANDCACHE: WARNING: could not write $BAND_CACHE: $(tail -1 <<< "$out")"
+  fi
+  return 0
+}
+
+# band_cache_lock: stamp locked_utc in BAND_CACHE, now, when it holds the live band (WWV_KHZ)
+# and ANTENNA; a cache for another band or antenna, or none, is left alone with a warning.
+band_cache_lock() {
+  local out
+  if out=$(python3 -I - "$BAND_CACHE" "$WWV_KHZ" "$ANTENNA" 2>&1 <<'PY'
+import json, os, sys, time
+path, band, antenna = sys.argv[1:4]
+try:
+    d = json.load(open(path))
+except (OSError, ValueError) as e:
+    sys.exit(f'{type(e).__name__}: {e}')
+if not isinstance(d, dict) or d.get('band_khz') != int(band) or d.get('antenna') != antenna:
+    sys.exit(f'it holds {d.get("band_khz") if isinstance(d, dict) else d!r} kHz on '
+             f'{d.get("antenna") if isinstance(d, dict) else None!r}, not this band')
+d['locked_utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+tmp = f'{path}.tmp{os.getpid()}'
+with open(tmp, 'w') as f:
+    json.dump(d, f, indent=1)
+    f.write('\n')
+os.replace(tmp, path)
+print(d['locked_utc'])
+PY
+  ); then
+    say "BANDCACHE: segment $SEG: $WWV_KHZ kHz LOCKED: locked_utc $out in $BAND_CACHE"
+  else
+    say "BANDCACHE: WARNING: segment $SEG: $WWV_KHZ kHz LOCKED, locked_utc not stamped in $BAND_CACHE: $(tail -1 <<< "$out")"
+  fi
+  return 0
+}
+
+# band_cache_read: CACHE_BAND to the cached band when BAND_CACHE holds one scanned, or last
+# seen LOCKED, less than --band-cache-mins ago on ANTENNA, else empty; logs which, and why a cache was not used.
+band_cache_read() {
+  CACHE_BAND=
+  [ -n "$BAND_CACHE" ] || { say "BANDCACHE: no cache (--band-cache none, or no --log); scanning"; return 0; }
+  if awk -v m="$BAND_CACHE_MINS" 'BEGIN { exit !(m + 0 == 0) }'; then
+    say "BANDCACHE: --band-cache-mins 0: not using $BAND_CACHE; scanning"; return 0
+  fi
+  if [ ! -e "$BAND_CACHE" ]; then say "BANDCACHE: no cache at $BAND_CACHE yet; scanning"; return 0; fi
+  local out what a b c
+  out=$(python3 -I - "$BAND_CACHE" "$ANTENNA" "$BAND_CACHE_MINS" "$HERE" 2>&1 <<'PY'
+import calendar, json, sys, time
+path, antenna, max_mins, here = sys.argv[1:5]
+sys.path.insert(0, here)
+import wwv_bands
+def bad(why):
+    print(f'bad\t{why}'); sys.exit(0)
+try:
+    d = json.load(open(path))
+except (OSError, ValueError) as e:
+    bad(f'{type(e).__name__}: {e}')
+if not isinstance(d, dict):
+    bad('not a JSON object')
+band, ant, utc = d.get('band_khz'), d.get('antenna'), d.get('utc')
+if not isinstance(band, int) or isinstance(band, bool) or band not in wwv_bands.WWV_KHZ:
+    bad(f'band_khz {band!r} is not a WWV band')
+if not isinstance(ant, str) or not ant:
+    bad(f'antenna {ant!r} is not a name')
+def when(key, need):
+    v = d.get(key)
+    if v is None and not need:
+        return None
+    try:
+        t = calendar.timegm(time.strptime(v, '%Y-%m-%dT%H:%M:%SZ'))
+    except (TypeError, ValueError):
+        bad(f'{key} {v!r} is not a UTC time (YYYY-MM-DDTHH:MM:SSZ)')
+    if t - time.time() > 60:
+        bad(f'{key} {v} is {(t - time.time()) / 60:.1f} min in the future')
+    return t
+t = max(x for x in (when('utc', True), when('locked_utc', False)) if x is not None)
+age = max(time.time() - t, 0.0)
+seen = f'scanned {utc}' + (f', last LOCKED {d["locked_utc"]}' if d.get('locked_utc') else '')
+if ant != antenna:
+    print(f'antenna\t{ant}\t{seen}')
+elif age >= float(max_mins) * 60:
+    print(f'stale\t{age / 60:.1f}\t{seen}')
+else:
+    print(f'use\t{band}\t{age / 60:.1f}\t{seen}')
+PY
+  ) || out="bad	the reader failed: $(tail -1 <<< "$out")"
+  IFS=$'\t' read -r what a b c <<< "$out"
+  case $what in
+    use)
+      CACHE_BAND=$a
+      say "BANDCACHE: using $BAND_CACHE: $a kHz on $ANTENNA, $c ($b min ago, under the $BAND_CACHE_MINS min limit); start-up scan skipped" ;;
+    stale) say "BANDCACHE: $BAND_CACHE was $b ($a min ago), not under the $BAND_CACHE_MINS min limit; ignoring it; scanning" ;;
+    antenna) say "BANDCACHE: $BAND_CACHE is for antenna '$a' ($b), this run is on '$ANTENNA'; ignoring it; scanning" ;;
+    *) say "BANDCACHE: WARNING: $BAND_CACHE is not a band cache (${a:-$out}); ignoring it; scanning" ;;
+  esac
   return 0
 }
 
@@ -524,10 +687,20 @@ scan() {
 [ "$SECS" != 0 ] && END=$(python3 -I -c "import math, time; print(math.ceil(time.time() + $SECS))")
 
 if [ -n "$AUTO" ]; then
-  scan
-  [ -n "$BAND" ] || { say "not going live"; exit 3; }
-  WWV_KHZ=$BAND
-  say "going live on the scan's band: $WWV_KHZ kHz"
+  band_cache_read
+  if [ -n "$CACHE_BAND" ]; then
+    WWV_KHZ=$CACHE_BAND
+    if [ "$LOCK_MINS" = 0 ]; then
+      say "going live on the cached band: $WWV_KHZ kHz (--lock-mins 0: no scan in this run)"
+    else
+      say "going live on the cached band: $WWV_KHZ kHz (the band switch scans if it has not reached LOCKED in $LOCK_MINS min)"
+    fi
+  else
+    scan
+    [ -n "$BAND" ] || { say "not going live"; exit 3; }
+    WWV_KHZ=$BAND
+    say "going live on the scan's band: $WWV_KHZ kHz"
+  fi
 fi
 
 rc=0
@@ -562,9 +735,14 @@ while :; do
   # Background processes joined by FIFOs, so a signal to this script alone (Ctrl-C,
   # kill, systemd) reaches the traps at once: `wait` returns on a signal, a foreground
   # pipeline would not. wwv_live's stdout passes through awk, which marks LOCKED.
-  /bin/rm -f "$FIFODIR/iq" "$FIFODIR/out" "$FIFODIR/locked"
+  /bin/rm -f "$FIFODIR/iq" "$FIFODIR/out" "$FIFODIR/locked" "$FIFODIR/state"
   mkfifo "$FIFODIR/iq" "$FIFODIR/out"
-  awk -v flag="$FIFODIR/locked" '{ print; fflush() } /^SYNC .* -> LOCKED / { printf "" > flag; close(flag) }' \
+  # $FIFODIR/state: the sync state of wwv_live's last SYNC line, written before the line is
+  # passed on
+  awk -v flag="$FIFODIR/locked" -v state="$FIFODIR/state" '
+    /^SYNC .* -> / { for (i = 1; i < NF; i++) if ($i == "->") st = $(i + 1)
+                     printf "%s\n", st > state; close(state) }
+    { print; fflush() } /^SYNC .* -> LOCKED / { printf "" > flag; close(flag) }' \
     < "$FIFODIR/out" &
   RPID=$!
   SVC0=$(svc_ident)
@@ -575,9 +753,14 @@ while :; do
   WPID=$!
   note_pids
 
-  T_SEG=$SECONDS; LOCKED=; SWITCH=; REOPEN=; ENDED=; ERR_SEG=0
+  T_SEG=$SECONDS; LOCKED=; SWITCH=; REOPEN=; ENDED=; ERR_SEG=0; T_LOCKSTAMP=
   while kill -0 "$WPID" 2>/dev/null; do
     [ $((SECONDS - T_JPOLL)) -ge 3 ] && errno_poll
+    if [ -n "$AUTO" ] && [ -n "$BAND_CACHE" ] &&
+       { [ -z "$T_LOCKSTAMP" ] || [ $((SECONDS - T_LOCKSTAMP)) -ge "$LOCK_REFRESH_SECS" ]; } &&
+       [ "$(cat "$FIFODIR/state" 2>/dev/null)" = LOCKED ]; then
+      band_cache_lock; T_LOCKSTAMP=$SECONDS
+    fi
     if [ -z "$LOCKED" ] && [ -e "$FIFODIR/locked" ]; then
       LOCKED=1
       say "segment $SEG: $WWV_KHZ kHz LOCKED after $((SECONDS - T_SEG)) s"

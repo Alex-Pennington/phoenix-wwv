@@ -41,7 +41,8 @@
 #   mem_delay     no free block at order >= 9 (pagetypeinfo) until 2 s in: the wait re-compacts every 1 s,
 #                 goes ahead when the blocks appear, and only then starts the unit
 #   mem_bound     pagetypeinfo unreadable, no free block in buddyinfo ever: the wait falls back
-#                 to buddyinfo, warns after its 2 s bound and goes live
+#                 to buddyinfo, warns after its 2 s bound and goes live; it re-compacted 1-2 times
+#                 by its own count, and the stub saw each (not a wall-clock count: load-proof)
 #   mem_unmovable the survey's state: buddyinfo has free order 9-10 blocks (48 Movable
 #                 order-10), Unmovable and Reclaimable have none: the wait holds to its bound
 #   backoff_seq   the vendor service crashes (18 errno=12 lines, a restart) in every segment:
@@ -74,6 +75,18 @@
 #   antenna_py    rsp2_stream.py and wwv_band_scan.py on the fake module (which lists Antenna A,
 #                 Antenna B, Hi-Z): Hi-Z is set and read back in the settings line and per band;
 #                 Bogus exits 2 with the list, before streaming or reading a band
+#   cache_fresh   auto, a 5 min old band cache for Antenna A: no start-up scan, live on its band at
+#                 once; no LOCKED within --lock-mins: the switch scans (--avoid the cached band),
+#                 switches, and writes the cache again
+#   cache_stale   auto, a 45 min old cache (limit 30): ignored, the scan runs and rewrites it
+#   cache_antenna auto, a fresh cache for Hi-Z on an Antenna A run: ignored, the scan runs
+#   cache_corrupt auto, a cache that is not JSON: a warning, ignored, the scan runs and rewrites it
+#   lock_refresh  auto against a stub wwv_live (tests/live/stub_wwv_live.py: scheduled SYNC lines):
+#                 the scan's band LOCKED stamps locked_utc each refresh (1 s here), RECOVERING
+#                 stops it, a SIGKILL ends the run; the scan's utc is then set 45 min back (the
+#                 crash 45 min after the scan); the restart uses the cached band at once (the
+#                 last LOCKED is fresh), and its reopened segment stamps on its own LOCKED
+# fixed_end also puts a fresh cache beside --log: a fixed --wwv-khz neither reads nor writes it.
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
@@ -95,6 +108,11 @@ SCR=$WORK/scripts
 /bin/cp -f "$HERE/stub_band_scan.sh" "$SCR/wwv_band_scan.sh"
 chmod +x "$SCR/wwv_rsp2_live.sh" "$SCR/wwv_band_scan.sh"
 mkdir -p "$WORK/tmp"
+# A build directory whose wwv_live is the stub that prints scheduled SYNC lines.
+FAKEBUILD=$WORK/fakebuild
+mkdir -p "$FAKEBUILD"
+printf '#!/bin/bash\nexec python3 -I %q "$@"\n' "$HERE/stub_wwv_live.py" > "$FAKEBUILD/wwv_live"
+chmod +x "$FAKEBUILD/wwv_live"
 
 STUB_PATH=$HERE/fakebin:$PATH
 # Refuse to run unless systemctl and sudo resolve to the stubs: a real stop would end
@@ -125,6 +143,28 @@ antennas_are() {
   local want; want=$(IFS='|'; echo "$*")
   [ "$got" = "$want" ] || fail "stream antennas '$got', want '$want'"
 }
+# cache_put BAND ANTENNA MINS_AGO: write a band cache beside the case's --log, scanned MINS_AGO
+# minutes ago (the wrapper's default --band-cache)
+cache_put() {
+  printf '{"version": 1, "band_khz": %s, "antenna": "%s", "utc": "%s", "scores": [], "avoid": []}\n' \
+    "$1" "$2" "$(date -u -d "-$3 min" +%Y-%m-%dT%H:%M:%SZ)" > "$D/wwv_band_cache.json"
+}
+# cache_is BAND ANTENNA [AVOID]: the cache was written by this run: that band and antenna, a
+# UTC time within the last 2 minutes, the --avoid of its scan, and the stub scan's one row as
+# its scores
+cache_is() {
+  python3 -I - "$D/wwv_band_cache.json" "$@" <<'PY' >> "$D/console.txt" 2>&1 || fail "the band cache is not $* written now"
+import calendar, json, sys, time
+d = json.load(open(sys.argv[1]))
+age = time.time() - calendar.timegm(time.strptime(d['utc'], '%Y-%m-%dT%H:%M:%SZ'))
+avoid = [int(sys.argv[4])] if len(sys.argv) > 4 else []
+print('cache_is:', d)
+sys.exit(0 if d['band_khz'] == int(sys.argv[2]) and d['antenna'] == sys.argv[3] and -5 <= age <= 120
+         and d['avoid'] == avoid
+         and d['scores'] == [dict(khz=int(sys.argv[2]), score_pct=100.0, bcd_pct=90.0, usable=True)] else 1)
+PY
+}
+scans_is() { local n; n=$(cat "$D/scans" 2>/dev/null | wc -l); [ "$n" = "$1" ] || fail "$n scans, want $1"; }
 unit_off() { [ "$(cat "$D/state" 2>/dev/null)" = inactive ] || fail "fake sdrplay.service is $(cat "$D/state" 2>/dev/null)"; }
 # buddy FREE9 FREE10 [UNMOV9 UNMOV10]: write the case's buddyinfo, saga's three zones
 # (2026-11-21), with FREE9 and FREE10 free blocks at order 9 and 10 in the Normal zone, and its
@@ -176,15 +216,19 @@ CASES=("$@")
                                  stream_stall stream_lag scan_keep_raw gap_chain gap76
                                  mem_now mem_delay mem_bound mem_unmovable backoff_seq errno_burst
                                  stream_gaps stream_ramp stream_drift stream_toobig
-                                 antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py)
+                                 antenna_live antenna_scan antenna_bad antenna_bad_scan antenna_py
+                                 cache_fresh cache_stale cache_antenna cache_corrupt lock_refresh)
 
 for c in "${CASES[@]}"; do
   case $c in
   fixed_end)
     begin "$c"
+    cache_put 5000 'Antenna A' 1; /bin/cp -p "$D/wwv_band_cache.json" "$D/cache.before"
     live STUB_MODE=ok -- --wwv-khz 10000 --secs 8
     rc_is 0; ended_in 1 10000; hasnt REOPEN; streams_is 1; unit_off
     antennas_are 'Antenna A'
+    hasnt BANDCACHE; scans_is 0
+    cmp -s "$D/wwv_band_cache.json" "$D/cache.before" || fail 'a fixed --wwv-khz run changed the band cache'
     end_case ;;
   stall75)
     begin "$c"
@@ -395,7 +439,15 @@ PY
     rc_is 0; ended_in 1 5000
     has 'MEM: before starting sdrplay.service: pagetypeinfo unreadable, using buddyinfo: Normal zone free blocks at order 0-10: all types 3989 16137 11122 5590 3206 995 222 54 53 0 0'
     has 'MEMWAIT: WARNING: no free block at order >= 9 (buddyinfo) after 2 s'; has 'going ahead: Node 0, zone Normal 3989'
-    [ "$(compactions)" -ge 3 ] || fail "$(compactions) compactions, want 3 or more (one, then one each second)"
+    # The wait's own count of re-compactions, not a wall-clock count: under load a pass of the
+    # wait (sleep 1, then compact and read) takes longer, the 2 s bound comes after fewer passes,
+    # and that is correct. Each pass sleeps 1 s or more, so the bound allows at most 2 passes,
+    # and the first pass always re-compacts (--mem-recompact-secs 1 has passed). The stub must
+    # have seen the first compaction and every re-compaction the wait reports.
+    n=$(grep -oE 'MEMWAIT: WARNING: no free block at order >= 9 \(buddyinfo\) after 2 s \([0-9]+ re-compactions\)' "$D/console.txt" |
+        grep -oE '[0-9]+ re-compactions' | cut -d' ' -f1)
+    [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le 2 ] || fail "the wait reports '${n}' re-compactions, want 1 or 2 (one each 1 s pass of a 2 s wait)"
+    [ -n "$n" ] && [ "$(compactions)" = $((1 + n)) ] || fail "$(compactions) compactions, want 1 + the ${n} re-compactions the wait reports"
     [ $((SECONDS - T0)) -lt 20 ] || fail "took $((SECONDS - T0)) s: the wait was not bounded"
     unit_off
     end_case ;;
@@ -605,6 +657,112 @@ PY
         --bands 5000 --secs 1 --extend-secs 0 --rate 200000 --antenna Bogus > /dev/null 2>> "$D/console.txt"
     has "[wwv_band_scan] --antenna 'Bogus': not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'"
     [ "$(grep -c '\[harness\] exit 2' "$D/console.txt")" = 2 ] || fail 'wwv_band_scan.py did not exit 2 on Bogus'
+    end_case ;;
+  cache_fresh)
+    begin "$c"
+    cache_put 10000 'Antenna A' 5
+    # cached 10 MHz live at once; no LOCKED in 3 s: the switch scans, avoiding it, and 15 MHz
+    # runs until --secs
+    live STUB_MODE=ok STUB_SCAN_BANDS=15000 -- --wwv-khz auto --lock-mins 0.05 --secs 8
+    rc_is 0
+    has 'BANDCACHE: using '"$D"'/wwv_band_cache.json: 10000 kHz on Antenna A, scanned '
+    has 'under the 30 min limit); start-up scan skipped'
+    has 'going live on the cached band: 10000 kHz (the band switch scans if it has not reached LOCKED in 0.05 min)'
+    hasnt "going live on the scan's band"
+    a=$(grep -n 'segment 1: WWV 10000 kHz' "$D/console.txt" | head -1 | cut -d: -f1)
+    b=$(grep -n 'scanning the WWV bands' "$D/console.txt" | head -1 | cut -d: -f1)
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || fail 'a scan ran before the cached band went live'
+    has 'SWITCH: 10000 kHz -> 15000 kHz (segment 2)'
+    scans_is 1
+    head -1 "$D/scans" | grep -qF -- '--avoid 10000' || fail 'the switch scan did not avoid the cached band'
+    has 'BANDCACHE: wrote '"$D"'/wwv_band_cache.json: 15000 kHz on Antenna A, scanned '
+    cache_is 15000 'Antenna A' 10000
+    ended_in 2 15000; streams_is 2; unit_off
+    end_case ;;
+  cache_stale)
+    begin "$c"
+    cache_put 10000 'Antenna A' 45
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    rc_is 0
+    grep -qE 'BANDCACHE: .*wwv_band_cache.json was scanned .* \(4[5-6]\.[0-9] min ago\), not under the 30 min limit; ignoring it; scanning' \
+      "$D/console.txt" || fail 'no BANDCACHE line ignoring the 45 min old cache'
+    hasnt 'BANDCACHE: using'; hasnt 'cached band'
+    scans_is 1; has "going live on the scan's band: 5000 kHz"
+    cache_is 5000 'Antenna A'
+    ended_in 1 5000; streams_is 1; unit_off
+    end_case ;;
+  cache_antenna)
+    begin "$c"
+    cache_put 10000 Hi-Z 2
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    rc_is 0
+    has "is for antenna 'Hi-Z' (scanned "; has "this run is on 'Antenna A'; ignoring it; scanning"
+    hasnt 'BANDCACHE: using'; hasnt 'cached band'
+    scans_is 1; has "going live on the scan's band: 5000 kHz"; antennas_are 'Antenna A'
+    cache_is 5000 'Antenna A'
+    ended_in 1 5000; streams_is 1; unit_off
+    end_case ;;
+  cache_corrupt)
+    begin "$c"
+    printf '{"band_khz": 10000, "antenna": "Antenna A", "utc": ' > "$D/wwv_band_cache.json"
+    live STUB_MODE=ok STUB_SCAN_BANDS=5000 -- --wwv-khz auto --lock-mins 0 --secs 3
+    rc_is 0
+    has 'BANDCACHE: WARNING: '"$D"'/wwv_band_cache.json is not a band cache (JSONDecodeError: '
+    hasnt 'BANDCACHE: using'; hasnt 'cached band'
+    scans_is 1; has "going live on the scan's band: 5000 kHz"
+    cache_is 5000 'Antenna A'
+    ended_in 1 5000; streams_is 1; unit_off
+    end_case ;;
+  lock_refresh)
+    begin "$c"
+    env STUB_DIR="$D" PATH="$STUB_PATH" TMPDIR="$WORK/tmp" WWV_RSP2_STREAM="$HERE/stub_stream.py" STUB_MODE=ok \
+        WWV_BUDDYINFO="$D/buddyinfo" WWV_PAGETYPEINFO="$D/pagetypeinfo" SOAPY_SDR_ROOT=/nonexistent \
+        SOAPY_SDR_PLUGIN_PATH=/nonexistent STUB_SCAN_BANDS=10000 STUB_SYNC=1:LOCKED,6:RECOVERING \
+        WWV_LOCK_REFRESH_SECS=1 \
+        "$SCR/wwv_rsp2_live.sh" --build "$FAKEBUILD" --log "$D/run.log" --wwv-khz auto --lock-mins 0 --secs 120 \
+        -- -p 0 > "$D/console.txt" 2>&1 &
+    W=$!
+    for _ in $(seq 300); do grep -q -- '-> RECOVERING' "$D/console.txt" && break; sleep 0.1; done
+    sleep 3   # 3 refresh intervals of RECOVERING
+    kill -KILL "$W"; wait "$W" 2>/dev/null
+    for _ in $(seq 150); do grep -q 'guard\] .*sdrplay.service:' "$D/console.txt" && break; sleep 0.1; done
+    has '-> RECOVERING'; has 'exited without its cleanup'
+    n=$(grep -c 'BANDCACHE: segment 1: 10000 kHz LOCKED: locked_utc ' "$D/console.txt")
+    [ "$n" -ge 2 ] || fail "$n locked_utc stamps while LOCKED for 5 s at a 1 s refresh, want 2 or more"
+    # one stamp may be in flight as the state changes; an ungated refresh would add 2 or more
+    r=$(grep -n -- '-> RECOVERING' "$D/console.txt" | head -1 | cut -d: -f1)
+    m=$(tail -n +"${r:-1}" "$D/console.txt" | grep -c 'kHz LOCKED: locked_utc ')
+    [ "$m" -le 1 ] || fail "$m locked_utc stamps after RECOVERING, want none (one in flight at most)"
+    scan_utc=$(grep -oE 'BANDCACHE: wrote .*: 10000 kHz on Antenna A, scanned [0-9TZ:-]+' "$D/console.txt" | grep -oE '[0-9TZ:-]+$')
+    python3 -I - "$D/wwv_band_cache.json" "$scan_utc" <<'PY' >> "$D/console.txt" 2>&1 || fail 'the cache after the LOCKED run is wrong'
+import calendar, json, sys, time
+d = json.load(open(sys.argv[1]))
+t = lambda v: calendar.timegm(time.strptime(v, '%Y-%m-%dT%H:%M:%SZ'))
+print('lock_refresh: cache after run 1:', d)
+sys.exit(0 if d['utc'] == sys.argv[2] and d['band_khz'] == 10000 and len(d['scores']) == 1
+         and t(d['locked_utc']) >= t(d['utc']) and time.time() - t(d['locked_utc']) <= 120 else 1)
+PY
+    # the crash came 45 min after the scan: the scan's time 45 min back, the last LOCKED as stamped
+    python3 -I - "$D/wwv_band_cache.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]; d = json.load(open(p))
+d['utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 45 * 60))
+json.dump(d, open(p, 'w'), indent=1)
+PY
+    /bin/rm -f "$D/streams" "$D/antennas"
+    mv -f "$D/console.txt" "$D/console1.txt"
+    live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 STUB_SCAN_BANDS=5000 STUB_SYNC=1:LOCKED -- \
+        --build "$FAKEBUILD" --wwv-khz auto --lock-mins 0 --secs 8
+    rc_is 0
+    grep -qE 'BANDCACHE: using .*: 10000 kHz on Antenna A, scanned [0-9TZ:-]+, last LOCKED [0-9TZ:-]+ \(0\.[0-9] min ago, under the 30 min limit\); start-up scan skipped' \
+      "$D/console.txt" || fail 'the restart did not use the cache by its last LOCKED'
+    has 'going live on the cached band: 10000 kHz'; hasnt 'scanning the WWV bands'
+    scans_is 1   # run 1's only
+    has 'REOPEN: segment 1: rsp2_stream had no samples'
+    has 'BANDCACHE: segment 1: 10000 kHz LOCKED: locked_utc '
+    has 'BANDCACHE: segment 2: 10000 kHz LOCKED: locked_utc '
+    ended_in 2 10000; streams_is 2; unit_off
+    cat "$D/console1.txt" "$D/console.txt" > "$D/console.all"; mv -f "$D/console.all" "$D/console.txt"
     end_case ;;
   *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;
   esac
