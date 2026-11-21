@@ -31,6 +31,23 @@
 #   --stall-secs N      reopen the stream when no sample has come for N s (default 10;
 #                       0: never)
 #   --reopen-max N      end the run after N reopens (default 20)
+#   --mem-order N       before starting sdrplay.service and before each reopen, wait for
+#                       /proc/buddyinfo's Normal zone to show a free block at order N or
+#                       above (default 9: the pageblock order, 2 MiB; 0-10)
+#   --mem-wait-secs N   bound on that wait; past it the wrapper warns and goes ahead
+#                       (default 60; 0: no wait)
+#   --mem-recompact-secs N  compact memory again every N s while waiting (default 5)
+#   --backoff-secs N    wait N s before a reopen caused by a service crash or libusb
+#                       errno=12, doubling for each such reopen in a row (default 5; 0: none)
+#   --backoff-max N     cap on that wait (default 120)
+#   --backoff-reset-secs N  a segment that runs N s starts the doubling over (default 600)
+#
+# Memory: before every start of sdrplay.service (the first, and the scan's restart) and
+# before each reopen, memory is compacted and the wrapper waits as --mem-order says. It
+# logs the buddyinfo line it started on (MEMWAIT). WWV_BUDDYINFO names another file to
+# read (for the tests). The wrapper reads sdrplay.service's journal every 3 s and at the
+# end of each segment and scan, and logs each burst of libusb errno=12 lines there as one
+# ERRNO12 line with a count.
 #
 # Receiver settings are those of the scored saga capture: tuner 100 kHz below WWV (WWV
 # at +100 kHz), antenna A, AGC off, 2 MS/s. Gain is per band, from scripts/wwv_bands.py:
@@ -53,7 +70,7 @@
 # Scan failure: a band scan that runs past --scan-timeout is stopped (its Python too, killed
 # when it is stuck in the driver), and a scan that exits 5 reports the sdrplay API failing
 # (wwv_band_scan.py). Either way sdrplay.service is stopped and started again (memory
-# compacted first) and the scan runs once more. When that fails the same way, the run
+# compacted and waited for first) and the scan runs once more. When that fails the same way, the run
 # ends with exit status 3, "not going live", at the first scan or at a re-scan alike.
 #
 # Reopen: the stream is stopped and opened again on the same band, as a new segment
@@ -65,7 +82,10 @@
 #   - rsp2_stream's heartbeat file is older than 2 x --stall-secs + 15 s (a hang).
 # Each reopen is logged with its reason (REOPEN on stderr, and in the history at the
 # end). After --reopen-max reopens the run ends with exit status 4. The lock timer of
-# --lock-mins starts again in a reopened segment.
+# --lock-mins starts again in a reopened segment. A reopen after a service restart, or
+# after a segment in which the journal showed errno=12, waits first (BACKOFF): --backoff-secs,
+# doubled for each such reopen in a row, at most --backoff-max. The backoff and the memory
+# wait count toward --secs.
 #
 # sdrplay.service is started here, once (scans and live segments all run under the
 # same start), and stopped on every exit path (end, Ctrl-C, error): it stays disabled
@@ -85,8 +105,12 @@ SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
 SCAN_TIMEOUT=
 STALL_SECS=10; REOPEN_MAX=20
+MEM_ORDER=9; MEM_WAIT_SECS=60; MEM_RECOMPACT_SECS=5
+BACKOFF_SECS=5; BACKOFF_MAX=120; BACKOFF_RESET_SECS=600
 # The streamer; a test may point this at a stub that takes the same options.
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
+# The free-block counts; a test may point this at a file it writes.
+BUDDYINFO=${WWV_BUDDYINFO:-/proc/buddyinfo}
 GAINS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -108,6 +132,12 @@ while [ $# -gt 0 ]; do
     --lock-mins) LOCK_MINS=$2; shift 2 ;;
     --stall-secs) STALL_SECS=$2; shift 2 ;;
     --reopen-max) REOPEN_MAX=$2; shift 2 ;;
+    --mem-order) MEM_ORDER=$2; shift 2 ;;
+    --mem-wait-secs) MEM_WAIT_SECS=$2; shift 2 ;;
+    --mem-recompact-secs) MEM_RECOMPACT_SECS=$2; shift 2 ;;
+    --backoff-secs) BACKOFF_SECS=$2; shift 2 ;;
+    --backoff-max) BACKOFF_MAX=$2; shift 2 ;;
+    --backoff-reset-secs) BACKOFF_RESET_SECS=$2; shift 2 ;;
     --) shift; break ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -122,6 +152,14 @@ esac
 [[ $STALL_SECS =~ ^[0-9]+$ ]] || { echo "--stall-secs: want whole seconds, not $STALL_SECS" >&2; exit 2; }
 [[ $REOPEN_MAX =~ ^[0-9]+$ ]] || { echo "--reopen-max: want a count, not $REOPEN_MAX" >&2; exit 2; }
 [[ $SCAN_SECS =~ ^[0-9]+$ ]] || { echo "--scan-secs: want whole seconds, not $SCAN_SECS" >&2; exit 2; }
+[[ $MEM_ORDER =~ ^([0-9]|10)$ ]] || { echo "--mem-order: want an order 0-10, not $MEM_ORDER" >&2; exit 2; }
+for _o in MEM_WAIT_SECS:--mem-wait-secs BACKOFF_SECS:--backoff-secs BACKOFF_MAX:--backoff-max \
+          BACKOFF_RESET_SECS:--backoff-reset-secs; do
+  _v=${_o%%:*}
+  [[ ${!_v} =~ ^[0-9]+$ ]] || { echo "${_o#*:}: want whole seconds, not ${!_v}" >&2; exit 2; }
+done
+[[ $MEM_RECOMPACT_SECS =~ ^[0-9]+$ ]] && [ "$MEM_RECOMPACT_SECS" -gt 0 ] ||
+  { echo "--mem-recompact-secs: want whole seconds over 0, not $MEM_RECOMPACT_SECS" >&2; exit 2; }
 if [ -z "$SCAN_TIMEOUT" ]; then
   # every band read, plus a close-call extension (wwv_band_scan.py's 35 s) of every band
   NBANDS=$(python3 -I -c "import sys; sys.path.insert(0, sys.argv[1]); import wwv_bands; print(len(wwv_bands.WWV_KHZ))" "$HERE")
@@ -259,7 +297,81 @@ svc_ready() {
   local i
   for ((i = 0; i < 30; i++)); do [ "$(sdrplay_state)" = active ] && return 0; sleep 1; done
   say "sdrplay.service is $(sdrplay_state) 30 s after the reopen was asked for; starting it"
-  sdrplay_start
+  svc_start
+}
+# mem_read: MEM_LINE, buddyinfo's Normal zone (one line per node, joined by " | "), and
+# MEM_FREE, its free blocks at order MEM_ORDER and above; MEM_FREE is empty when there is
+# no Normal zone to read.
+mem_read() {
+  local bi
+  bi=$(cat "$BUDDYINFO" 2>/dev/null || true)
+  MEM_LINE=$(awk '$4 == "Normal" { $1 = $1; printf "%s%s", (n++ ? " | " : ""), $0 }' <<< "$bi")
+  MEM_FREE=$(awk -v o="$MEM_ORDER" '$4 == "Normal" { z = 1; for (k = 5 + o; k <= NF; k++) s += $k }
+                                    END { if (z) print s + 0 }' <<< "$bi")
+}
+# mem_wait WHAT: compact memory, then wait up to --mem-wait-secs for a free block at
+# --mem-order or above in the Normal zone, compacting again every --mem-recompact-secs.
+# Past the bound, or at --secs, it warns and goes ahead: it never blocks the run.
+mem_wait() {
+  sdrplay_compact
+  [ "$MEM_WAIT_SECS" = 0 ] && return 0
+  mem_read
+  if [ -z "$MEM_FREE" ]; then say "MEMWAIT: no Normal zone in $BUDDYINFO; going ahead"; return 0; fi
+  say "MEMWAIT: before $1, Normal zone: $MEM_LINE"
+  if [ "$MEM_FREE" -gt 0 ]; then
+    say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER; going ahead"; return 0
+  fi
+  say "MEMWAIT: no free block at order >= $MEM_ORDER; waiting up to $MEM_WAIT_SECS s, compacting every $MEM_RECOMPACT_SECS s"
+  local t0=$SECONDS tc=$SECONDS n=0
+  while :; do
+    sleep 1 & wait $! || true
+    if past_end; then say "MEMWAIT: --secs reached while waiting; going ahead"; return 0; fi
+    if [ $((SECONDS - tc)) -ge "$MEM_RECOMPACT_SECS" ]; then
+      sdrplay_compact 2> /dev/null; n=$((n + 1)); tc=$SECONDS
+    fi
+    mem_read
+    if [ "${MEM_FREE:-0}" -gt 0 ]; then
+      say "MEMWAIT: $MEM_FREE free blocks at order >= $MEM_ORDER after $((SECONDS - t0)) s ($n re-compactions); going ahead: $MEM_LINE"
+      return 0
+    fi
+    if [ $((SECONDS - t0)) -ge "$MEM_WAIT_SECS" ]; then
+      say "MEMWAIT: WARNING: no free block at order >= $MEM_ORDER after $MEM_WAIT_SECS s ($n re-compactions); going ahead: $MEM_LINE"
+      return 0
+    fi
+  done
+}
+# svc_start: compact and wait for free memory, then start sdrplay.service (compacted here,
+# so not again).
+svc_start() {
+  mem_wait "starting sdrplay.service"
+  SDRPLAY_COMPACT=0 sdrplay_start
+}
+# errno_poll [flush]: read sdrplay.service's journal from where the last read ended and
+# count its libusb errno=12 lines (the vendor service logs them before it crashes). A
+# burst is the lines of consecutive reads that found some; it is logged as one ERRNO12
+# line when a read finds none, or at once with flush. ERR_SEG counts the segment's lines.
+ERR_N=0; ERR_FIRST=; ERR_LAST=; ERR_SEG=0; T_JPOLL=0; JCUR=; J_T0=$EPOCHSECONDS
+errno_poll() {
+  local out n=0
+  T_JPOLL=$SECONDS
+  [ -n "$JCUR" ] || return 0
+  if [ -s "$JCUR" ]; then
+    out=$(journalctl -u sdrplay.service --cursor-file "$JCUR" -o short-iso --utc --no-pager -q 2> /dev/null || true)
+  else
+    out=$(journalctl -u sdrplay.service --since "@$J_T0" --cursor-file "$JCUR" -o short-iso --utc --no-pager -q 2> /dev/null || true)
+  fi
+  out=$(grep -F 'errno=12' <<< "$out" || true)
+  [ -n "$out" ] && n=$(wc -l <<< "$out")
+  if [ "$n" -gt 0 ]; then
+    [ -n "$ERR_FIRST" ] || ERR_FIRST=$(head -1 <<< "$out" | cut -c12-19)
+    ERR_LAST=$(tail -1 <<< "$out" | cut -c12-19)
+    ERR_N=$((ERR_N + n)); ERR_SEG=$((ERR_SEG + n))
+  fi
+  if [ "$ERR_N" -gt 0 ] && { [ "$n" = 0 ] || [ -n "${1:-}" ]; }; then
+    say "ERRNO12: $ERR_N libusb errno=12 lines from sdrplay.service, $ERR_FIRST-$ERR_LAST UTC"
+    ERR_N=0; ERR_FIRST=; ERR_LAST=
+  fi
+  return 0
 }
 # stop_scan: stop the band scan and its Python. TERM reaches the scan's wrapper, which
 # stops the Python; a Python stuck in the driver hears no signal, so whatever of the
@@ -293,7 +405,13 @@ trap 'exit 143' TERM
 
 FIFODIR=$(mktemp -d)
 start_guard
-sdrplay_start
+# past_end is called from the memory wait before the first start, so END is set
+# (empty: no end yet) before it; the wall clock of --secs starts with the scan, below.
+END=
+# the journal cursor: the unit's last entry so far, so errno_poll reads only what follows
+JCUR=$FIFODIR/journal.cursor
+journalctl -u sdrplay.service -n 1 --cursor-file "$JCUR" -o cat --no-pager -q > /dev/null 2>&1 || true
+svc_start
 
 SEG=1
 HISTORY=()
@@ -328,6 +446,7 @@ scan_once() {
     wait "$SCPID" 2>/dev/null || src=$?
     SCPID=
   fi
+  errno_poll flush
   [ "$src" = 5 ] && SCAN_FAIL="the band scan reports the sdrplay API failing (exit 5)"
   BAND=
   [ -z "$SCAN_FAIL" ] &&
@@ -336,22 +455,22 @@ scan_once() {
   return 0
 }
 # scan [--avoid KHZ]: scan_once; when it fails (SCAN_FAIL), restart sdrplay.service,
-# memory compacted first, and scan once more. SCAN_FAIL stays set when that fails too.
+# memory compacted and waited for first, and scan once more. SCAN_FAIL stays set when that
+# fails too.
 scan() {
   scan_once "$@"
   if [ -n "$SCAN_FAIL" ] && ! past_end; then
     say "SCAN: restarting sdrplay.service and scanning once more"
     sdrplay_stop
-    sdrplay_start
+    svc_start
     scan_once "$@"
     [ -n "$SCAN_FAIL" ] && say "SCAN: failed again after the restart: $SCAN_FAIL"
   fi
   return 0
 }
 
-# END is set before the first scan: scan() calls past_end, and under set -u an
-# unset END aborted every --wwv-khz auto run. The wall clock starts with the scan.
-END=
+# END is set (empty, above) before the first scan: scan() calls past_end, and under set -u
+# an unset END aborted every --wwv-khz auto run. The wall clock starts with the scan.
 [ "$SECS" != 0 ] && END=$(python3 -I -c "import math, time; print(math.ceil(time.time() + $SECS))")
 
 if [ -n "$AUTO" ]; then
@@ -362,7 +481,7 @@ if [ -n "$AUTO" ]; then
 fi
 
 rc=0
-REOPENS=0
+REOPENS=0; BACKOFFS=0
 while :; do
   REMAIN=0
   if [ -n "$END" ]; then
@@ -405,8 +524,9 @@ while :; do
   WPID=$!
   note_pids
 
-  T_SEG=$SECONDS; LOCKED=; SWITCH=; REOPEN=; ENDED=
+  T_SEG=$SECONDS; LOCKED=; SWITCH=; REOPEN=; ENDED=; ERR_SEG=0
   while kill -0 "$WPID" 2>/dev/null; do
+    [ $((SECONDS - T_JPOLL)) -ge 3 ] && errno_poll
     if [ -z "$LOCKED" ] && [ -e "$FIFODIR/locked" ]; then
       LOCKED=1
       say "segment $SEG: $WWV_KHZ kHz LOCKED after $((SECONDS - T_SEG)) s"
@@ -451,6 +571,7 @@ while :; do
       wait "$RPID" || true
       RPID=
     fi
+    errno_poll flush
     if [ -z "$REOPEN" ]; then
       HISTORY+=("segment $SEG: $WWV_KHZ kHz, $((SECONDS - T_SEG)) s, $st${ENDED:+, $ENDED}")
       [ -n "$ENDED" ] && say "segment $SEG: $ENDED; stopped"
@@ -463,9 +584,24 @@ while :; do
       say "REOPEN: $REOPENS reopens, more than --reopen-max $REOPEN_MAX; ending the run"
       rc=4; break
     fi
+    # Back off before a reopen the vendor service caused (it crashed and systemd restarted
+    # it, or it logged errno=12): those came in clusters, and reopening at once fed them.
+    CRASHY=
+    [[ $REOPEN == "sdrplay.service restarted"* ]] && CRASHY="the service restarted"
+    [ "$ERR_SEG" -gt 0 ] && CRASHY="${CRASHY:+$CRASHY, }$ERR_SEG errno=12 lines in the segment"
+    if [ -n "$CRASHY" ] && [ "$BACKOFF_SECS" != 0 ]; then
+      if [ $((SECONDS - T_SEG)) -ge "$BACKOFF_RESET_SECS" ]; then BACKOFFS=0; fi
+      w=$BACKOFF_SECS
+      for ((i = 0; i < BACKOFFS && w < BACKOFF_MAX; i++)); do w=$((w * 2)); done
+      [ "$w" -gt "$BACKOFF_MAX" ] && w=$BACKOFF_MAX
+      BACKOFFS=$((BACKOFFS + 1))
+      say "BACKOFF: waiting $w s before the reopen ($CRASHY; crash reopen $BACKOFFS in a row)"
+      t0=$SECONDS
+      while [ $((SECONDS - t0)) -lt "$w" ] && ! past_end; do sleep 1 & wait $! || true; done
+    fi
     if past_end; then say "--secs reached; not reopening"; break; fi
     svc_ready
-    sdrplay_compact
+    mem_wait "reopen $REOPENS"
     SEG=$((SEG + 1))
     say "REOPEN: opening the stream again on $WWV_KHZ kHz as segment $SEG (reopen $REOPENS of at most $REOPEN_MAX)"
     continue
