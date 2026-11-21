@@ -82,8 +82,18 @@ extern "C" {
  *   sent P read as 1  10/157 pooled (6.4%); worst run 5/42 (11.9%): a long pulse
  *                     read one class short, the mechanism behind a 1 read as 0
  * Nominal: the pooled rates (p01 0.78% -> 0.01; p10 = 1 -> 0 and P -> 1 pooled,
- * 18/540 = 3.3% -> 0.03). Pessimistic: at least twice the worst run and above its
- * 95% upper bound (p01 0.07 >= 2 x 3.3%; p10 0.15 >= 2 x 6.8%, above P -> 1 11.9%).
+ * 18/540 = 3.3% -> 0.03). Pessimistic p01: 0.07, at least twice the worst run and
+ * above its 95% upper bound (2 x 3.3%, 6.4%).
+ * Pessimistic p10: 0.10. That is above the worst run's 6.8% but below twice it
+ * (13.6%) and below its 95% upper bound (12.4%), so the floor alone does not cover
+ * that run's worst case. What 0.10 rests on is the chain's own estimate (below) and
+ * these measurements, 0 CONFIRMED wrong in each (tests/sim_wwv_time_decoder.c,
+ * 5000 chains of 30 minutes; the CTest Slow cases): two and three times the worst
+ * air run; the live run's rates and twice them; a sent 1 read as 0 at 12.4% with
+ * every P read right, so the P seconds raise nothing; and 1 -> 0 stepping from 2%
+ * to 12.4% at minute 4, 8, 12 or 15, so the chain's estimate lags the step. And
+ * the 17 live replays of 2026-11-20/21 (tests/air/replay_events): 0 wrong. The cost
+ * of 0.15 was one or more minutes to CONFIRMED on most of them (NOTES.md).
  * Prior weight: the 0 -> 1 rate varies between runs as a Beta prior of weight 66
  * would; 50 leaves room for more variation between frames than between runs.
  *
@@ -91,7 +101,7 @@ extern "C" {
  * (90 minutes) read a sent 0 as 1 in 14.4%, a 1 as 0 in 15.0%, and P as 1 or 0 in
  * 20.9%, with 0 -> 1 between 10.7% and 21.4% per 10-minute block. A model that
  * trusts a symbol more than the signal deserves lowers the effective CONFIRMED
- * margin: at live rates the fixed 0.07 / 0.15 gave about 9 nats of ln 10^6, at
+ * margin: at live rates a fixed 0.07 / 0.15 gave about 9 nats of ln 10^6, at
  * twice them 4. So each chain raises them to its own evidence: the reserved
  * seconds sample 0 -> 1 without bias (14.3% live, 14.4% at the data seconds), and
  * a P read short is the 1 -> 0 failure on a longer pulse: P read 1 or 0 against
@@ -101,7 +111,7 @@ extern "C" {
 #define WWV_TD_DEFAULT_P01          0.01f
 #define WWV_TD_DEFAULT_P10          0.03f
 #define WWV_TD_DEFAULT_P01_PESSIMISTIC 0.07f
-#define WWV_TD_DEFAULT_P10_PESSIMISTIC 0.15f
+#define WWV_TD_DEFAULT_P10_PESSIMISTIC 0.10f
 #define WWV_TD_DEFAULT_P01_PRIOR_WEIGHT 50.0f
 #define WWV_TD_DEFAULT_DECODED      2.302585f   /* ln 10 */
 /* CONFIRMED: the margin is checked every minute, so over a chain a wrong value can

@@ -81,8 +81,17 @@ add_test(NAME wwv_time_decoder_sim_xlive CONFIGURATIONS Slow
          COMMAND sim_wwv_time_decoder chains=5000 seed=72 p01=0.14 p10=0.15 pP1=0.15 pP0=0.06 erase=0.09 mid=0.30 label=xlive)
 add_test(NAME wwv_time_decoder_sim_xlive2 CONFIGURATIONS Slow
          COMMAND sim_wwv_time_decoder chains=5000 seed=71 p01=0.28 p10=0.30 pP1=0.30 pP0=0.12 erase=0.18 mid=0.45 label=xlive2)
+# The pessimistic p10 floor (0.10) is below the worst air run's 95% upper bound for
+# 1 -> 0 (12.4%), so the gate also runs at that rate with every P read right (the P
+# seconds raise nothing), and with 1 -> 0 stepping from 2% to 12.4% at minute 12, so
+# the chain's estimate lags the step.
+add_test(NAME wwv_time_decoder_sim_p10ub CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=21 p01=0.066 p10=0.124 pP1=0 pP0=0 erase=0.25 mid=0.12 label=p10ub)
+add_test(NAME wwv_time_decoder_sim_p10step CONFIGURATIONS Slow
+         COMMAND sim_wwv_time_decoder chains=5000 seed=31 p01=0.066 p10=0.02 p10b=0.124 step=12 pP1=0 pP0=0 erase=0.25 mid=0.12 label=p10step)
 set_tests_properties(wwv_time_decoder_sim_x2 wwv_time_decoder_sim_x3
                      wwv_time_decoder_sim_xlive wwv_time_decoder_sim_xlive2
+                     wwv_time_decoder_sim_p10ub wwv_time_decoder_sim_p10step
                      PROPERTIES LABELS slow TIMEOUT 3000)
 
 # Frame replay: re-runs the BTIME state machine on a wwv_live --frames record (or

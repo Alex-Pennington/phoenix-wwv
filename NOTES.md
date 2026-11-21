@@ -421,7 +421,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 - **CONFIRMED now needs 10-12 minutes on a measured-rate signal, and the ten-minute captures
   no longer CONFIRM the time of day or date.** The error model is the measured one (nominal
-  p01 0.01, p10 0.03; pessimistic 0.07 / 0.15; prior weight 50) and the CONFIRMED margin is
+  p01 0.01, p10 0.03; pessimistic 0.07 / 0.15, the p10 floor since lowered to 0.10 (below);
+  prior weight 50) and the CONFIRMED margin is
   ln 10^6 (`include/wwv_time_decoder.h`). In `tests/sim_wwv_time_decoder.c` the old gate (ln
   10^4) confirmed wrong in 7 of 5000 chains at three times the worst run's rates, and in 1 of
   5000 at twice; the ctest Monte Carlo's 160 chains never showed it. ln 10^6 gives 0 in 15000
@@ -436,8 +437,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   another such case before the BTIME fix. In the random-chain test, DECODED wrong is 609 of 7200
   minutes at the worst run's rates and three times them.
 - **The pessimistic rates adapt up only.** The pessimistic p01 and p10 are pooled over the
-  chain's reserved seconds and P seconds and never go below 0.07 / 0.15, so a clean chain is
-  judged as before (the air runs and the measured-rate simulation are unchanged). The nominal
+  chain's reserved seconds and P seconds and never go below 0.07 / 0.10 (0.07 / 0.15 when this
+  was written), so a clean chain is judged as before (the air runs and the measured-rate simulation are unchanged). The nominal
   p01 is still per frame. A fade that raises the 0 -> 1 rate only in data seconds is not seen
   by the reserved seconds; on the live run the two rates agree (14.3% / 14.4%).
 - **The pessimistic p10 rests on a proxy.** A sent 1 has no unbiased sample, so the decoder
@@ -535,8 +536,30 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     faster, unless each chain measures its own rate. It cannot: P seconds read as a 150-249 ms 0
     fall below sent 1s read that way on 5 of 12 runs (run90g seg2 9.2% against 15.2%), where the
     present proxy (P read short at any width) is above the 1 -> 0 rate on all 12.
-  - **Not changed.** What remains is the pessimistic p10 floor, which is the false-confirm gate:
-    lowering it trades margin for time as lowering ln 10^6 does. The sim figures are below.
+  - **Changed (fix/wwv-confirm-time): the pessimistic p10 floor is 0.10, was 0.15.** What
+    remains is that floor, and it is part of the false-confirm gate: lowering it trades margin
+    for time as lowering ln 10^6 does. The coordinator ruled it an engineering threshold, to be
+    lowered only if every gate stays at 0 wrong. The floor is also the prior mean of the
+    chain's p10 estimate, so it lowers that estimate early in a chain too. 0.10 is below
+    twice the worst air run's 1 -> 0 (13.6%) and below its 95% upper bound (12.4%); the
+    header gives what it rests on instead. Gates at 0.10 (5000 chains of 30 minutes each, 0
+    CONFIRMED wrong in every one): CTest Slow x2, x3, xlive, xlive2 (figures in the next
+    bullet); 1 -> 0 at 12.4% with P read right, seeds 21 / 31: time of day median 17 / 17,
+    p90 24 / 23 minutes; 1 -> 0 stepping from 2% to 12.4% at minute 4 / 8 / 12 / 15 (seed 31):
+    median 16 / 16 / 15 / 15, p90 22 / 21 / 20 / 20. The 12.4% case (seed 21) and the step at
+    minute 12 are CTest Slow cases (`wwv_time_decoder_sim_p10ub`, `_p10step`). The 17 live
+    replays: 0 wrong; run_air.sh: FALSE CONFIRM 0 on all four captures, and saga plain now
+    CONFIRMS its time of day once, right. Time to CONFIRMED, time of day / date (s), 0.15 ->
+    0.10: run90 1919 -> 1439 / 1259 -> 1259, run90c 894 -> 774 / 954 -> 894, run90d 843 -> 723
+    / 1023 -> 903, runF 890 -> 831 / 831 -> 711, runF seg2 788 -> 728 / 848 -> 728, runF seg5
+    917 -> 917 / 1037 -> 977, runF seg6 1184 -> 1124 / 1424 -> 1364, runF3 seg7 1097 -> 1037 /
+    1097 -> 1097, runN1 712 -> 652 / -; run3h and run90f unchanged. In the simulator at clean
+    rates (p01 2%, p10 4%, P 5%; 2000 chains) the median does not move (time of day 11, date 13
+    -> 12) and the p90 falls one or two minutes.
+  - **What the 0.10 floor does not cover.** A site where a sent 1 reads 0 well above 12.4% while
+    its P seconds read right: nothing in the chain raises p10 there. The simulator covers 12.4%,
+    not beyond it. On all 12 replays with frames, P read short is at or above the measured
+    1 -> 0 rate.
 - `tests/test_chain_synth.c` does not run the decoder: its 125 s signal holds two frames, fewer
   than CONFIRMED needs.
 - The commit "Tests: WWV time decoder on clean, corrupted and WWVB-layout frames" gives two
