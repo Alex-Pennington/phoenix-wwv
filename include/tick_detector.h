@@ -68,7 +68,9 @@ typedef void (*tick_callback_fn)(const tick_event_t *event, void *user_data);
 /* Timing calibration constants (WWV spec + empirical measurements) */
 #define TICK_ACTUAL_DURATION_MS    5.0f     /* WWV spec: 5ms pulse */
 #define MARKER_ACTUAL_DURATION_MS  800.0f   /* WWV spec: 800ms pulse */
-#define TICK_FILTER_DELAY_MS       3.0f     /* Filter group delay (2.55ms Hann + 0.32ms Butterworth + 0.13ms decimation) */
+#define TICK_FILTER_DELAY_MS       3.0f     /* Empirical: kiwi plain tick-path marker leading edges read
+                                               -1.8..+2.1 ms from :00 with it. Not a sum of delays (the sync
+                                               filter alone is 1.50 ms at 1000 Hz). */
 
 typedef struct {
     int marker_number;

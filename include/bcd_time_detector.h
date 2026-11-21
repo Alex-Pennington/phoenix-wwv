@@ -75,7 +75,10 @@ extern "C" {
 
 /* Pulse classification thresholds (same as existing bcd_decoder) */
 #define BCD_TIME_PULSE_MIN_MS       100.0f  /* Ignore pulses shorter than this */
-#define BCD_TIME_PULSE_MAX_MS       1000.0f /* Ignore pulses longer than this */
+/* An event that starts on the low level up to 250 ms before a second and runs
+ * through that second's P (high to about +850 ms) is up to 1100 ms long. At 1000
+ * it was rejected and the P left no event and no trailing edge. */
+#define BCD_TIME_PULSE_MAX_MS       1100.0f /* Ignore pulses longer than this */
 
 /*============================================================================
  * Detector State (opaque to caller)

@@ -14,6 +14,9 @@
  * 5. A candidate, then the marker detector's own event for the same minute: one
  *    confirmation, the anchor taken from the marker.
  * 6. Holdover expired (RECOVERING): a candidate on the retained phase re-locks.
+ * 7. Whole seconds off while LOCKED: only the end reading counts. A run that
+ *    starts on a tick 4 s off keeps the phase; an end reading 1 s + 50 ms off
+ *    sends sync to RECOVERING.
  */
 #include <stdio.h>
 #include <math.h>
@@ -132,6 +135,28 @@ int main(void) {
     candidate(sd, t, 20.0f);
     idle(sd, t + 950.0f, t + 2000.0f);
     check(sync_detector_get_state(sd) == SYNC_LOCKED, "recovery: a candidate on the retained phase re-locks");
+    sync_detector_destroy(sd);
+
+    /* 7. Whole seconds off. Locked at 0.4/60.4/120.4 s. A tick-path run that
+     *    starts on a tick 4 s before :00 and runs into noise for 128 ms (kiwi agc
+     *    on the tick-gate branch): its start reading is 4 s + 59 ms off, its end
+     *    reading 682 ms off a second. It must not touch the held phase. A
+     *    hidden-start marker whose end reading is 1 s + 50 ms off (run90d's loss)
+     *    must still send sync to RECOVERING. */
+    sd = sync_detector_create(NULL);
+    for (int m = 0; m < 3; m++) {
+        marker(sd, 400.0f + 60000.0f * m);
+        idle(sd, 3650.0f + 60000.0f * m, 60400.0f + 60000.0f * m);
+    }
+    idle(sd, 180400.0f, 236000.0f);
+    sync_detector_marker_candidate(sd, 236459.0f, 235778.0f, "CANDT");
+    idle(sd, 236600.0f, 238000.0f);
+    check(sync_detector_get_state(sd) == SYNC_LOCKED && sync_detector_get_phase_resets(sd) == 0,
+          "whole seconds: a run starting on a tick 4 s off keeps the phase LOCKED");
+    sync_detector_marker_candidate(sd, 300400.0f - 1050.0f + 350.0f, 300400.0f - 1050.0f, "CANDT");
+    idle(sd, 299500.0f, 300000.0f);
+    check(sync_detector_get_state(sd) == SYNC_RECOVERING && sync_detector_get_phase_resets(sd) == 1,
+          "whole seconds: an end reading 1 s + 50 ms off sends sync to RECOVERING");
     sync_detector_destroy(sd);
 
     printf(fails ? "FAILED (%d)\n" : "PASSED\n", fails);

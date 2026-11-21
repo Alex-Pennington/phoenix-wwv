@@ -59,8 +59,8 @@ typedef struct {
     int marker_number;
     float timestamp_ms;             /* When the detector fired (end of the 1 s window excursion) */
     float since_last_marker_sec;
-    float accumulated_energy;
-    float peak_energy;
+    float accumulated_energy;       /* Peak of the 1 s window sum over the run */
+    float peak_energy;              /* 1000 Hz bucket energy of the run's last frame */
     float duration_ms;              /* Estimated pulse length, window stretch removed.
                                        Unreliable when the window sum barely clears the
                                        threshold (weak or faded markers). */
