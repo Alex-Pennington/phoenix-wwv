@@ -765,11 +765,16 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
                source, lead_a_ms, lead_b_ms);
         /* A whole number of seconds off: the held phase may be right modulo 1 s
          * and seconds off (a loss of n s + d that the tracker followed as d). It
-         * cannot be told which is wrong, so the phase is not trusted. */
+         * cannot be told which is wrong, so the phase is not trusted. Only the
+         * end reading counts: a tick-path run that starts on a tick and runs into
+         * noise has its start reading on a whole second by construction (kiwi
+         * agc on the tick-gate branch: a 128 ms run at 462469 ms, start reading
+         * 4 s + 59 ms off, end reading 682 ms off a second, sent a right phase to
+         * RECOVERING for 6 s). A hidden-start marker that ends on time, the case
+         * this is for, carries the loss in its end reading. */
         if (sd->state == SYNC_LOCKED) {
-            for (int i = 0; i < 2; i++) {
-                float since = leads[i] - sd->minute_anchor_ms;
-                if (roundf(since / MARKER_NOMINAL_MS) < 1.0f) continue;
+            float since = lead_b_ms - sd->minute_anchor_ms;
+            if (roundf(since / MARKER_NOMINAL_MS) >= 1.0f) {
                 float off = minute_wrap(since);
                 float k = roundf(off / 1000.0f);
                 if (fabsf(k) >= 1.0f && fabsf(k) <= 5.0f &&
@@ -778,7 +783,7 @@ void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float 
                     snprintf(why, sizeof why, "candidate %s %+.0f s off", source, k);
                     sd->phase_stats.candidate_seconds++;
                     sd->phase_resets++;
-                    enter_phase_unknown(sd, leads[i], why);
+                    enter_phase_unknown(sd, lead_b_ms, why);
                     return;
                 }
             }
