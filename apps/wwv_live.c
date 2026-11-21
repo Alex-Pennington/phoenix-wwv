@@ -17,6 +17,11 @@
  * the one rsp2_stream.py measured before its hold line (see there), read when the
  * 10 s refinement ends.
  *
+ * Clock: once the decoder has CONFIRMED the time of day, every CONFIRMED frame
+ * gives a CLOCK line (stdout, --log, and CONS,CLOCK on UDP): UTC of that minute's
+ * start less the host's reckoning of it from the anchor, with its sigma
+ * (wwv_clock_report.h, docs/WWV_LIVE.md).
+ *
  * Gaps: rsp2_stream.py fills samples lost upstream with zeros, so the sample count
  * stays on true time. A run of at least GAP_MIN_S of exact zero samples (s16 or
  * f32) is such a fill: it is passed to wwv_detector_manager_mark_gap() before it is
@@ -50,6 +55,7 @@
 #include "bcd_internal.h"
 #include "iq_frontend.h"
 #include "telemetry.h"
+#include "wwv_clock_report.h"
 #include "version.h"
 
 /*============================================================================
@@ -102,6 +108,7 @@ typedef struct {
     const char *frames_path;
     double status_s;
     bool tones;
+    double band_khz;            /* --band-khz, for the CLOCK line; 0 when not given */
 } options_t;
 
 static volatile sig_atomic_t g_stop = 0;
@@ -143,6 +150,9 @@ typedef struct {
     bool have_td;
     wwv_td_result_t td;
     double td_at_ms;
+
+    wwv_clock_anchor_t clock_anchor;   /* the anchor as the CLOCK line takes it */
+    wwv_clock_report_t clock;
 } app_t;
 
 static app_t A;
@@ -249,6 +259,14 @@ static void obs_time(const wwv_td_result_t *r, void *u) {
         double tod = r->hour * 3600.0 + r->minute * 60.0;
         double d = fmod(fmod(sys, 86400.0) - tod + 86400.0 * 1.5, 86400.0) - 43200.0;
         printf("         system clock at the decoded minute's start: %+.3f s\n", d);
+    }
+    char line[512];
+    if (wwv_clock_report(&A.clock, &A.clock_anchor, wwv_detector_manager_get_sync_detector(A.mgr), r,
+                         now_unix(), line, sizeof line) > 0) {
+        fputs(line, stdout);
+        if (A.log) { fputs(line, A.log); fflush(A.log); }
+        telem_sendf(TELEM_CONSOLE, "CLOCK,%s", line + strlen("CLOCK "));
+        fflush(stdout);
     }
 }
 static void obs_sync(sync_state_t o, sync_state_t n, float c, void *u) {
@@ -362,12 +380,23 @@ static void disp_sample(float i, float q, void *u) {
 
 #define ANCHOR_REFINE_S 10.0
 
-/* Set the anchor (UTC of input sample 0), log it, send it, write --timebase */
-static void set_anchor(double sample0_unix, const char *how) {
+/* Set the anchor (UTC of input sample 0), log it, send it, write --timebase.
+ * src names it for the CLOCK line (rsp2_stream, wwv_live, t0); NULL while the
+ * anchor is still refining, which the CLOCK line never uses. */
+static void set_anchor(double sample0_unix, const char *how, const char *src) {
     double gd = iq_frontend_group_delay_s(A.fe);
     A.anchor_unix = sample0_unix;
     A.utc0 = A.anchor_unix - gd;
     A.anchored = true;
+    A.clock_anchor = (wwv_clock_anchor_t){ .set = src != NULL, .in_sample0_unix = sample0_unix,
+                                           .group_delay_ms = gd * 1000.0, .band_khz = A.opt.band_khz };
+    if (src) {
+        snprintf(A.clock_anchor.source, sizeof A.clock_anchor.source, "%s", src);
+        /* for tests/air/replay_events, which then prints the CLOCK lines too */
+        if (A.log)
+            fprintf(A.log, "ANCHOR in_sample0_unix=%.6f group_delay_ms=%.6f band_khz=%g source=%s\n",
+                    sample0_unix, gd * 1000.0, A.opt.band_khz, src);
+    }
     char a[40], c[40];
     fmt_utc(A.anchor_unix, a, sizeof a, 6);
     fmt_utc(A.utc0, c, sizeof c, 6);
@@ -416,10 +445,10 @@ static void time_block(size_t n, double arrival) {
         if (A.opt.have_t0) {
             char how[64];
             snprintf(how, sizeof how, "--t0 %.6f", A.opt.t0);
-            set_anchor(A.opt.t0, how);
+            set_anchor(A.opt.t0, how, "t0");
             return;
         }
-        set_anchor(d, "system clock at the first block minus its duration (refining)");
+        set_anchor(d, "system clock at the first block minus its duration (refining)", NULL);
         A.refining = true;
         A.lag_min_ms = 1e30; A.lag_max_ms = -1e30;
     }
@@ -436,14 +465,14 @@ static void time_block(size_t n, double arrival) {
                 snprintf(how, sizeof how, "rsp2_stream: least-delayed block over the first %.0f s, "
                          "before its %.3f s hold line", ANCHOR_REFINE_S, hold);
                 A.hold_s = hold;
-                set_anchor(s0, how);
+                set_anchor(s0, how, "rsp2_stream");
             } else {
                 if (A.opt.anchor_in_path)
                     fprintf(stderr, "wwv_live: --anchor-in %s: no anchor read; using this end's, which is "
                             "late by the producer's hold line\n", A.opt.anchor_in_path);
                 snprintf(how, sizeof how, "least-delayed block over the first %.0f s (arrival minus stream time)",
                          ANCHOR_REFINE_S);
-                set_anchor(A.anchor_unix, how);
+                set_anchor(A.anchor_unix, how, "wwv_live");
             }
         }
     }
@@ -746,6 +775,7 @@ static void usage(const char *p) {
         "                         7 kB/s; layout at write_frame() in apps/wwv_live.c)\n"
         "  -S, --status SECONDS   status line period in stream time (default 10)\n"
         "      --no-tones         skip the 12 kHz tone trackers\n"
+        "      --band-khz KHZ     the WWV carrier received, for the CLOCK line's band_khz\n"
         "  -h, --help\n", p);
 }
 
@@ -756,7 +786,7 @@ int main(int argc, char **argv) {
         {"input", 1, 0, 'i'}, {"format", 1, 0, 'f'}, {"rate", 1, 0, 'r'}, {"shift", 1, 0, 's'},
         {"scale", 1, 0, 'g'}, {"agc", 0, 0, 'a'}, {"udp-port", 1, 0, 'p'}, {"t0", 1, 0, 'T'},
         {"log", 1, 0, 'l'}, {"timebase", 1, 0, 'j'}, {"csv-dir", 1, 0, 'c'}, {"frames", 1, 0, 'F'}, {"status", 1, 0, 'S'},
-        {"no-tones", 0, 0, 'N'}, {"anchor-in", 1, 0, 'A'}, {"help", 0, 0, 'h'}, {0, 0, 0, 0}};
+        {"no-tones", 0, 0, 'N'}, {"anchor-in", 1, 0, 'A'}, {"band-khz", 1, 0, 'B'}, {"help", 0, 0, 'h'}, {0, 0, 0, 0}};
     int c;
     while ((c = getopt_long(argc, argv, "i:f:r:s:g:ap:T:l:j:c:F:S:h", lo, NULL)) != -1) {
         switch (c) {
@@ -779,6 +809,7 @@ int main(int argc, char **argv) {
             case 'S': A.opt.status_s = atof(optarg); break;
             case 'N': A.opt.tones = false; break;
             case 'A': A.opt.anchor_in_path = optarg; break;
+            case 'B': A.opt.band_khz = atof(optarg); break;
             default: usage(argv[0]); return c == 'h' ? 0 : 2;
         }
     }

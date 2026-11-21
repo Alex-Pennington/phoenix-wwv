@@ -1,7 +1,7 @@
 /* Event replay: runs a recorded air-harness log back through the chain's sync
  * detector, BCD correlator and time decoder.
  *
- *   replay_events harness_log.txt [console.txt] > replay.txt
+ *   replay_events [--anchor TIMEBASE.json] [--band-khz KHZ] harness_log.txt [console.txt] > replay.txt
  *
  * The input is a log written by wwv_chain_log (tests/air/harness_iq or wwv_live
  * --log). Its detector events (TICK, TMARK, MARK, BTIME, BFREQ) are fed, in log
@@ -26,7 +26,14 @@
  * "REJECTED: dur=" gap-zone and marker-interval lines, delivered at their end
  * time. Older consoles print that time to 0.1 s only (so the leads are +-50 ms);
  * consoles with an end= field give it exactly. The marker detector's short runs
- * were not printed before, so they cannot be rebuilt. */
+ * were not printed before, so they cannot be rebuilt.
+ *
+ * CLOCK lines: with an anchor, each CONFIRMED decoder result gives the CLOCK line
+ * wwv_live prints (wwv_clock_report.h), after its TDRES. The anchor is the log's
+ * last ANCHOR line (wwv_live writes one when its anchor is fixed), or --anchor, a
+ * wwv_live --timebase file (in_sample0_unix, frontend_group_delay_ms), which
+ * overrides it. t_unix is the anchor's reckoning of the decode's stream time (a
+ * replay has no host time of its own). Without an anchor there is no CLOCK line. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +44,7 @@
 #include "manager/wwv_detector_manager_internal.h"
 #include "wwv_chain_log.h"
 #include "telemetry.h"
+#include "wwv_clock_report.h"
 
 /* ---- telemetry interposition (as harness_iq) ---- */
 bool telem_init(int port) { (void)port; return true; }
@@ -58,6 +66,42 @@ void telem_console_flush(void) {}
 
 static wwv_detector_manager_t *mgr;
 static double next_check = 0.0;
+
+/* ---- CLOCK lines ---- */
+static wwv_clock_anchor_t clock_anchor;
+static bool clock_anchor_fixed;          /* --anchor: ANCHOR lines in the log do not replace it */
+static wwv_clock_report_t clock_state;
+static wwv_detector_observer_t log_obs;
+
+static void on_time_clock(const wwv_td_result_t *r, void *u) {
+    if (log_obs.on_time) log_obs.on_time(r, u);
+    char line[512];
+    double t = clock_anchor.in_sample0_unix + (wwv_detector_manager_get_now_ms(mgr) - clock_anchor.group_delay_ms) / 1000.0;
+    if (wwv_clock_report(&clock_state, &clock_anchor, mgr->sync_detector, r, t, line, sizeof line) > 0)
+        fputs(line, stdout);
+}
+
+/* --anchor: a wwv_live --timebase JSON */
+static bool read_timebase(const char *path, wwv_clock_anchor_t *a) {
+    FILE *f = fopen(path, "r");
+    if (!f) { perror(path); return false; }
+    char buf[4096];
+    size_t k = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[k] = '\0';
+    const char *s0 = strstr(buf, "\"in_sample0_unix\":"), *gd = strstr(buf, "\"frontend_group_delay_ms\":");
+    const char *how = strstr(buf, "\"anchor\": \"");
+    if (!s0 || !gd) { fprintf(stderr, "%s: no in_sample0_unix / frontend_group_delay_ms\n", path); return false; }
+    a->in_sample0_unix = strtod(s0 + strlen("\"in_sample0_unix\":"), NULL);
+    a->group_delay_ms = strtod(gd + strlen("\"frontend_group_delay_ms\":"), NULL);
+    /* the source is the anchor description's first word: "rsp2_stream: ...", "least-delayed ..." */
+    const char *src = "wwv_live";
+    if (how && strncmp(how + strlen("\"anchor\": \""), "rsp2_stream", 11) == 0) src = "rsp2_stream";
+    else if (how && strncmp(how + strlen("\"anchor\": \""), "--t0", 4) == 0) src = "t0";
+    snprintf(a->source, sizeof a->source, "%s", src);
+    a->set = a->in_sample0_unix > 0.0;
+    return a->set;
+}
 
 /* Run every periodic check strictly before t, as the manager would. */
 static void advance_to(double t) {
@@ -123,7 +167,23 @@ static bool field(const char *line, const char *key, double *v) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s harness_log.txt [console.txt]\n", argv[0]); return 2; }
+    double band_khz = 0.0;
+    const char *anchor_path = NULL, *prog = argv[0];
+    while (argc > 2 && strncmp(argv[1], "--", 2) == 0) {
+        if (!strcmp(argv[1], "--anchor")) anchor_path = argv[2];
+        else if (!strcmp(argv[1], "--band-khz")) band_khz = atof(argv[2]);
+        else break;
+        argv += 2; argc -= 2;
+    }
+    if (argc < 2 || argv[1][0] == '-') {
+        fprintf(stderr, "usage: %s [--anchor TIMEBASE.json] [--band-khz KHZ] harness_log.txt [console.txt]\n", prog);
+        return 2;
+    }
+    if (anchor_path) {
+        if (!read_timebase(anchor_path, &clock_anchor)) return 2;
+        clock_anchor_fixed = true;
+    }
+    clock_anchor.band_khz = band_khz;
     FILE *fp = fopen(argv[1], "r");
     if (!fp) { perror(argv[1]); return 2; }
     /* A log with CANDT lines carries its own candidates */
@@ -143,7 +203,9 @@ int main(int argc, char **argv) {
     mgr = wwv_detector_manager_create(&cfg);
     if (!mgr) { fprintf(stderr, "detector manager create failed\n"); return 2; }
     wwv_chain_log_t *log = wwv_chain_log_create(stdout, mgr);
-    const wwv_detector_observer_t obs = wwv_chain_log_observer(log);
+    log_obs = wwv_chain_log_observer(log);
+    wwv_detector_observer_t obs = log_obs;
+    obs.on_time = on_time_clock;
     wwv_detector_manager_set_observer(mgr, &obs);
     printf("CONFIG REPLAY=%s%s%s candidates=%d\n", argv[1], n_cands ? " CONSOLE=" : "",
            n_cands ? argv[2] : "", n_cands);
@@ -220,6 +282,17 @@ int main(int argc, char **argv) {
         } else if (strncmp(line, "GAP ", 4) == 0 && field(line, "start", &t) && field(line, "len", &d)) {
             /* a filled gap: marked where wwv_live marked it, before the span's events */
             wwv_detector_manager_mark_gap(mgr, t, d);
+        } else if (strncmp(line, "ANCHOR ", 7) == 0 && !clock_anchor_fixed &&
+                   field(line, "in_sample0_unix", &t) && field(line, "group_delay_ms", &d)) {
+            clock_anchor.in_sample0_unix = t;
+            clock_anchor.group_delay_ms = d;
+            double b = 0.0;
+            if (field(line, "band_khz", &b) && b > 0.0 && band_khz <= 0.0) clock_anchor.band_khz = b;
+            const char *src = strstr(line, " source=");
+            char sbuf[32] = "wwv_live";
+            if (src) sscanf(src + 8, "%31s", sbuf);
+            snprintf(clock_anchor.source, sizeof clock_anchor.source, "%s", sbuf);
+            clock_anchor.set = t > 0.0;
         } else if (strncmp(line, "END ", 4) == 0) {
             double s;
             if (field(line, "samples", &s)) end_ms = s / 50.0;   /* 50 kHz */

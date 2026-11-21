@@ -268,6 +268,18 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Sync and correlator
 
+- **Open: PHASE_LEAD_* against measured edge leads** (feat/wwv-antenna-clock). The tracker takes
+  tick edges to sit `PHASE_LEAD_TICK_MS` (15 ms) and BCD time-pulse starts `PHASE_LEAD_BTIME_MS`
+  (30 ms) after the true second. Measured medians of the edges against the second:
+  - `tests/live/wwv_synth.py` (exact true second, no radio path): ticks +12.6 ms (n 792), BCD
+    starts +36.3 ms (n 882);
+  - the GPS-timed kiwi capture (`tests/air/run_air.sh`, plain and agc): ticks +21.4 / +19.8 ms,
+    about +20.6, and BCD starts +46.1 / +46.4 ms. These include the kiwi receiver's radio path
+    from Fort Collins, which is not known, so they bound the leads but do not give them.
+  Not changed: the constants drive the phase tracker, and this is a sync calibration item of its own.
+  The CLOCK line uses them as they are and carries the difference in its sigma
+  (`PHASE_LEAD_SIGMA_TICK_MS` 3 ms, `PHASE_LEAD_SIGMA_BTIME_MS` 10 ms): on the synthetic stream it
+  reads 1.4..3.6 ms above the true anchor error.
 - **`sync_detector_full_reset()` clears the anchor** (fix/wwv-reset-guards): `last_confirmed_ms`,
   `prev_confirmed_ms`, `last_rejected_ms`, `last_confirm_weak`, `minute_anchor_ms`,
   `phase_support_ms` and `good_intervals`. Run totals (`confirmed_count`, `phase_epoch`,
