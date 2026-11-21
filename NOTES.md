@@ -403,17 +403,28 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     change mechanical. A sample index would need a conversion at every comparison with a ms
     constant. A double holds integers exactly to 2^53, far beyond any run.
   - **Detectors stamp an event from the frame count** with `wwv_frames_to_ms()`: an integer
-    multiply and one divide. `frame_count * FRAME_DURATION_MS` drifted with run length, because
-    5.12f is 2.2e-8 off (3 ms at 40 h).
+    multiply and one divide in double. The old `frame_count * FRAME_DURATION_MS` converted the
+    count to float and rounded the product to float, so its error was the float step, 16 ms at
+    40 h. The constant's own error (5.12f is 2.2e-8 off) is 3 ms at 40 h, under that step.
   - **Durations and offsets inside a second or a minute stay float** (pulse widths, edge offsets,
     `pulse_offset_ms`). Their difference is taken in double first. `minute_wrap()` and
-    `second_wrap()` in sync take a double, because during holdover an edge's offset from the held
-    anchor is the difference of two stream times hours apart.
+    `second_wrap()` in sync take a double. `second_wrap()`'s argument, an edge less the held
+    anchor, is taken only while LOCKED, so it stays under 20 min (`SYNC_HOLDOVER_MS`,
+    `src/sync/sync_detector.c:50`). A float would do there; double is kept for uniformity.
+    `minute_wrap()` reaches about 80 min in recovery: an anchor up to 20 min old at the loss, then
+    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has no bound, because
+    `sync_detector_full_reset()` keeps `last_confirmed_ms`.
   - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
     routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
     tracker's counts) are identical. The float chain fails it at the third line: a minute start
     7.9 ms off.
+  - **`tests/test_detector_offset.c` runs the tick, marker and BCD detectors on 125 s of samples**
+    from a frame count of 20 x 1024 ms and from that plus 40 h. All 267 event stamps of the 40 h
+    run are the base run's plus exactly 144,000,000 ms. With `wwv_frames_to_ms()` returning float,
+    255 of 267 miss, by up to 7.69 ms. Both runs start past the startup guards
+    (`MARKER_MIN_STARTUP_MS`, `BCD_FREQ_MIN_STARTUP_MS`). Those key on stream time from 0, not
+    frames since start, so a detector started at a later frame count skips them.
   - **Measured against the float chain, at short run times:** on the four captures the symbol
     sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
     ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
@@ -815,6 +826,23 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   setting for Alex: a larger `vm.min_free_kbytes`, `vm.compaction_proactiveness`, or
   periodic compaction while streaming. Check the kernel log for xHCI errors too (none
   logged 05:50-06:31).
+- **Fragmentation survey, read-only, measured on saga 2026-11-21.** In `/proc/pagetypeinfo`'s
+  Normal zone, Unmovable and Reclaimable had 0 free order-9 and 0 free order-10 blocks, while
+  Movable had 48 free order-10 blocks. `compact_fail` was 97.9% of `compact_stall`. In
+  01:30-06:31 UTC every core dump of `sdrplay_apiService` followed a burst of up to 18 libusb
+  errno=12 lines. systemd restarted the service within about 1 s, so from 06:01 the crashes
+  looped in clusters every 1-3 min. The wrapper's compact-before-open did not prevent them. The
+  buffer order the service needs cannot be determined, because the service is closed-source.
+- **The order-9 Unmovable + Reclaimable wait is falsified (2026-11-21).** At 11:20 UTC, read with
+  `sudo -n cat /proc/pagetypeinfo`, the Normal zone's Unmovable and Reclaimable rows together had
+  0 free blocks at order 9 or above (46 at order 5 or above). Meanwhile wwv-runG ran from 09:58
+  with 0 errno=12 lines. So the service does not need an unmovable order-9 block, and a wait for
+  one is only delay. That the URB buffers are unmovable allocations was an inference and was
+  never measured. **The needed order is NOT DETERMINABLE until MEM lines from a crash exist.**
+  The wrapper now logs one MEM line (free blocks per order in the Unmovable, Reclaimable and
+  Movable rows) at every start, reopen and ERRNO12 burst. The wait is off by default
+  (`--mem-wait-secs 0`) and stays available as an option. The reopen backoff stays on
+  (docs/WWV_LIVE.md, *Memory compaction*). None of it is tested on the radio.
 
 ## Documentation
 

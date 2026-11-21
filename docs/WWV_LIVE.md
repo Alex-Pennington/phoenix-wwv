@@ -183,6 +183,93 @@ crashed on libusb `errno=12` (ENOMEM) during isochronous transfer submission, wi
 01:37-05:38 UTC on 2026-11-21. It logs `compacted memory before opening the RSP2`, or
 `memory compaction failed (continuing)`. `SDRPLAY_COMPACT=0` skips it.
 
+Compaction alone does not prevent the crashes. A read-only survey on 2026-11-21 found that
+the Normal zone's Unmovable and Reclaimable lists had no free order-9 or order-10 blocks, and
+that 97.9% of compaction stalls failed. See NOTES.md.
+
+**The free-block order the service needs is NOT DETERMINABLE yet.** The service is
+closed-source. A wait for an Unmovable or Reclaimable block at order 9 or above was tried and
+falsified the same day. At 11:20 UTC those two rows together had 0 free blocks at order 9 or
+above, while the validation run wwv-runG ran from 09:58 with no errno=12 at all. So the
+service does not need such a block, and at order 9 the wait was only delay. By default the
+wrapper now only observes: it logs a MEM line at every start, every reopen and every ERRNO12
+line. The state at a crash, compared with the state at a clean start, is the evidence for
+choosing an order. The wait stays available as an option. The wrapper also backs off between
+crash reopens.
+
+```
+scripts/wwv_rsp2_live.sh [--mem-wait-secs 0] [--mem-order 9] [--mem-recompact-secs 5]
+                         [--backoff-secs 5] [--backoff-max 120] [--backoff-reset-secs 600] ...
+```
+
+- **MEM lines.** Before every start of `sdrplay.service` (the first start, and the restart
+  before a scan retry) and before each reopen, the wrapper compacts once and then logs one MEM
+  line. It also logs one after every ERRNO12 line. The line gives the Normal zone's free
+  blocks at order 0 to 10 in the Unmovable, Movable and Reclaimable rows of
+  `/proc/pagetypeinfo`. It reads that file with `sudo -n cat`, because only root can read it
+  (mode 0400 on saga):
+
+  ```
+  [wwv_rsp2_live] 2026-11-21T11:40:55Z MEM: at the ERRNO12 burst: Normal zone free blocks at order 0-10: Unmovable 3473 296 466 724 289 44 0 1 0 96 22; Movable 12846 2184 398 2125 1445 421 15 0 0 0 0; Reclaimable 1081 408 11 11 0 1 0 0 0 0 0
+  ```
+
+  When `sudo -n cat` fails, the line reads
+  `MEM: ...: pagetypeinfo unreadable, using buddyinfo: Normal zone free blocks at order 0-10: all types ...`.
+  It then gives buddyinfo's Normal zone, which sums every migrate type. (These lines are from
+  the stub tests.)
+- **The memory wait (off by default).** With `--mem-wait-secs N` over 0, after the MEM line
+  the wrapper counts the free blocks at `--mem-order` or above in the Unmovable and
+  Reclaimable rows together. If there are none, it waits, compacting again every
+  `--mem-recompact-secs` (those re-compactions log nothing of their own). It goes ahead as soon
+  as a block shows, or after N s with a warning. It never waits past N or past `--secs`. With
+  pagetypeinfo unreadable, it counts the buddyinfo total instead.
+
+  ```
+  [wwv_rsp2_live] 2026-11-21T11:21:41Z MEMWAIT: no free block at order >= 9 (Unmovable + Reclaimable); waiting up to 2 s, compacting every 1 s
+  [wwv_rsp2_live] 2026-11-21T11:21:43Z MEMWAIT: WARNING: no free block at order >= 9 (Unmovable + Reclaimable) after 2 s (2 re-compactions); going ahead: ...
+  ```
+
+  Counting Unmovable and Reclaimable rests on an inference, not a measurement: that the
+  libusb URB buffers the service submits are unmovable kernel allocations.
+
+  Options:
+  - **`--mem-wait-secs N`** (default 0: observe only, no wait).
+  - **`--mem-order N`** (default 9; 0-10), the order the wait asks for. 9 is saga's pageblock
+    order, 2 MiB (`/sys/kernel/mm/transparent_hugepage/hpage_pmd_size` 2097152). The
+    falsification above shows it is too high a bar for the Unmovable and Reclaimable rows.
+  - **`--mem-recompact-secs N`** (default 5).
+  - **`WWV_BUDDYINFO=FILE`** and **`WWV_PAGETYPEINFO=FILE`** read other files in place of
+    `/proc/buddyinfo` and `/proc/pagetypeinfo`. The stub tests use them.
+- **ERRNO12 lines.** The vendor service logs libusb's
+  `[submit_iso_transfer] submiturb failed, errno=12` to `sdrplay.service`'s journal. Every 3 s
+  during a segment, and at the end of each segment and scan, the wrapper reads that journal
+  from where its last read ended. It logs each burst as one line with a count:
+
+  ```
+  [wwv_rsp2_live] 2026-11-21T10:40:34Z ERRNO12: 18 libusb errno=12 lines from sdrplay.service, 10:40:33-10:40:33 UTC
+  ```
+
+  A burst is the lines of consecutive reads that found some. When the journal cannot be read
+  (`journalctl` refused to the user), no ERRNO12 line appears.
+- **The reopen backoff.** A reopen waits first when `sdrplay.service` restarted under the
+  stream, or when the segment's journal had errno=12 lines, whatever the reopen's own reason.
+  The first such reopen waits `--backoff-secs`, and each one after it doubles the wait, up to
+  `--backoff-max`. A segment that ran `--backoff-reset-secs` starts the doubling over. Reopens
+  for other reasons (a stall, a hang, an exit 76) do not wait, and do not reset the doubling.
+  The backoff counts toward `--secs`. The reopen after it counts toward `--reopen-max` as
+  before. The backoff comes before the memory wait.
+
+  ```
+  [wwv_rsp2_live] 2026-11-21T10:40:42Z BACKOFF: waiting 4 s before the reopen (the service restarted, 18 errno=12 lines in the segment; crash reopen 3 in a row)
+  ```
+
+  - **`--backoff-secs N`** (default 5; 0: reopen at once, as before). systemd restarts the
+    service about 1 s after a crash, and reopening at once fed the clusters.
+  - **`--backoff-max N`** (default 120). The waits run 5, 10, 20, 40, 80, 120, 120 s and so on.
+    The cap is within the 1-3 min cluster interval. At `--reopen-max 20` the backoff adds at
+    most about 33 min to a run.
+  - **`--backoff-reset-secs N`** (default 600).
+
 ### Lost samples: the gap fill
 
 SoapySDRPlay3 0.5.3 passes on no sign of lost samples (it drops the API's
@@ -260,14 +347,19 @@ after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_strea
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
-7.5 minutes: 437 s on saga, 2026-11-21). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
-script refuses to run unless the PATH reaches them. Its cases cover each reopen reason
+8 minutes: 488 s on saga, 2026-11-21, 29 cases). The stubs in `tests/live/fakebin` stand in for
+`systemctl`, `sudo` and `journalctl`, and the script refuses to run unless the PATH reaches
+them. The stub `sudo` logs the memory compaction instead of running it, and each case reads
+its own fake buddyinfo (`WWV_BUDDYINFO`). Its cases cover each reopen reason
 (including the 76 exit), `--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto`
 scan going live and ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan,
 a scan that finds no band, a stuck scan and a failing API (the bound, the restart and the
 retry), rsp2_stream's stall exit and `behind wall clock` line, its gap fill (losses, an
 outage, a slow ramp, a loss too large), `wwv_live`'s handling of a fill on synthetic WWV, and
-the scan's `--keep-raw` round trip.
+the scan's `--keep-raw` round trip, and the memory wait (satisfied at once, after a delay,
+and past its bound, the buddyinfo fallback, and the survey's state, where only
+Unmovable decides), the MEM line (at the start, each reopen and each burst), one ERRNO12
+line per burst, and the backoff sequence (doubling, capped).
 
 ### Band
 

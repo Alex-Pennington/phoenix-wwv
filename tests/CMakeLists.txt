@@ -61,6 +61,12 @@ add_executable(test_stream_offset test_stream_offset.c)
 target_link_libraries(test_stream_offset PRIVATE phoenix_wwv m)
 add_test(NAME stream_offset COMMAND test_stream_offset)
 
+# Stream time at the detectors: the same samples at a 40 h frame count stamp exactly 40 h later
+add_executable(test_detector_offset test_detector_offset.c detector_offset_start_tick.c
+               detector_offset_start_marker.c detector_offset_start_bcd.c)
+target_link_libraries(test_detector_offset PRIVATE phoenix_wwv m)
+add_test(NAME detector_offset COMMAND test_detector_offset)
+
 add_executable(btime_frames air/btime_frames.c)
 target_link_libraries(btime_frames PRIVATE phoenix_wwv)
 
@@ -105,8 +111,9 @@ add_executable(btime_replay air/btime_replay.c)
 target_link_libraries(btime_replay PRIVATE phoenix_wwv)
 
 # The live wrapper (scripts/wwv_rsp2_live.sh) and rsp2_stream.py against stubs: no radio,
-# no sdrplay.service (tests/live/fakebin stands in for systemctl and sudo). 437 s measured on
-# saga 2026-11-21 (nice -n 19, 23 cases) against the TIMEOUT of 600 s. ctest -L live runs it alone.
+# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 488 s measured on
+# saga 2026-11-21 (nice -n 19, 29 cases) against the TIMEOUT of
+# 600 s. ctest -L live runs it alone.
 if(TARGET wwv_live)
     add_test(NAME live_wrapper_stubs
              COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh $<TARGET_FILE_DIR:wwv_live>
