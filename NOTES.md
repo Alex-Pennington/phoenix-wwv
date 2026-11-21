@@ -40,6 +40,15 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
       seconds, and erasures from 6.5% to 28.2% (the pulses it no longer starts have pulse/low
       1.45 at the median). A fallback that keeps the last low level, or a longer hold for it,
       is the next thing to measure. Not done.
+      - **Measured (fix/wwv-bcd-corr-cleanup), not changed.** On run90f (frame replay, main)
+        the pulse level is 0 at 141 of 377 mid starts, and the mid starts' pulse/low ratio is
+        1.51 at the median: no start threshold separates the pulse from the low level there.
+        Every fallback tried trades mid starts for erasures and loses right symbols on all
+        three frame runs (right/wrong, run90f / run90g2 / run3h): main 664/142, 827/226,
+        3471/210; low level kept and halved every 1 s 648/119, 757/219, 3367/203; kept 5 s
+        571/105, 651/173, 3177/197; kept with 1.4 x it 647/128, 754/218, 3077/190. With 1.6 or
+        1.8 x it run90f locks at 100% erasure: nothing starts, so no cooldown refreshes the
+        low level. Run90f time of day DECODED right falls from 18/19 to 16/18 or less.
     - **The "noise floor" is not noise.** It is a low percentile of the 100 Hz low level, so
       `BCD_TIME_THRESHOLD_MULT` x it tracks the low level, not the receiver noise.
   - **The detector's energy ripples with the 100 Hz phase.** Its 5.12 ms Hann-windowed FFT
@@ -54,6 +63,14 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     `tests/test_bcd_time_width.c`, a 12 dB step up just before :00 disturbs the next 5 seconds;
     a step down misses 2 seconds (the 2 s release). The test reports the 6 s after each step
     without checking them.
+- **A P carried from before its second was rejected as too long (fixed, fix/wwv-bcd-corr-cleanup).**
+  At saga 12:18:09 (both wirings) an event started on a low-level bump at -220 ms and ran
+  through the P to +815 ms: about 1035 ms, over `BCD_TIME_PULSE_MAX_MS` (1000). The detector
+  rejected it, so the P left no event and no trailing edge (NONE). The cap is now 1100 ms (a
+  start up to 250 ms early). Saga plain correct 444 -> 446, saga agc 429 -> 432; run3h 9
+  erasures become symbols, 6 right. An event that starts in the last 15 ms of a window and runs
+  the full 1100 ms now reports after that window's close latency and is dropped from it (a
+  mid-second window); its trailing edge is still noted.
 - **`bcd_freq` cannot detect per-second pulses.** It thresholds a 1 s sliding sum of 100 Hz
   energy at 3x a baseline that tracks that same sum. The subcarrier is present every second, so
   the sum barely moves. It fires only on the P-marker clusters: saga BFREQ events land at UTC
@@ -125,12 +142,30 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     records the detector's energy and thresholds per frame for the next live run. A detector-side
     fix (a start threshold set between the tracked low level and the pulse level) needs that
     evidence first.
+- **Fixed (fix/wwv-bcd-corr-cleanup): a trailing-edge width is a 0 up to 450 ms**
+  (`TRAIL_ZERO_MAX_MS`, `bcd_symbol_classify_trailing()`). Trailing-edge widths of sent 1s
+  start at 470-480 ms; sent 0s outnumber them in every 10 ms bin up to 460 ms. EDGE 0/1 errors
+  over six live replays and four captures: 202 at the 350 ms cut, 102 at 450. EDGE 0 -> 1 on
+  run90 / run90c / run3h: 156 / 11 / 8 -> 70 / 6 / 2; EDGE 1 -> 0 8 / 2 / 0 -> 11 / 5 / 3.
+  The entry below is the measurement it rests on.
 - **`EDGE` symbols read a 0 as 1 more often than boundary symbols on the RSP2 captures**: 4/33
   saga plain and 6/53 saga agc, against 2/262 and 6/238 at the boundary. Live it is 146/932
   (run90) and 13/400 (run90c), close to the boundary rate. In each traced case the carried event
   started on the low level in the last 350 ms of the previous second, so its mean is low and the
   low level after the pulse stays above half of it, and the event ends late. No start-offset bin
   separates them (86-95% right in each). The decoder weighs `EDGE` and boundary looks alike.
+- **Changed (fix/wwv-bcd-corr-cleanup) for one shape: a pulse start hidden by a cooldown.**
+  An event on the low level ends shortly before the second; its 200 ms cooldown covers the
+  rise; the next event starts when the cooldown ends, inside the pulse, and ends at the
+  trailing edge. A window whose first event starts 190-210 ms after the previous BTIME event's
+  end, that end less than 170 ms before the second, and the start at +60 ms or later, takes its
+  width from the end (source `TRAIL`, the trailing-edge 0 cut). Fixed/broken among those
+  windows: run90 84/13, run90c 40/2. Right/wrong: run90 3759/576 -> 3832/503, run90c
+  4543/121 -> 4582/83, run90d 4595/230 -> 4654/172; frame replays and captures unchanged.
+  The +60 ms floor excludes the second after a P (cooldown ends at +35..+55 ms, at the rise);
+  without it run90f read 13:32:20 (a 1, 369 ms) as 0 and lost 9 decodes. The broader rule
+  below is not used. Run90c time of day DECODED wrong falls 3 -> 0 (the entry on DECODED wrong
+  below); run90 time of day / date first CONFIRMED 2040 / 2040 s -> 1919 / 1259 s.
 - **A boundary window's width would also read better from its trailing edge on live.** Taking the
   first event end in [+100, +900) ms as the pulse end, run90's boundary 1 -> 0 falls from 15.0%
   to 6.3% and run90c's from 4.1% to 0.3%, but 0 -> P appears (54 / 10, and a P outside a P
@@ -300,11 +335,20 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   (`confirm_marker()`'s +-5 s interval test), in every state. On air every accepted marker is
   within -45..+61 ms of :00, so it has not mattered. Under holdover a single such marker 1-5 s off
   would move a held, correct phase.
+- **Measured (fix/wwv-bcd-corr-cleanup), not changed: BFREQ sets no boundary symbol.** In every
+  window holding both, on the four captures and run90 / run90c / run90f / run3h, BTIME starts
+  first. The six BFREQ-only windows on live (run90 1, run90c 4, run3h 1; 5 read P as 1) all
+  start +250 ms or later, so the decoder holds them as mid seconds with no evidence.
 - **BFREQ still sets the width of a window with no BTIME event, and can set its pulse offset.**
   Its durations (164-983 ms over the four runs) do not cluster at 200/500/800 ms; BFREQ-only
   windows gave 7 wrong symbols at b2ede79 (not re-measured). When a window holds both, the
   pulse offset is the earlier of the two first events (`src/correlation/bcd_correlator.c`), so
   a BFREQ event can mark a window as a boundary detection. Not changed.
+- **Seen on air (fix/wwv-bcd-corr-cleanup), not changed.** A P at second 0 on aligned windows:
+  run90 6, run90c 4, run90f 1, run3h 1 (all false; each makes the decoder refuse the frame).
+  On run90d the same label caught 2 windows that were UTC :59 Ps with the phase a whole second
+  off, which is what the decoder's check (`wwv_time_decoder.c`, `sym[0] != SYM_P`) relies on.
+  Dropping 0 from `VALID_P_POSITIONS` removes that check; it is a decoder-side decision.
 - **The correlator's P positions include second 0** (`VALID_P_POSITIONS`,
   `src/correlation/bcd_symbol_classifier.c:20`): the WWVB frame reference. WWV sends no pulse at
   second 0, so a long event there is labelled P instead of 1. Neither is a WWV symbol; the time
@@ -312,9 +356,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - `bcd_window_get_second_for_timestamp()` no longer has a caller inside the correlator
   (`bcd_window_get_index()` replaced it). It is kept for its declared interface, and its unused
   `corr` parameter warns.
-- The BCD correlator CSV header lists 14 columns and the rows have 10. `bcd_correlator_destroy()`
-  still closes the last window through the old static `close_window()` (`SYM`/`CORR` format). Two
-  output formats coexist (audit F2).
+- **Fixed (fix/wwv-bcd-corr-cleanup): `bcd_correlator_destroy()` closes the last window through
+  `bcd_window_close()`**, marked partial (sent only if it holds an event), with its minute start
+  and pulse offset; the old `close_window()` is removed. Before, its symbol had minute_start
+  0.0, which made the decoder flush the last partial frame of every run (kiwi plain/agc: one
+  extra DECODED from seconds 0-42 of 11:44; the replays' symbol counts included that frame).
+- The BCD correlator CSV header lists 14 columns and the rows have 10 (audit F2).
 - `marker_event_t.accumulated_energy` / `peak_energy` carry swapped quantities since 7e7805e. The
   only reader logs them.
   - **Fixed (fix/wwv-tick-marker-cleanup):** restored as before 7e7805e and commented in
