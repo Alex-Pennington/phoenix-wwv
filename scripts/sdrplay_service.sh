@@ -10,7 +10,23 @@ SDRPLAY_STARTED=
 
 sdrplay_state() { systemctl is-active sdrplay.service || true; }
 
+# sdrplay_compact: ask the kernel to compact memory, so the API service's libusb
+# finds the large contiguous blocks its isochronous transfers need. On saga the
+# service crashed on libusb errno=12 (ENOMEM) with usbfs_memory_mb already 0, while
+# free high-order pages were scarce (2026-11-21). Alex chose compaction before each
+# run and reopen over a permanent vm setting. SDRPLAY_COMPACT=0 skips it; a failure
+# is only reported.
+sdrplay_compact() {
+  [ "${SDRPLAY_COMPACT:-1}" = 0 ] && return 0
+  if sudo -n sh -c 'echo 1 > /proc/sys/vm/compact_memory' 2>/dev/null; then
+    echo "[$SDRPLAY_TAG] compacted memory before opening the RSP2" >&2
+  else
+    echo "[$SDRPLAY_TAG] memory compaction failed (continuing)" >&2
+  fi
+}
+
 sdrplay_start() {
+  sdrplay_compact
   echo "[$SDRPLAY_TAG] starting sdrplay.service" >&2
   SDRPLAY_STARTED=1
   sudo systemctl start sdrplay.service

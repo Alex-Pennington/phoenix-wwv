@@ -117,7 +117,7 @@ for c in "${CASES[@]}"; do
     begin "$c"
     live STUB_MODE=stall75_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
     rc_is 0; has 'REOPEN: segment 1: rsp2_stream had no samples for 10 s'
-    has 'REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 5)'
+    has 'REOPEN: opening the stream again on 10000 kHz as segment 2 (reopen 1 of at most 20)'
     ended_in 2 10000; streams_is 2; unit_off
     end_case ;;
   svc_restart)

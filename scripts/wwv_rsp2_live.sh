@@ -27,7 +27,7 @@
 #   --scan-json FILE    auto: keep the scan's figures as JSON
 #   --stall-secs N      reopen the stream when no sample has come for N s (default 10;
 #                       0: never)
-#   --reopen-max N      end the run after N reopens (default 5)
+#   --reopen-max N      end the run after N reopens (default 20)
 #
 # Receiver settings are those of the scored saga capture: tuner 100 kHz below WWV (WWV
 # at +100 kHz), antenna A, AGC off, 2 MS/s. Gain is per band, from scripts/wwv_bands.py:
@@ -74,7 +74,7 @@ REPO=$(dirname "$HERE")
 BUILD=$REPO/build
 SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
-STALL_SECS=10; REOPEN_MAX=5
+STALL_SECS=10; REOPEN_MAX=20
 # The streamer; a test may point this at a stub that takes the same options.
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
 GAINS=()
@@ -403,6 +403,7 @@ while :; do
     fi
     if past_end; then say "--secs reached; not reopening"; break; fi
     svc_ready
+    sdrplay_compact
     SEG=$((SEG + 1))
     say "REOPEN: opening the stream again on $WWV_KHZ kHz as segment $SEG (reopen $REOPENS of at most $REOPEN_MAX)"
     continue
