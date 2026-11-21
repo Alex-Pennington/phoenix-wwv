@@ -140,3 +140,40 @@ coordinator's log reads)
 - ALE (greybeard-ale) is to take over gangleri's RSP2 later and keep WWV clock sync; a decoder
   state save and restore is requested.
 - fix/wwv-stream-activate-hang: stopped by Alex, left as is.
+
+## 2026-11-21 — ymir-phoenix-wwv wrap
+
+**Verified on main (all exit 0):**
+
+- `bash -n` on `scripts/*.sh`, `tests/live/*.sh`, `tests/clock_synth.sh`: no errors.
+- Fresh Release build, `cmake --build -j4`: 0 errors.
+- `nice -n 19 ctest -LE live -j4`: 20/20 passed, 27.0 s.
+- `nice -n 19 ctest -L live -j4`: 5/5 passed (live_stubs_wrapper, scan, auto, stream, gap), 171.7 s wall.
+
+**Radio handover.** On Alex's ruling ("Hand it over now"), gangleri's RSP2 went to greybeard-ale's
+ale-scan at 16:38 UTC: `wwv-live.service` stopped and disabled, not removed (re-enable steps in
+gangleri-linux-install's build record). ale-scan runs the pinned decoder
+`~/wwv-live/mbfcf6fa/build/wwv_live` for its WWV clock blocks. Do not move or delete that
+directory while ale-scan uses it. Last WWV run there: 10 MHz, 54 min, LOCKED in 176 s, 0 fills,
+CLOCK -19..-15 ms at sigma 3 ms.
+
+**gangleri-linux-install** now has a private GitHub remote, `Alex-Pennington/gangleri-linux-install`;
+main pushed after a full-history secret scan (no private keys, no PSK).
+
+**Sessions started by this coordinator today.** All are in-process subagents of this session:
+no job id, none still running, nothing to stop.
+
+- Workers, finished: gap-fill docs; decoder time-to-CONFIRMED; 15 MHz BCD quality; stream time
+  type; wrapper memory wait and backoff; stream slip; sync reset guards; BTIME low contrast;
+  antenna and CLOCK line; restart band cache; mawk buffering; live suite split; PROGRESS entry.
+- Gangleri workers, finished: build plan; base stick; identity and first boot; radio install
+  (stopped at the Tyr handover, never connected).
+- Reviewers and surveys, finished: saga memory survey; drive SMART check; plan review; staging
+  review; time-type review; p10 floor review; BTIME step-fit review; runG scoring.
+- Tyr (Gangleri bring-up), finished after the RSP2 handover.
+
+**No GitHub issues filed:** the open items are in the entry above, under Open. Alex's standing
+rules for this repo: burn issues down, and file none without his word.
+
+**Left standing:** worktree `phoenix-wwv-wt-stream-hang` (branch `fix/wwv-stream-activate-hang`,
+no commits). Alex stopped that worker; keep it until he rules.
