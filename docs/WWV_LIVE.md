@@ -260,7 +260,7 @@ after `--reopen-max`, 130/143 on SIGINT/SIGTERM, else `wwv_live`'s or rsp2_strea
 
 `tests/live/run_stub_tests.sh` runs the wrapper and rsp2_stream.py against stubs, with no
 radio and no `sdrplay.service`: the ctest test `live_wrapper_stubs` (`ctest -L live`, about
-TIMEX). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
+7.5 minutes: 437 s on saga, 2026-11-21). The stubs in `tests/live/fakebin` stand in for `systemctl` and `sudo`, and the
 script refuses to run unless the PATH reaches them. Its cases cover each reopen reason
 (including the 76 exit), `--reopen-max`, a stream deaf to SIGTERM, the kill guard, the `auto`
 scan going live and ending at `--secs`, a band switch with `--avoid`, `--secs` during a re-scan,
