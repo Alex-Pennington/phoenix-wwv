@@ -208,6 +208,13 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     candidate rule drops the phase. It is the same mechanism as kiwi agc's loss under the
     no-cooldown change: an off-phase CANDT that starts on a tick is noise by construction, not
     evidence of a lost second. Enabling the gate needs that rule changed first.
+  - **With that rule changed (fix/wwv-sync-decoder-cleanup, a candidate's whole-second
+    disagreement counts only on its end reading) the gate is clean.** This branch plus that
+    commit, the gate on while LOCKED in the manager's 50 ms periodic check (epoch = the held
+    phase's `second_start_ms`, refreshed when it moves 0.5 ms): ticks matched 94.8 / 91.5 /
+    86.5 / 82.4%, off-second 14 / 17 / 101 / 54, no phase loss, time of day 7 / 7 / 7 / 7,
+    FALSE CONFIRM 0, ctest 13/13. The call goes in `wwv_detector_manager.c`, not here. The live
+    logs hold detector events, so a replay cannot show the gate; the next live run will.
 - **Two marker-detector misses on the captures are near misses**: saga agc 12:12 and 12:18 peaked
   at 2.74 and 2.83 times baseline against the 3.0 threshold, with no run at all. A second,
   lower threshold reported only as a candidate (phase-gated by sync, like the short runs) would
