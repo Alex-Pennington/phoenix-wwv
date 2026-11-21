@@ -10,6 +10,7 @@
 #include "wwv_chain_log.h"
 #include "bcd_correlator_internal.h"
 #include <stdlib.h>
+#include <string.h>
 
 struct wwv_chain_log {
     FILE *out;
@@ -114,6 +115,9 @@ wwv_detector_observer_t wwv_chain_log_observer(wwv_chain_log_t *log) {
 
 void wwv_chain_log_telem(wwv_chain_log_t *log, telem_channel_t channel, const char *csv_line) {
     if (channel == TELEM_BCDS) fprintf(log->out, "TELEM BCDS %s\n", csv_line);
+    /* Marker detector purity rejection: PURITY,end_ms,start_ms,window_run_ms,flank,peak */
+    else if (channel == TELEM_MARKERS && strncmp(csv_line, "PURITY,", 7) == 0)
+        fprintf(log->out, "TELEM MARK %s\n", csv_line);
 }
 
 void wwv_chain_log_end(wwv_chain_log_t *log, long samples) {

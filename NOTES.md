@@ -71,6 +71,12 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     1200 Hz sits at bin 6.1 (195.3 Hz bins), between the centre (bin 5) and the flank (bin 7).
     Its effect on the purity test is not measured.
 - **A purity rejection is printed to stdout only.** It reaches no CSV or telemetry line.
+  - **Fixed (fix/wwv-tick-marker-cleanup).** It is also sent on `TELEM_MARKERS` as
+    `PURITY,<end ms>,<pulse start ms>,<window run ms>,<flank/centre>,<peak/baseline>`, and the
+    chain log (`wwv_live --log`) writes that line as `TELEM MARK PURITY,...`. The air harness
+    prints TELEM BCDS lines only, so its logs do not carry it; its stdout already has the
+    `MARKER rejected` line. A UDP subscriber to the markers channel now sees PURITY lines among
+    the marker CSV lines.
 - **A marker-detector run shorter than `min_duration_ms` still takes the 30 s cooldown.** A
   short in-band blip in the seconds before :00 would hide that minute's marker, as the voice
   runs did before the purity test. Not seen on air.
@@ -86,10 +92,16 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **Tick-path `MARKER_MAX_DURATION_MS` (1000 ms bail-out) contradicts
   `MARKER_MAX_DURATION_MS_CHECK` (1500 ms)** in `include/detection/tick_internal.h:35,52`. A run
   of 1000-1500 ms bails out before the marker check sees it.
+  - **Fixed (fix/wwv-tick-marker-cleanup): the check now uses `MARKER_MAX_DURATION_MS`**, what the
+    bail-out already enforced, and `_CHECK` is gone. Bail-outs: 1 on the captures (saga agc,
+    :49 of a minute, not a marker), 0 in the run90, run90c, run90d, run90f, run90g and run3h
+    consoles; clean marker runs are 804-835 ms. A run of 1000-1005 ms (one frame past the
+    bail-out test) no longer counts as a marker; none is seen. run_air.sh output unchanged.
 - **The breakdown in the `TICK_FILTER_DELAY_MS` comment is stale** (`include/tick_detector.h:71`,
   "0.32ms Butterworth"). The sync filter's group delay at 1000 Hz is now 1.50 ms. The value
   (3.0 ms) was left alone: kiwi plain tick-path marker leading edges measure -1.8..+2.1 ms from
   :00.
+  - **Fixed (fix/wwv-tick-marker-cleanup):** the comment now says the value is empirical.
 - **A third of the live run's seconds are mid-second detections.** Of the locked, non-erased
   seconds the decoder saw, 30.4% (1381/4547) carried a pulse that starts more than 250 ms after
   the second (23.1-35.4% per 10-minute block), against 0.7-12% on the four captures
@@ -133,22 +145,91 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   1798 TICK intervals of 512-650 ms). Its threshold, twice a floor that falls
   fast and rises slowly, sits inside the noise; a 5 ms crossing that fails the correlation test
   is dropped without a log line but still takes the 500 ms cooldown. This is what starts the
-  minute marker's run late (fix/wwv-marker-rate: 99 of 268 live minutes). Not fixed in the
-  detector, where it moves every tick metric; the sync detector now recovers those markers from
-  their end (marker candidates). Giving a dropped run no cooldown is the detector-side fix to
-  measure next.
+  minute marker's run late (fix/wwv-marker-rate: 99 of 268 live minutes).
+  - **Measured on the captures (fix/wwv-tick-marker-cleanup).** Of the ticks main misses, the
+    pulse fell in the cooldown after a dropped run in 58/143, 52/149, 174/336 and 87/238 (kiwi
+    plain, kiwi agc, saga plain, saga agc); below threshold, idle, in only 1, 1, 17 and 34. The
+    gap-zone runs under 100 ms (too short for a marker candidate) do the same: saga agc's
+    12:14 marker started late behind a 51 ms one.
+  - **Fixed: a run too short for a marker candidate that is not a tick (a tick-length run that
+    fails the correlation test, or a gap-zone run under `TICK_CANDIDATE_MIN_MS`) takes no
+    cooldown.** The gap-zone floor reset still runs. Ticks matched 76.3/75.1/42.6/59.9% ->
+    89.3/87.0/62.9/70.9%; tick-path markers at :00 9/9/6/8 -> 10/10/9/9; late-started markers
+    (gap-zone runs ending :00.5-:01.0) 0/0/4/2 -> 0/0/1/1. Off-second ticks 58/70/264/163 ->
+    63/68/318/180, and saga plain has 2 ticks at :29 (+44, +62 ms): more noise runs are
+    tested, and the off-second rate puts 1.2 in the twenty :29/:59 windows by chance.
+    `tests/test_tick_noise_run.c` drives the state machine with both run kinds.
+  - **Two downstream changes, traced, not in this code.** kiwi agc: a 128 ms gap-zone noise run
+    at 11:41:56.06 gives a CANDT whose start lead is 4 s + 59 ms off the held phase, and the
+    sync detector's whole-second rule (within `CANDIDATE_SECOND_TOL_MS`, 60 ms) drops the phase
+    for 6 s; time of day decodes 6/6, was 7/7, and symbols 446/445, were 452/451. On main the
+    floor was higher there (0.049 against 0.033) and no run started. saga plain: 12:12's anchor
+    is now the tick-path marker (149951.5 ms) instead of the marker detector's (149933.4 ms),
+    and :01's window sees only a 497 ms event, so a 0 reads 1 (correct 444 -> 443).
+  - **Live cannot show this.** The live logs hold detector events, not tick energies, so a replay
+    gives the old tick events; only the next live run will.
 - **The tick-path floor reset fires on every late-started marker.** Its run lands in the 50-600 ms
   gap zone, and `tick_state_reset_floor()` takes the marker's mean energy as the new floor (run90:
   66 resets, the floor rising 1.6-13.8 times). Ticks in the seconds after :00 then need that much more
-  energy until the floor decays (about 3.5 s for a factor 4). The tick loss it causes is not
-  measured.
+  energy until the floor decays (about 3.5 s for a factor 4).
+  - **Measured (fix/wwv-tick-marker-cleanup).** Live, a reset on a run ending :00.5-:01.0 came in
+    40 / 24 / 5 / 15 minutes of run90 / run90c / run90d / run90f. In those minutes ticks at
+    :01-:05 come at 0.24 / 0.36 / 0.36 / 0.23 of the rate at :06-:10 of the same minutes; in the
+    other minutes at 0.65 / 0.83 / 0.73 / 0.52. At the other minutes' ratio that is about 45 /
+    50 / 8 / 6 ticks lost, 1-2 per such minute. On the captures (main) saga plain gets 3/20
+    ticks at :01-:05 after such a reset, 14/30 in the other minutes; saga agc 5/10 and 23/40.
+  - **Declined: the reset is not narrowed.** Each narrowing tried loses more ticks than it saves,
+    on every capture (ticks matched, kiwi plain / kiwi agc / saga plain / saga agc, against
+    89.3 / 87.0 / 62.9 / 70.9% with the reset): no reset on gap-zone runs 60.0 / 71.9 / 35.5 /
+    49.5%; none on runs of 100 ms or more (the marker candidates) 86.5 / 81.4 / 60.9 / 66.6%;
+    half the run's mean as the floor 85.8 / 80.8 / 55.5 / 61.9%. A floor low in the noise
+    lets more noise runs through, and their ticks' cooldowns cost more than the reset does.
+    What cuts the loss is fewer late-started markers: the no-cooldown change above takes them
+    from 6 to 2 on the captures.
 - **The tick timing gate is never enabled in the chain.** `tick_detector_set_gate_enabled()` has
   no caller; the manager sets only the epoch. All four captures ran with the gate off.
+  - **Evaluated (fix/wwv-tick-marker-cleanup), not enabled: the call belongs in the manager.**
+    A harness copy that, every 50 ms, sets the epoch to the sync detector's `second_start_ms`
+    and enables the gate while LOCKED (off otherwise) gives, against the no-cooldown change
+    (kiwi plain / kiwi agc / saga plain / saga agc): ticks matched 89.3 / 87.0 / 62.9 / 70.9%
+    -> 94.8 / 91.5 / 86.5 / 82.4%, off-second ticks 63 / 68 / 318 / 180 -> 14 / 17 / 101 / 55
+    (the rest come before LOCKED), tick-path markers at :00 10 / 10 / 9 / 9 -> 10 / 10 / 10 / 9.
+    FALSE CONFIRM 0. Time of day decodes 7 / 7 / 7 / 7 (kiwi agc was 6: the noise run behind its
+    phase loss no longer starts).
+  - **The gate now opens 20 ms before the epoch (`TICK_GATE_START_MS`).** It opened at the epoch,
+    and on kiwi plain the held phase ran 12-20 ms late from 11:43, which shut out every tick run
+    start: 11:43-11:44 matched 21/57 and 17/41 gated, 45/57 and 34/41 ungated, and the capture
+    85.1% against 94.8% with the early opening. Opening 30 ms early is no better; 50 ms early
+    lets more noise in (saga plain 77.9%). The gate is off in the chain, so the captures do not
+    change. `tests/test_tick_gate.c` checks a phase 15 ms late.
+  - **What stops enabling it: saga agc loses LOCKED for 6 s with the gate on** (time of day 5/5,
+    was 7/7). A gated run starts at a tick, so a tick followed by noise makes a 256 ms gap-zone
+    run whose start lead is 3 s off the held phase, to within 20 ms, and the sync detector's whole-second
+    candidate rule drops the phase. It is the same mechanism as kiwi agc's loss under the
+    no-cooldown change: an off-phase CANDT that starts on a tick is noise by construction, not
+    evidence of a lost second. Enabling the gate needs that rule changed first.
+  - **With that rule changed (fix/wwv-sync-decoder-cleanup, a candidate's whole-second
+    disagreement counts only on its end reading) the gate is clean.** This branch plus that
+    commit, the gate on while LOCKED in the manager's 50 ms periodic check (epoch = the held
+    phase's `second_start_ms`, refreshed when it moves 0.5 ms): ticks matched 94.8 / 91.5 /
+    86.5 / 82.4%, off-second 14 / 17 / 101 / 54, no phase loss, time of day 7 / 7 / 7 / 7,
+    FALSE CONFIRM 0, ctest 13/13. The call goes in `wwv_detector_manager.c`, not here. The live
+    logs hold detector events, so a replay cannot show the gate; the next live run will.
 - **Two marker-detector misses on the captures are near misses**: saga agc 12:12 and 12:18 peaked
   at 2.74 and 2.83 times baseline against the 3.0 threshold, with no run at all. A second,
   lower threshold reported only as a candidate (phase-gated by sync, like the short runs) would
   take them. Not done: the live share of no-run minutes is unknown until a run logs the `MARKER
   block peak` lines.
+  - **Measured, and declined (fix/wwv-tick-marker-cleanup).** run3h logs the block peaks: of 33
+    minutes with no marker-detector MARK, 9 peaked at 2.53-2.91 times baseline at +0.81 s
+    (near misses) and 9 at 3.07-3.39 (short runs, already candidates); 3 of 341 other idle
+    10 s blocks reached 2.5 (run90g, daytime: 8 of 335). Every one of the 9 live near-miss
+    minutes already has a tick-path TMARK or CANDT within 13 ms of :00, and so do saga agc
+    12:12 and 12:18. A second threshold at 2.5x, reported as a candidate with the purity test
+    and no cooldown, was built and run: on the captures it passes only those two (the 9 other
+    weak runs fail purity), their leads read -123 and -207 ms (the second outside sync's
+    150 ms candidate tolerance), and no metric moves. It adds a path that finds nothing the
+    tick path has not, so it is not kept.
 
 ## Sync and correlator
 
@@ -236,6 +317,11 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   output formats coexist (audit F2).
 - `marker_event_t.accumulated_energy` / `peak_energy` carry swapped quantities since 7e7805e. The
   only reader logs them.
+  - **Fixed (fix/wwv-tick-marker-cleanup):** restored as before 7e7805e and commented in
+    `include/marker_detector.h`: `accumulated_energy` is the run's peak window sum (it was the
+    sum at the run's end, just under threshold), `peak_energy` the last frame's bucket energy.
+    The sync console's `Marker event received ... energy=` now reads the peak (kiwi plain
+    1 -> 7, 1 -> 4); nothing else in run_air.sh output changes.
 - **The confidence decay is per periodic check, and the check runs every 50 ms, not 100 ms.**
   `CONFIDENCE_DECAY_NORMAL` 0.9999 is commented as 6% per minute; at 50 ms it is 11.3%. LOCKED
   (0.70) therefore needs three markers close together: three consecutive minutes reach 0.73, a
