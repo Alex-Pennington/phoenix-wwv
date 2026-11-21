@@ -33,9 +33,12 @@ extern "C" {
  * that gap: a pulse detected up to 100 ms before its anchor second (anchor
  * late, start jitter) still lands in its own window. */
 #define WINDOW_LEAD_MS          100.0f
-/* BTIME and BFREQ report a pulse at its end and cap it at 1000 ms, so every
- * event for a window arrives by the window's end + 1000 ms. The periodic check
- * closes a window this long after its end. */
+/* BTIME and BFREQ report a pulse at its end and cap it at 1100 / 1000 ms, so
+ * every event for a window arrives by the window's end + 1100 ms (plus BTIME's
+ * 3-frame end debounce: an event starting in the last 15 ms of a window and
+ * running the full 1100 ms is late, and dropped from that mid-second window;
+ * its trailing edge is still noted). The periodic check closes a window this
+ * long after its end. */
 #define WINDOW_CLOSE_LATENCY_MS 1100.0f
 
 /* Trailing-edge symbols. When the BTIME detector starts an event on the
