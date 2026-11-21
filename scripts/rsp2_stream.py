@@ -59,6 +59,12 @@ with --gap-log, as a JSON line. A loss over --gap-max-secs (or a stall) ends the
 stream with exit status 76 (75 for a stall), and wwv_rsp2_live.sh reopens it as a
 new segment. --no-fill keeps the old behaviour (no hold, no fill).
 
+--antenna NAME: one of the device's listAntennas() (the RSP2 under SoapySDRPlay3 0.5.3:
+"Antenna A", "Antenna B", "Hi-Z"); any other name ends the stream with exit status 2 and
+the list, before streaming (the module's setAntenna ignores an unknown name). The settings
+line logs the antenna read back. The per-band gains (wwv_bands.GAIN) were set on saga's
+whip on Antenna A.
+
 --anchor-out FILE: the UTC of sample 0 from the least-delayed block over the
 first 10 s, measured on arrival (before the hold), and hold_s, as JSON; written
 before the first sample past 10 s leaves, for wwv_live --anchor-in.
@@ -145,6 +151,11 @@ if dev is None:
     sys.exit(1)
 
 ch = 0
+EX_USAGE = 2
+_ants = list(dev.listAntennas(SOAPY_SDR_RX, ch))
+if a.antenna not in _ants:   # SoapySDRPlay3's setAntenna ignores a name it does not know
+    log(f'--antenna {a.antenna!r}: not an antenna of this device; it has {", ".join(map(repr, _ants))}')
+    sys.exit(EX_USAGE)
 dev.setSampleRate(SOAPY_SDR_RX, ch, a.rate)
 dev.setAntenna(SOAPY_SDR_RX, ch, a.antenna)
 dev.setGainMode(SOAPY_SDR_RX, ch, False)

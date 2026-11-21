@@ -10,7 +10,8 @@ with a broadcaster 25-30 dB over WWV in the passband. 10 MHz was tested at LNA 2
 overload. 2.5 and 15 MHz keep LNA 2 (tropical-band and 19 m broadcasters in the passband).
 20 and 25 MHz take LNA 1: their band noise is lower and their passbands carry less broadcasting.
 The 2.5, 15, 20 and 25 MHz values are starting points; wwv_band_scan.py reports the ADC overload
-and clipping for each band, and --gain KHZ:LNA:IFGR overrides any of them.
+and clipping for each band, and --gain KHZ:LNA:IFGR overrides any of them. Every value was set on
+saga's whip on Antenna A; another antenna or input (--antenna) may want others.
 
 TCXO: the RSP2's LO and ADC share one TCXO, read 1.09 ppm slow at 5 MHz on 2026-11-19 (carrier at
 +5.448 Hz). A fractional clock error e puts a carrier at f a further f*e Hz above where it is

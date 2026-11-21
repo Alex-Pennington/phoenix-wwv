@@ -8,6 +8,8 @@
                    errno=12 lines in $STUB_DIR/journal, then a new MainPID and NRestarts + 1
                    (systemd's restart); the stream goes on until stopped
   errno_after:S    after S s, the errno=12 lines only (no restart), then exit 75
+--antenna NAME: recorded, one line per start, in $STUB_DIR/antennas; a name not in
+"Antenna A", "Antenna B", "Hi-Z" (the RSP2's list) exits 2, as rsp2_stream.py does.
 STUB_ONLY_FIRST=1 applies the mode to the first start only; STUB_DEAF=1 ignores SIGTERM
 and --secs. Each start appends one byte to $STUB_DIR/streams."""
 import os, sys, time, signal, argparse
@@ -16,6 +18,7 @@ ap.add_argument('--rate', type=float, default=2e6)
 ap.add_argument('--secs', type=float, default=0)
 ap.add_argument('--heartbeat')
 ap.add_argument('--stall-secs', type=float)
+ap.add_argument('--antenna', default='Antenna A')
 a, _ = ap.parse_known_args()
 kind, _, v = os.environ.get('STUB_MODE', 'ok').partition(':')
 d = os.environ['STUB_DIR']
@@ -24,6 +27,13 @@ with open(os.path.join(d, 'streams'), 'a') as f:
 nth = len(open(os.path.join(d, 'streams')).read())
 if os.environ.get('STUB_ONLY_FIRST') and nth > 1:
     kind = 'ok'
+with open(os.path.join(d, 'antennas'), 'a') as f:
+    f.write(a.antenna + '\n')
+ANTENNAS = ('Antenna A', 'Antenna B', 'Hi-Z')
+if a.antenna not in ANTENNAS:
+    sys.stderr.write(f'[stub_stream] --antenna {a.antenna!r}: not an antenna of this device; '
+                     f'it has {", ".join(map(repr, ANTENNAS))}\n')
+    sys.exit(2)
 stop = False
 crashed = False
 

@@ -7,13 +7,15 @@
 #   hang     the scan is stuck in the driver: deaf to SIGTERM (a child sleep, its PID in
 #            $STUB_DIR/hang.pids, inherits that), no output, never ends on its own
 #   apifail  the scan exits 5, as wwv_band_scan.py does when the sdrplay API is failing
+# An --antenna that is not "Antenna A", "Antenna B" or "Hi-Z" exits 2, as wwv_band_scan.py does.
 set -euo pipefail
 D=${STUB_DIR:?}
-JSON=
+JSON=; ANT="Antenna A"
 args=("$@")
 while [ $# -gt 0 ]; do
   case $1 in
     --json) JSON=$2; shift 2 ;;
+    --antenna) ANT=$2; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -22,6 +24,10 @@ k=$(wc -l < "$D/scans")
 IFS=, read -r -a bands <<< "${STUB_SCAN_BANDS:-5000}"
 i=$((k - 1)); [ "$i" -ge "${#bands[@]}" ] && i=$((${#bands[@]} - 1))
 b=${bands[$i]}
+case $ANT in
+  "Antenna A"|"Antenna B"|Hi-Z) ;;
+  *) echo "[stub_band_scan] --antenna '$ANT': not an antenna of this device; it has 'Antenna A', 'Antenna B', 'Hi-Z'" >&2; exit 2 ;;
+esac
 echo "[stub_band_scan] scan $k: ${args[*]}" >&2
 IFS=, read -r -a secs <<< "${STUB_SCAN_SECS:-1}"
 j=$((k - 1)); [ "$j" -ge "${#secs[@]}" ] && j=$((${#secs[@]} - 1))

@@ -93,7 +93,7 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
    `--scan-timeout`, and takes the band the scan chooses (see *Band scan bound and retry*).
 3. It streams the RSP2 through `scripts/rsp2_stream.py` into `wwv_live`. The settings are those
    of the scored capture, at the chosen band: antenna A, tuner 100 kHz below WWV, AGC off,
-   2 MS/s, scale 32, and the band's gain.
+   2 MS/s, scale 32, and the band's gain. `--antenna NAME` picks another RSP2 input (below).
 4. With `auto`, a band that has not reached LOCKED `--lock-mins` after it went live is
    switched (see *Band switch* below).
 5. A stream that stalls, hangs, or loses the vendor service under it is reopened on the same
@@ -101,6 +101,16 @@ as `out_utc0_unix`, the field the scoring scripts read. The anchor has no clock-
 6. It ends at `--secs` by the wall clock, and stops the service on every exit path. If the
    vendor service crashed on stop, the script also clears the unit's failed state. A guard
    process covers the exits no trap sees.
+
+**Antenna.** `--antenna NAME` (default `Antenna A`) goes to the band scan and to every
+`rsp2_stream.py` start, reopens included. The RSP2's inputs under SoapySDRPlay3 0.5.3 are
+`Antenna A`, `Antenna B` and `Hi-Z` (its `Settings.cpp` `listAntennas`, lines 172-176). That
+module's `setAntenna` ignores a name it does not know, so both `rsp2_stream.py` and
+`wwv_band_scan.py` check the name against the device's `listAntennas()` at the open. An
+unknown name ends the run with exit status 2 and the device's list, before any sample is
+read. The antenna read back is in `rsp2_stream.py`'s settings line and in each band's scan
+line. The per-band gains in `scripts/wwv_bands.py` were tuned on saga's whip on Antenna A.
+Another antenna or input may want other gains: check the scan's ADC columns and use `--gain`.
 
 `--record PREFIX` also writes the raw stream, at 8 MB/s. Example, 90 minutes at 5 MHz:
 
@@ -409,7 +419,8 @@ only mixes the carrier at `-s` Hz to DC, and `wwv_live` uses the PHXI centre fre
   sets the error, and `--carrier-hz` sets the correction outright. The scan reports the
   error each band's carrier implies: the saga 30 s recordings give 1.09 ppm at 5 MHz and
   0.99 ppm at 10 MHz.
-- **Gain** is per band, in `scripts/wwv_bands.py`. 2.5, 5, 10 and 15 MHz use LNA state 2 and
+- **Gain** is per band, in `scripts/wwv_bands.py`, tuned on saga's whip on Antenna A. 2.5, 5,
+  10 and 15 MHz use LNA state 2 and
   IFGR 59. That is the 5 MHz setting of the scored capture, and 10 MHz was tested with it.
   20 and 25 MHz use LNA 1 and IFGR 59, because their band noise and broadcasting are lower.
   15 MHz was checked on WWV on 2026-11-20 at 13:03-13:06 UTC:

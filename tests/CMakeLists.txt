@@ -123,8 +123,8 @@ add_executable(btime_replay air/btime_replay.c)
 target_link_libraries(btime_replay PRIVATE phoenix_wwv)
 
 # The live wrapper (scripts/wwv_rsp2_live.sh) and rsp2_stream.py against stubs: no radio,
-# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 498 s measured on
-# saga 2026-11-21 (nice -n 19, 30 cases) against the TIMEOUT of
+# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 35 cases after the
+# 2026-11-21 merges; measured separately on saga (nice -n 19): 498 s for 30 cases, 516 s for 34, against the TIMEOUT of
 # 600 s. ctest -L live runs it alone.
 if(TARGET wwv_live)
     add_test(NAME live_wrapper_stubs
