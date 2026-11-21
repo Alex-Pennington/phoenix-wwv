@@ -160,8 +160,11 @@ void sync_detector_marker_event(sync_detector_t *sd, float timestamp_ms,
  * minute phase already held when either leading-edge reading lands within the
  * candidate tolerance of a later whole minute from the anchor; the confirmed time
  * is the held phase. Ignored in ACQUIRING, while a marker event is pending, and in
- * a minute already confirmed.
- * @param lead_a_ms, lead_b_ms Two readings of the leading edge (equal if one)
+ * a minute already confirmed. While LOCKED, a candidate whose end reading
+ * (lead_b_ms) is 1-5 whole seconds off the held phase sends sync to RECOVERING
+ * with the phase marked unknown; the start reading never does.
+ * @param lead_a_ms, lead_b_ms Two readings of the leading edge: from the run's
+ *        start and from its end (equal if one)
  * @param source Label for the console and the marker CSV ("CANDT" tick path, "CANDM" marker detector)
  */
 void sync_detector_marker_candidate(sync_detector_t *sd, float lead_a_ms, float lead_b_ms,

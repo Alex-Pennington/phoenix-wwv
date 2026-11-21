@@ -32,7 +32,7 @@ extern "C" {
 /* Detection timing */
 #define TICK_MIN_DURATION_MS    2.0f
 #define TICK_MAX_DURATION_MS    50.0f
-#define MARKER_MAX_DURATION_MS  1000.0f  /* Allow up to 1s for minute markers */
+#define MARKER_MAX_DURATION_MS  1000.0f  /* A run this long bails out; also the marker check's limit */
 #define TICK_COOLDOWN_MS        500.0f
 
 /* Threshold adaptation */
@@ -49,7 +49,6 @@ extern "C" {
 #define CORR_DECIMATION         8       /* Compute correlation every N samples */
 #define MARKER_CORR_RATIO       15.0f   /* Corr ratio above this = minute marker */
 #define MARKER_MIN_DURATION_MS  600.0f  /* Marker must be at least 600ms (tightened from 500ms) */
-#define MARKER_MAX_DURATION_MS_CHECK 1500.0f  /* Marker should be under 1500ms */
 #define MARKER_MIN_INTERVAL_MS  55000.0f /* Markers must be 55+ seconds apart */
 
 /* Leading edge of a marker run. A clean 800 ms marker reads as 800 ms plus about
@@ -73,7 +72,10 @@ extern "C" {
 #define MS_TO_FRAMES(ms)    ((int)((ms) / FRAME_DURATION_MS + 0.5f))
 
 /* Timing gate for exploiting NIST 40ms protected zone */
-#define TICK_GATE_START_MS   0.0f    /* Open gate at second boundary */
+/* The gate opens 20 ms before the epoch. The sync detector's held phase ran up
+ * to 20 ms late on kiwi plain, and with the gate opening at the epoch a phase
+ * more than about 6 ms late shuts out the tick's run start (NOTES.md, Detection). */
+#define TICK_GATE_START_MS -20.0f
 #define TICK_GATE_END_MS   100.0f   /* Close gate 100ms into second (was 25ms - too narrow for HF) */
 
 /* Gate recovery - disable gate if no ticks for too long */

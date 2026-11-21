@@ -69,6 +69,7 @@ void bcd_window_open(bcd_correlator_t *corr, int index, float anchor_ms) {
     corr->time_event_count = 0;
     corr->time_first_ms = 0.0f;
     corr->time_first_dur_ms = 0.0f;
+    corr->time_first_prev_end_ms = NAN;
     corr->time_last_ms = 0.0f;
 
     corr->freq_energy_sum = 0.0f;
@@ -182,10 +183,29 @@ void bcd_window_close(bcd_correlator_t *corr) {
      * before the second. */
     if (edge) {
         duration_ms = edge_width_ms;
-        symbol = bcd_symbol_classify_duration(duration_ms, corr->current_second);
+        symbol = bcd_symbol_classify_trailing(duration_ms, corr->current_second);
         pulse_offset_ms = corr->edge_start_ms - second_ms;
         source = "EDGE";
         if (confidence == 0.0f) confidence = 0.6f;
+    }
+
+    /* The pulse's rise was hidden by the cooldown after an event that ended
+     * just before the second, and the first event started when that cooldown
+     * ended: its end is the pulse's trailing edge (see HIDDEN_PREV_END_MS). */
+    if (!edge && corr->time_event_count > 0 &&
+        corr->time_first_ms - second_ms <= pulse_offset_ms &&      /* not a BFREQ start */
+        corr->time_first_ms - second_ms >= HIDDEN_START_MIN_MS &&
+        !isnan(corr->time_first_prev_end_ms) &&
+        corr->time_first_prev_end_ms - second_ms > -HIDDEN_PREV_END_MS &&
+        corr->time_first_ms - corr->time_first_prev_end_ms >= HIDDEN_GAP_MIN_MS &&
+        corr->time_first_ms - corr->time_first_prev_end_ms <= HIDDEN_GAP_MAX_MS) {
+        float trail_width_ms = corr->time_first_ms + corr->time_first_dur_ms - second_ms - EDGE_LEAD_MS;
+        bcd_corr_symbol_t trail = bcd_symbol_classify_trailing(trail_width_ms, corr->current_second);
+        if (trail != BCD_CORR_SYM_NONE) {
+            duration_ms = trail_width_ms;
+            symbol = trail;
+            source = "TRAIL";
+        }
     }
 
     /* Track intervals */
@@ -361,9 +381,9 @@ void bcd_window_periodic(bcd_correlator_t *corr, float now_ms) {
         corr->window_partial = true;
         return;
     }
-    /* Every event for a window arrives by its end + 1000 ms (BTIME and BFREQ
-     * report at pulse end and cap a pulse at 1000 ms). Past that, the window is
-     * complete: close it, and open the next second's. A window that ends with
+    /* Every event for a window arrives by its end + WINDOW_CLOSE_LATENCY_MS
+     * (BTIME and BFREQ report at pulse end and cap a pulse at 1100 / 1000 ms).
+     * Past that, the window is complete: close it, and open the next second's. A window that ends with
      * no event while sync was LOCKED throughout is emitted as NONE. */
     while (now_ms >= corr->window_start_ms + WINDOW_DURATION_MS + WINDOW_CLOSE_LATENCY_MS) {
         int next = corr->window_index + 1;
