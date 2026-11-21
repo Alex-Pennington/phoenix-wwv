@@ -140,12 +140,22 @@ if(TARGET wwv_live)
 endif()
 
 # The live wrapper (scripts/wwv_rsp2_live.sh) and rsp2_stream.py against stubs: no radio,
-# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). 527 s
-# for 40 cases, the full nice -n 19 ctest -L live, measured on saga 2026-11-21, against the
-# TIMEOUT of 600 s; keep it under 540 s. ctest -L live runs it alone.
+# no sdrplay.service (tests/live/fakebin stands in for systemctl, sudo and journalctl). One
+# entry, live_stubs_NAME, per `group NAME` line in run_stub_tests.sh; each case has its own
+# directory, fake unit and TMPDIR, and each entry its own WORK_DIR, so the entries run in
+# parallel. Rule: keep every entry under about 200 s (TIMEOUT 300); a group that grows past
+# it is split into a new group line. Measured on saga 2026-11-21, nice -n 19 ctest -L live -j4,
+# 41 cases, 3 runs: 171-175 s wall; wrapper (17 cases) 135-139 s, stream (6) 115 s,
+# scan (5) 109-110 s, gap (3) 99-100 s, auto (10) 72-74 s.
 if(TARGET wwv_live)
-    add_test(NAME live_wrapper_stubs
-             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh $<TARGET_FILE_DIR:wwv_live>
-                     ${CMAKE_CURRENT_BINARY_DIR}/live_stub)
-    set_tests_properties(live_wrapper_stubs PROPERTIES LABELS live TIMEOUT 600)
+    set(_stub_sh ${CMAKE_CURRENT_SOURCE_DIR}/live/run_stub_tests.sh)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_stub_sh})
+    file(STRINGS ${_stub_sh} _stub_groups REGEX "^group [a-z0-9_]+ ")
+    foreach(_line IN LISTS _stub_groups)
+        string(REGEX REPLACE "^group ([a-z0-9_]+) .*" "\\1" _g "${_line}")
+        add_test(NAME live_stubs_${_g}
+                 COMMAND bash ${_stub_sh} $<TARGET_FILE_DIR:wwv_live>
+                         ${CMAKE_CURRENT_BINARY_DIR}/live_stub/${_g} group:${_g})
+        set_tests_properties(live_stubs_${_g} PROPERTIES LABELS live TIMEOUT 300)
+    endforeach()
 endif()
