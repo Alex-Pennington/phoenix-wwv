@@ -61,6 +61,12 @@ add_executable(test_stream_offset test_stream_offset.c)
 target_link_libraries(test_stream_offset PRIVATE phoenix_wwv m)
 add_test(NAME stream_offset COMMAND test_stream_offset)
 
+# Stream time at the detectors: the same samples at a 40 h frame count stamp exactly 40 h later
+add_executable(test_detector_offset test_detector_offset.c detector_offset_start_tick.c
+               detector_offset_start_marker.c detector_offset_start_bcd.c)
+target_link_libraries(test_detector_offset PRIVATE phoenix_wwv m)
+add_test(NAME detector_offset COMMAND test_detector_offset)
+
 add_executable(btime_frames air/btime_frames.c)
 target_link_libraries(btime_frames PRIVATE phoenix_wwv)
 

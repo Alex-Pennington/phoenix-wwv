@@ -403,17 +403,28 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
     change mechanical. A sample index would need a conversion at every comparison with a ms
     constant. A double holds integers exactly to 2^53, far beyond any run.
   - **Detectors stamp an event from the frame count** with `wwv_frames_to_ms()`: an integer
-    multiply and one divide. `frame_count * FRAME_DURATION_MS` drifted with run length, because
-    5.12f is 2.2e-8 off (3 ms at 40 h).
+    multiply and one divide in double. The old `frame_count * FRAME_DURATION_MS` converted the
+    count to float and rounded the product to float, so its error was the float step, 16 ms at
+    40 h. The constant's own error (5.12f is 2.2e-8 off) is 3 ms at 40 h, under that step.
   - **Durations and offsets inside a second or a minute stay float** (pulse widths, edge offsets,
     `pulse_offset_ms`). Their difference is taken in double first. `minute_wrap()` and
-    `second_wrap()` in sync take a double, because during holdover an edge's offset from the held
-    anchor is the difference of two stream times hours apart.
+    `second_wrap()` in sync take a double. `second_wrap()`'s argument, an edge less the held
+    anchor, is taken only while LOCKED, so it stays under 20 min (`SYNC_HOLDOVER_MS`,
+    `src/sync/sync_detector.c:50`). A float would do there; double is kept for uniformity.
+    `minute_wrap()` reaches about 80 min in recovery: an anchor up to 20 min old at the loss, then
+    `SYNC_RETENTION_WINDOW_MS`, 60 min (`:51`). From `confirm_marker()` it has no bound, because
+    `sync_detector_full_reset()` keeps `last_confirmed_ms`.
   - **`tests/test_stream_offset.c` runs sync, the correlator and the decoder through the manager's
     routing at 0 h and at 40 h,** on a 20-minute signal that drifts 1/16 ms per second, with six
     minutes of holdover. The transcripts (sync states, every symbol, every decoder result, the phase
     tracker's counts) are identical. The float chain fails it at the third line: a minute start
     7.9 ms off.
+  - **`tests/test_detector_offset.c` runs the tick, marker and BCD detectors on 125 s of samples**
+    from a frame count of 20 x 1024 ms and from that plus 40 h. All 267 event stamps of the 40 h
+    run are the base run's plus exactly 144,000,000 ms. With `wwv_frames_to_ms()` returning float,
+    255 of 267 miss, by up to 7.69 ms. Both runs start past the startup guards
+    (`MARKER_MIN_STARTUP_MS`, `BCD_FREQ_MIN_STARTUP_MS`). Those key on stream time from 0, not
+    frames since start, so a detector started at a later frame count skips them.
   - **Measured against the float chain, at short run times:** on the four captures the symbol
     sequences, FRAME and UTC lines and every score are the same. Printed times differ by 0.1-0.4
     ms, and wall-clock strings differ. On kiwi plain and agc one slew lands 3 s later, so the held
