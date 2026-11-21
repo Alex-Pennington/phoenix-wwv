@@ -17,7 +17,11 @@
  * Phase 8: Valid P-marker Positions
  *============================================================================*/
 
-const int VALID_P_POSITIONS[] = {0, 9, 19, 29, 39, 49, 59, -1};
+/* WWV's position markers. Second 0 (the WWVB frame reference) is not one: WWV
+ * sends no pulse there, and a long event at second 0 labelled P made the time
+ * decoder refuse the frame. On the live replays every such frame was on the
+ * right phase (run90d 11:36 and 12:03, run90c, run90, run90f, run3h). */
+const int VALID_P_POSITIONS[] = {9, 19, 29, 39, 49, 59, -1};
 
 /*============================================================================
  * Symbol Classification Functions
