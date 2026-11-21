@@ -25,6 +25,9 @@
 #                       the scan and the live run
 #   --scan-secs N       auto: seconds per band in the scan (default 25)
 #   --scan-json FILE    auto: keep the scan's figures as JSON
+#   --scan-timeout N    auto: stop a band scan that runs past N s of wall clock (default
+#                       bands x (--scan-secs + 15) + bands x (35 + 15), the second term
+#                       for close-call extensions of 35 s; 240 + 300 s at the defaults)
 #   --stall-secs N      reopen the stream when no sample has come for N s (default 10;
 #                       0: never)
 #   --reopen-max N      end the run after N reopens (default 20)
@@ -46,6 +49,12 @@
 # sync (GAP lines on the console and in the log). rsp2_stream holds its output 3 s to
 # place each fill; it passes its anchor, measured before the hold, to wwv_live through
 # a file (--anchor-out / --anchor-in).
+#
+# Scan failure: a band scan that runs past --scan-timeout is stopped (its Python too, killed
+# when it is stuck in the driver), and a scan that exits 5 reports the sdrplay API failing
+# (wwv_band_scan.py). Either way sdrplay.service is stopped and started again (memory
+# compacted first) and the scan runs once more. When that fails the same way, the run
+# ends with exit status 3, "not going live", at the first scan or at a re-scan alike.
 #
 # Reopen: the stream is stopped and opened again on the same band, as a new segment
 # (wwv_live's sample-counter clock cannot carry across a gap it cannot fill), when
@@ -74,6 +83,7 @@ REPO=$(dirname "$HERE")
 BUILD=$REPO/build
 SECS=0; RECORD=; AGC=; LOG=; TIMEBASE=; CARRIER=; PPM=1.09; LNA=; IFGR=
 WWV_KHZ=5000; OFFSET_KHZ=100; RATE=2000000; SCALE=32; SCAN_SECS=25; SCAN_JSON=; LOCK_MINS=8
+SCAN_TIMEOUT=
 STALL_SECS=10; REOPEN_MAX=20
 # The streamer; a test may point this at a stub that takes the same options.
 RSP2_STREAM=${WWV_RSP2_STREAM:-$HERE/rsp2_stream.py}
@@ -94,6 +104,7 @@ while [ $# -gt 0 ]; do
     --gain) GAINS+=(--gain "$2"); shift 2 ;;
     --scan-secs) SCAN_SECS=$2; shift 2 ;;
     --scan-json) SCAN_JSON=$2; shift 2 ;;
+    --scan-timeout) SCAN_TIMEOUT=$2; shift 2 ;;
     --lock-mins) LOCK_MINS=$2; shift 2 ;;
     --stall-secs) STALL_SECS=$2; shift 2 ;;
     --reopen-max) REOPEN_MAX=$2; shift 2 ;;
@@ -110,6 +121,14 @@ esac
 [[ $LOCK_MINS =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "--lock-mins: want minutes, not $LOCK_MINS" >&2; exit 2; }
 [[ $STALL_SECS =~ ^[0-9]+$ ]] || { echo "--stall-secs: want whole seconds, not $STALL_SECS" >&2; exit 2; }
 [[ $REOPEN_MAX =~ ^[0-9]+$ ]] || { echo "--reopen-max: want a count, not $REOPEN_MAX" >&2; exit 2; }
+[[ $SCAN_SECS =~ ^[0-9]+$ ]] || { echo "--scan-secs: want whole seconds, not $SCAN_SECS" >&2; exit 2; }
+if [ -z "$SCAN_TIMEOUT" ]; then
+  # every band read, plus a close-call extension (wwv_band_scan.py's 35 s) of every band
+  NBANDS=$(python3 -I -c "import sys; sys.path.insert(0, sys.argv[1]); import wwv_bands; print(len(wwv_bands.WWV_KHZ))" "$HERE")
+  SCAN_TIMEOUT=$((NBANDS * (SCAN_SECS + 15) + NBANDS * (35 + 15)))
+fi
+[[ $SCAN_TIMEOUT =~ ^[0-9]+$ ]] && [ "$SCAN_TIMEOUT" -gt 0 ] ||
+  { echo "--scan-timeout: want whole seconds over 0, not $SCAN_TIMEOUT" >&2; exit 2; }
 AUTO=; [ "$WWV_KHZ" = auto ] && AUTO=1
 SDRPLAY_TAG=wwv_rsp2_live
 . "$HERE/sdrplay_service.sh"
@@ -242,10 +261,25 @@ svc_ready() {
   say "sdrplay.service is $(sdrplay_state) 30 s after the reopen was asked for; starting it"
   sdrplay_start
 }
+# stop_scan: stop the band scan and its Python. TERM reaches the scan's wrapper, which
+# stops the Python; a Python stuck in the driver hears no signal, so whatever of the
+# wrapper's children is left after the wrapper is gone is killed.
+stop_scan() {
+  local kids k
+  kids=$(pgrep -P "$SCPID" 2>/dev/null || true)
+  stop_pid "$SCPID" wwv_band_scan.sh 100
+  for k in $kids; do
+    if kill -0 "$k" 2>/dev/null; then
+      say "the band scan's process $k outlived its wrapper; killing it"
+      kill -KILL "$k" 2>/dev/null || true
+    fi
+  done
+  SCPID=
+}
 cleanup() {
   local rc=$?
   trap - EXIT INT TERM
-  [ -n "$SCPID" ] && stop_pid "$SCPID" wwv_band_scan.sh 100
+  [ -n "$SCPID" ] && stop_scan
   stop_live
   [ -n "$FIFODIR" ] && /bin/rm -rf "$FIFODIR"
   sdrplay_stop
@@ -263,28 +297,56 @@ sdrplay_start
 
 SEG=1
 HISTORY=()
-# scan [--avoid KHZ]: run the band scan under this script's service start, in the
-# background so a signal reaches the traps at once. Sets BAND to its choice, or empty.
-scan() {
+# scan_once [--avoid KHZ]: run the band scan under this script's service start, in the
+# background so a signal reaches the traps at once. Sets BAND to its choice, or empty,
+# and SCAN_FAIL to the reason when it ran past --scan-timeout or reported the API failing.
+scan_once() {
   local sj
   sj=$(seg_name "${SCAN_JSON:-$FIFODIR/scan.json}" "$SEG")
-  say "scanning the WWV bands, $SCAN_SECS s each${1:+, avoiding $2 kHz}; figures in $sj"
+  /bin/rm -f "$sj"
+  say "scanning the WWV bands, $SCAN_SECS s each${1:+, avoiding $2 kHz}; figures in $sj (bound $SCAN_TIMEOUT s)"
   "$HERE/wwv_band_scan.sh" --no-service --secs "$SCAN_SECS" --json "$sj" "${GAINS[@]}" --ppm "$PPM" "$@" >&2 &
   SCPID=$!
   note_pids
-  local src=0
+  local src=0 t0=$SECONDS
+  SCAN_FAIL=
   while kill -0 "$SCPID" 2>/dev/null; do
     if past_end; then
       say "--secs reached during the re-scan; stopping it"
-      stop_pid "$SCPID" wwv_band_scan.sh 100
+      stop_scan
+      break
+    fi
+    if [ $((SECONDS - t0)) -ge "$SCAN_TIMEOUT" ]; then
+      SCAN_FAIL="the band scan ran past its $SCAN_TIMEOUT s bound"
+      say "SCAN: $SCAN_FAIL; stopping it"
+      stop_scan
       break
     fi
     sleep 1 & wait $! || true
   done
-  wait "$SCPID" 2>/dev/null || src=$?
-  SCPID=
-  BAND=$(python3 -I -c "import json,sys; b=json.load(open(sys.argv[1])).get('best_khz'); print(b if b else '')" "$sj" 2>/dev/null || true)
-  [ -n "$BAND" ] || say "the band scan found no band (exit $src)"
+  if [ -n "$SCPID" ]; then
+    wait "$SCPID" 2>/dev/null || src=$?
+    SCPID=
+  fi
+  [ "$src" = 5 ] && SCAN_FAIL="the band scan reports the sdrplay API failing (exit 5)"
+  BAND=
+  [ -z "$SCAN_FAIL" ] &&
+    BAND=$(python3 -I -c "import json,sys; b=json.load(open(sys.argv[1])).get('best_khz'); print(b if b else '')" "$sj" 2>/dev/null || true)
+  [ -n "$BAND" ] || [ -n "$SCAN_FAIL" ] || say "the band scan found no band (exit $src)"
+  return 0
+}
+# scan [--avoid KHZ]: scan_once; when it fails (SCAN_FAIL), restart sdrplay.service,
+# memory compacted first, and scan once more. SCAN_FAIL stays set when that fails too.
+scan() {
+  scan_once "$@"
+  if [ -n "$SCAN_FAIL" ] && ! past_end; then
+    say "SCAN: restarting sdrplay.service and scanning once more"
+    sdrplay_stop
+    sdrplay_start
+    scan_once "$@"
+    [ -n "$SCAN_FAIL" ] && say "SCAN: failed again after the restart: $SCAN_FAIL"
+  fi
+  return 0
 }
 
 # END is set before the first scan: scan() calls past_end, and under set -u an
@@ -415,7 +477,11 @@ while :; do
   OLD=$WWV_KHZ
   SEG=$((SEG + 1))
   scan --avoid "$OLD"
-  if [ -z "$BAND" ]; then
+  if [ -n "$SCAN_FAIL" ]; then
+    HISTORY+=("re-scan for segment $SEG: $SCAN_FAIL")
+    say "not going live"
+    rc=3; break
+  elif [ -z "$BAND" ]; then
     say "SWITCH: no band from the re-scan; staying on $OLD kHz"
   elif [ "$BAND" = "$OLD" ]; then
     say "SWITCH: the re-scan keeps $OLD kHz (no other band in the running)"

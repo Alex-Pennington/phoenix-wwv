@@ -19,7 +19,10 @@
 #   --no-service           do not start or stop sdrplay.service (the caller holds it)
 #
 # Prints the ranked table and a last stdout line `BEST <kHz>` (`BEST none` when no band
-# could be measured without overload). Exit 0 with a band, 3 without one. The choice:
+# could be measured without overload). Exit 0 with a band, 3 without one, 5 when the
+# sdrplay API is failing (two bands in a row with a failed activateStream or no samples,
+# ServiceNotResponding, or a read stuck in the driver: restart sdrplay.service). Each
+# band's read ends by the wall clock, samples or not (wwv_band_scan.py). The choice:
 # among bands with 40% of seconds over a 10 dB tick contrast and 50% over a 10 dB BCD
 # contrast, the lowest band within 20 points of the best BCD score (wwv_band_scan.py,
 # docs/WWV_LIVE.md).
@@ -41,7 +44,7 @@ while [ $# -gt 0 ]; do
     --overload-plugin) PLUGIN=$2; shift 2 ;;
     --no-overload-plugin) PLUGIN=; shift ;;
     --no-service) SERVICE=; shift ;;
-    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
