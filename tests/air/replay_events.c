@@ -184,7 +184,6 @@ int main(int argc, char **argv) {
                                  .accumulated_energy = 1.0f, .peak_energy = 1.0f,
                                  .duration_ms = (float)d, .start_timestamp_ms = l };
             wwv_routing_on_marker_event(&e, mgr);
-
             n_mark++;
         } else if (strncmp(line, "BTIME ", 6) == 0 && field(line, "t", &t) &&
                    field(line, "dur", &d) && field(line, "at", &a)) {
@@ -216,7 +215,6 @@ int main(int argc, char **argv) {
             advance_to(now);
             marker_event_t e = { .timestamp_ms = t, .accumulated_energy = 1.0f, .peak_energy = 1.0f,
                                  .duration_ms = (float)d, .start_timestamp_ms = l };
-
             wwv_routing_on_marker_candidate(&e, mgr);
             n_markw++;
         } else if (strncmp(line, "GAP ", 4) == 0 && field(line, "start", &t) && field(line, "len", &d)) {

@@ -161,7 +161,6 @@ void marker_state_machine_run(marker_detector_t *md);
 /* Helper functions (remain in marker_detector.c) */
 void marker_get_wall_time_str(marker_detector_t *md, wwv_time_ms_t timestamp_ms, char *buf, size_t buflen);
 
-
 #ifdef __cplusplus
 }
 #endif

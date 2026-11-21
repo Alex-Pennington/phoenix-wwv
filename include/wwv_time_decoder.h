@@ -254,7 +254,6 @@ void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *event, void *user_d
  */
 void wwv_time_decoder_periodic(wwv_time_decoder_t *td, wwv_time_ms_t now_ms);
 
-
 /** The last minute's result, or NULL before the first frame closes. */
 const wwv_td_result_t *wwv_time_decoder_get_last(const wwv_time_decoder_t *td);
 

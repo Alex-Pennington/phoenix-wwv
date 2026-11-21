@@ -147,7 +147,6 @@ void tone_log_measurement(tone_tracker_t *tt) {
 
     wwv_time_ms_t timestamp_ms = wwv_frames_to_ms(tt->frame_count, TONE_FFT_SIZE, TONE_SAMPLE_RATE);
 
-
     fprintf(tt->csv_file, "%s,%.1f,%.3f,%.3f,%.2f,%.1f,%s\n",
             time_str,
             timestamp_ms,

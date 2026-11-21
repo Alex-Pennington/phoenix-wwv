@@ -9,7 +9,6 @@
 #include <stdbool.h>
 #include "wwv_time.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,7 +43,6 @@ void marker_correlator_fast_event(marker_correlator_t *mc,
 /* Called every slow path frame */
 void marker_correlator_slow_frame(marker_correlator_t *mc,
                                    wwv_time_ms_t timestamp_ms,
-
                                    float energy,
                                    float snr_db,
                                    bool above_threshold);

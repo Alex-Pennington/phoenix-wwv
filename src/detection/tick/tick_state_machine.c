@@ -348,7 +348,6 @@ void tick_state_machine_run(tick_detector_t *td) {
                 td->ticks_rejected++;
                 printf("[%7.1fs] REJECTED: pulse >1s, bailing out\n",
                        TICK_FRAMES_TO_MS(frame) / 1000.0);
-
                 tick_state_reset_floor(td);
                 td->last_run_end_frame = frame;
                 td->state = STATE_COOLDOWN;

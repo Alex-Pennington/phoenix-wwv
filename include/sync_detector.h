@@ -219,7 +219,6 @@ const char *sync_state_name(sync_state_t state);
  */
 wwv_time_ms_t sync_detector_get_last_marker_ms(sync_detector_t *sd);
 
-
 /**
  * Get count of confirmed markers
  */
@@ -280,7 +279,6 @@ int sync_detector_get_good_intervals(sync_detector_t *sd);
  * @return true if tick marker is pending, false otherwise
  */
 bool sync_detector_get_pending_tick(sync_detector_t *sd, wwv_time_ms_t *timestamp_ms, float *duration_ms);
-
 
 /*============================================================================
  * Runtime Parameter Tuning

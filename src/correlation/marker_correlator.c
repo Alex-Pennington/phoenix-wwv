@@ -139,7 +139,6 @@ void marker_correlator_slow_frame(marker_correlator_t *mc,
                        mc->slow_peak_snr, conf_str);
 
                 time_t event_time = mc->start_time + (time_t)(mc->fast_timestamp_ms / 1000.0);
-
                 struct tm *tm_info = localtime(&event_time);
                 char time_str[16];
                 strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);

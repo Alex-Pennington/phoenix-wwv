@@ -62,7 +62,6 @@ void slow_marker_detector_destroy(slow_marker_detector_t *smd) {
 void slow_marker_detector_process_fft(slow_marker_detector_t *smd,
                                        const kiss_fft_cpx *fft_out,
                                        wwv_time_ms_t timestamp_ms) {
-
     if (!smd || !fft_out) return;
 
     /* Extract tight 1000 Hz bucket energy */

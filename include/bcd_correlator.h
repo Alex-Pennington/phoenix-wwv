@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include "wwv_time.h"
 
-
 /* Forward declaration */
 typedef struct sync_detector sync_detector_t;
 
@@ -177,7 +176,6 @@ char bcd_corr_symbol_char(bcd_corr_symbol_t sym);
  * Get timestamp of last emitted symbol
  */
 wwv_time_ms_t bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr);
-
 
 /**
  * Get count of emitted symbols

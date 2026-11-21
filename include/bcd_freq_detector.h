@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include "wwv_time.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -59,7 +58,6 @@ typedef struct bcd_freq_detector bcd_freq_detector_t;
 
 typedef struct {
     wwv_time_ms_t timestamp_ms;     /* When pulse started */
-
     float duration_ms;              /* Pulse width */
     float accumulated_energy;       /* Energy accumulated during pulse */
     float baseline_energy;          /* Baseline at detection */

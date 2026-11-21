@@ -93,7 +93,6 @@ void bcd_correlator_set_callback(bcd_correlator_t *corr,
 void bcd_correlator_time_event(bcd_correlator_t *corr,
                                wwv_time_ms_t timestamp_ms,
                                float duration_ms,
-
                                float peak_energy) {
     if (!corr) return;
 
@@ -123,7 +122,6 @@ void bcd_correlator_time_event(bcd_correlator_t *corr,
 void bcd_correlator_freq_event(bcd_correlator_t *corr,
                                wwv_time_ms_t timestamp_ms,
                                float duration_ms,
-
                                float accum_energy) {
     if (!corr) return;
 
@@ -170,7 +168,6 @@ char bcd_corr_symbol_char(bcd_corr_symbol_t sym) {
 
 wwv_time_ms_t bcd_correlator_get_last_symbol_ms(bcd_correlator_t *corr) {
     return corr ? corr->last_symbol_ms : 0.0;
-
 }
 
 int bcd_correlator_get_symbol_count(bcd_correlator_t *corr) {

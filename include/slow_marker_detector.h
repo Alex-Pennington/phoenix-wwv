@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "wwv_time.h"
-
 #include "external/kiss_fft.h"
 
 #ifdef __cplusplus
@@ -59,7 +58,6 @@ void slow_marker_detector_destroy(slow_marker_detector_t *smd);
 void slow_marker_detector_process_fft(slow_marker_detector_t *smd,
                                        const kiss_fft_cpx *fft_out,
                                        wwv_time_ms_t timestamp_ms);
-
 
 void slow_marker_detector_set_callback(slow_marker_detector_t *smd,
                                         slow_marker_callback_fn cb, void *user_data);

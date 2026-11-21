@@ -194,7 +194,6 @@ void bcd_window_close(bcd_correlator_t *corr) {
      * ended: its end is the pulse's trailing edge (see HIDDEN_PREV_END_MS). */
     if (!edge && corr->time_event_count > 0 &&
         (float)(corr->time_first_ms - second_ms) <= pulse_offset_ms &&  /* not a BFREQ start */
-
         corr->time_first_ms - second_ms >= HIDDEN_START_MIN_MS &&
         !isnan(corr->time_first_prev_end_ms) &&
         corr->time_first_prev_end_ms - second_ms > -HIDDEN_PREV_END_MS &&
@@ -368,7 +367,6 @@ void bcd_window_periodic(bcd_correlator_t *corr, wwv_time_ms_t now_ms) {
     if (!corr) return;
     discard_on_break(corr);
     wwv_time_ms_t anchor_ms = bcd_window_get_minute_anchor(corr);
-
     if (anchor_ms < 0) {
         if (corr->window_open) {
             corr->window_partial = true;   /* lock ended inside it */

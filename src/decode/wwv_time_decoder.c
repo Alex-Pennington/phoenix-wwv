@@ -853,6 +853,5 @@ void wwv_time_decoder_bcd_callback(const bcd_symbol_event_t *e, void *user_data)
 }
 
 void wwv_time_decoder_periodic(wwv_time_decoder_t *td, wwv_time_ms_t now_ms) {
-
     if (td && td->cur_open && now_ms >= td->cur.start_ms + FRAME_CLOSE_MS) close_frame(td);
 }

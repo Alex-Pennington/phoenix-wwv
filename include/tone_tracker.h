@@ -14,7 +14,6 @@
 #include <stdint.h>
 #include "wwv_time.h"
 
-
 typedef struct tone_tracker tone_tracker_t;
 
 /*============================================================================

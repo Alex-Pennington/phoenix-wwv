@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include "wwv_time.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,7 +66,6 @@ typedef struct {
                                        Unreliable when the window sum barely clears the
                                        threshold (weak or faded markers). */
     wwv_time_ms_t start_timestamp_ms; /* Leading edge (on-time marker): window-run midpoint
-
                                        minus (window + 800 ms)/2 */
 } marker_event_t;
 

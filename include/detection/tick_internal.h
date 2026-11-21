@@ -28,7 +28,6 @@ extern "C" {
 
 #define FRAME_DURATION_MS   ((float)TICK_FFT_SIZE * 1000.0f / TICK_SAMPLE_RATE)
 #define TICK_FRAMES_TO_MS(f) wwv_frames_to_ms((f), TICK_FFT_SIZE, TICK_SAMPLE_RATE)  /* stream time */
-
 #define HZ_PER_BIN          ((float)TICK_SAMPLE_RATE / TICK_FFT_SIZE)
 
 /* Detection timing */
@@ -214,7 +213,6 @@ bool tick_state_is_gate_open(tick_detector_t *td, wwv_time_ms_t current_ms);
 /* Helper functions (remain in tick_detector.c) */
 float tick_calculate_avg_interval(tick_detector_t *td, wwv_time_ms_t current_time_ms);
 void tick_get_wall_time_str(tick_detector_t *td, wwv_time_ms_t timestamp_ms, char *buf, size_t buflen);
-
 
 #ifdef __cplusplus
 }

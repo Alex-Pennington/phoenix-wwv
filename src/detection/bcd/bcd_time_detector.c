@@ -168,7 +168,6 @@ void bcd_time_detector_print_stats(bcd_time_detector_t *td) {
     float frame_duration = bcd_time_detector_get_frame_duration_ms();
     float elapsed = (float)(wwv_frames_to_ms(td->frame_count, BCD_TIME_FFT_SIZE, BCD_TIME_SAMPLE_RATE) / 1000.0);
 
-
     printf("\n=== BCD TIME DETECTOR STATS ===\n");
     printf("FFT: %d (%.2fms), Target: %d Hz ±%d Hz\n",
            BCD_TIME_FFT_SIZE, frame_duration,

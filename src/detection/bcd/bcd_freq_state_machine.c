@@ -128,7 +128,6 @@ void bcd_freq_run_state_machine(bcd_freq_detector_t *fd) {
             if ((fd->consecutive_low_frames >= MIN_LOW_FRAMES) || timed_out) {
                 wwv_time_ms_t start_timestamp_ms = FREQ_FRAMES_TO_MS(fd->pulse_start_frame);
 
-
                 if (duration_ms >= BCD_FREQ_PULSE_MIN_MS &&
                     duration_ms <= BCD_FREQ_PULSE_MAX_MS) {
                     /* Valid pulse! */

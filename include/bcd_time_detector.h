@@ -23,7 +23,6 @@
 #include <stdio.h>
 #include "wwv_time.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,7 +93,6 @@ typedef struct bcd_time_detector bcd_time_detector_t;
 
 typedef struct {
     wwv_time_ms_t timestamp_ms; /* When pulse started */
-
     float duration_ms;          /* Pulse width */
     float peak_energy;          /* Peak energy during pulse */
     float noise_floor;          /* Noise floor at detection */

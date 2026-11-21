@@ -80,7 +80,6 @@ struct wwv_detector_manager {
 /** True when [lo_ms, hi_ms] overlaps a gap span widened by its guard and settle time */
 bool wwv_gap_covers(const wwv_detector_manager_t *mgr, wwv_time_ms_t lo_ms, wwv_time_ms_t hi_ms);
 
-
 /*============================================================================
  * Lifecycle Functions
  *============================================================================*/

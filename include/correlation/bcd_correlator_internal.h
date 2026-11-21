@@ -225,7 +225,6 @@ void bcd_window_note_edge(bcd_correlator_t *corr, wwv_time_ms_t start_ms, wwv_ti
  */
 void bcd_window_periodic(bcd_correlator_t *corr, wwv_time_ms_t now_ms);
 
-
 /*============================================================================
  * Symbol Classification Functions (bcd_symbol_classifier.c)
  *============================================================================*/

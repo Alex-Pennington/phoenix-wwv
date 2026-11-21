@@ -575,7 +575,6 @@ static void sync_detector_hole_detected(sync_detector_t *sd, wwv_time_ms_t hole_
         if (since_anchor < 0) since_anchor += 60000.0;
         if (since_anchor >= 60000.0) since_anchor -= 60000.0;
 
-
         int position = (int)(since_anchor / 1000.0 + 0.5);
 
         if (abs(position - 29) <= 1) {
@@ -1059,7 +1058,6 @@ void sync_detector_p_marker_event(sync_detector_t *sd, wwv_time_ms_t timestamp_m
         if (since_anchor < 0) since_anchor += 60000.0;
         if (since_anchor >= 60000.0) since_anchor -= 60000.0;
 
-
         int position = (int)(since_anchor / 1000.0 + 0.5);
 
         /* Check if at valid P position */
@@ -1163,7 +1161,6 @@ frame_time_t sync_detector_get_frame_time(sync_detector_t *sd) {
     if (ft.current_second > 59) ft.current_second = 59;
 
     ft.second_start_ms = minute_start + (ft.current_second * 1000.0);
-
     ft.confidence = sd->confidence;
     ft.evidence_mask = sd->evidence_mask;
     ft.state = sd->state;
@@ -1197,7 +1194,6 @@ void sync_detector_set_state_callback(sync_detector_t *sd,
 }
 
 bool sync_detector_get_pending_tick(sync_detector_t *sd, wwv_time_ms_t *timestamp_ms, float *duration_ms) {
-
     if (!sd || !sd->tick_pending) {
         return false;
     }

@@ -232,7 +232,6 @@ void marker_detector_print_stats(marker_detector_t *md) {
     if (!md) return;
 
     float elapsed = (float)(MARKER_FRAMES_TO_MS(md->frame_count) / 1000.0);
-
     int expected_markers = (int)(elapsed / 60.0f);
 
     printf("\n=== MARKER DETECTOR STATS ===\n");
@@ -256,7 +255,6 @@ void marker_detector_log_metadata(marker_detector_t *md, uint64_t center_freq,
 
     wwv_time_ms_t timestamp_ms = MARKER_FRAMES_TO_MS(md->frame_count);
 
-
     fprintf(md->csv_file, "%s,%.1f,META,0,freq=%llu rate=%u GR=%u LNA=%u,0,0,0,0,0\n",
             time_str, timestamp_ms,
             (unsigned long long)center_freq, sample_rate, gain_reduction, lna_state);
@@ -271,7 +269,6 @@ void marker_detector_log_display_gain(marker_detector_t *md, float display_gain)
     strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&now));
 
     wwv_time_ms_t timestamp_ms = MARKER_FRAMES_TO_MS(md->frame_count);
-
 
     fprintf(md->csv_file, "%s,%.1f,GAIN,0,display_gain=%+.0fdB,0,0,0,0,0\n",
             time_str, timestamp_ms, display_gain);

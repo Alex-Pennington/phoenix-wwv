@@ -150,7 +150,6 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                 /* Pulse ended - check validity */
                 float duration_ms = td->pulse_duration_frames * FRAME_DURATION_MS;
                 wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(td->pulse_start_frame);
-
                 float snr_db = 10.0f * log10f(td->pulse_peak_energy / td->noise_floor);
 
                 if (duration_ms >= BCD_TIME_PULSE_MIN_MS &&

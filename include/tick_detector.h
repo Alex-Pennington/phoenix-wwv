@@ -20,7 +20,6 @@
 #include <stdio.h>
 #include "wwv_time.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -231,7 +230,6 @@ void tick_detector_set_epoch(tick_detector_t *td, wwv_time_ms_t epoch_ms);
  * @param confidence Confidence metric 0-1 (higher = more precise)
  */
 void tick_detector_set_epoch_with_source(tick_detector_t *td, wwv_time_ms_t epoch_ms,
-
                                           epoch_source_t source, float confidence);
 
 void tick_detector_set_gating_enabled(tick_detector_t *td, bool enabled);

@@ -229,7 +229,6 @@ wwv_sync_status_t wwv_detector_manager_get_sync_status(wwv_detector_manager_t *m
 uint64_t wwv_detector_manager_get_detector_samples(wwv_detector_manager_t *mgr);
 wwv_time_ms_t wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr);
 
-
 /**
  * The owned components, for diagnostics (NULL when disabled). Do not destroy them,
  * and do not replace their callbacks.
@@ -281,7 +280,6 @@ void wwv_detector_manager_log_display_gain(wwv_detector_manager_t *mgr, float di
 #define WWV_GAP_SETTLE_MS     1500.0
 #define WWV_GAP_SPANS      8
 void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, wwv_time_ms_t start_ms, double len_ms);
-
 
 /** Events held back from routing by gaps, cumulative since create */
 typedef struct { int tick, tmark, marker, candidate, btime, bfreq; } wwv_gap_drops_t;

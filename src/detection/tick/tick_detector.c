@@ -338,7 +338,6 @@ void tick_detector_log_metadata(tick_detector_t *td, uint64_t center_freq,
     /* Get timestamp in ms since detector start */
     wwv_time_ms_t timestamp_ms = TICK_FRAMES_TO_MS(td->frame_count);
 
-
     /* Log as special META row */
     fprintf(td->csv_file, "%s,%.1f,META,0,freq=%llu rate=%u GR=%u LNA=%u,0,0,0,0,0,0\n",
             time_str, timestamp_ms,
@@ -359,7 +358,6 @@ void tick_detector_log_display_gain(tick_detector_t *td, float display_gain_db) 
 
     /* Get timestamp in ms since detector start */
     wwv_time_ms_t timestamp_ms = TICK_FRAMES_TO_MS(td->frame_count);
-
 
     /* Log as special GAIN row */
     fprintf(td->csv_file, "%s,%.1f,GAIN,0,display_gain=%.1f,0,0,0,0,0,0,0\n",
@@ -397,7 +395,6 @@ void tick_detector_set_epoch_with_source(tick_detector_t *td, wwv_time_ms_t epoc
 }
 
 void tick_detector_set_epoch(tick_detector_t *td, wwv_time_ms_t epoch_ms) {
-
     /* Legacy function - assume marker source with medium confidence */
     tick_detector_set_epoch_with_source(td, epoch_ms, EPOCH_SOURCE_MARKER, 0.7f);
 }

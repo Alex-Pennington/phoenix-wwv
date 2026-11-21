@@ -162,7 +162,6 @@ void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, wwv_time_ms_t st
 bool wwv_gap_covers(const wwv_detector_manager_t *mgr, wwv_time_ms_t lo_ms, wwv_time_ms_t hi_ms) {
     if (!mgr) return false;
     if (hi_ms < lo_ms) { wwv_time_ms_t t = lo_ms; lo_ms = hi_ms; hi_ms = t; }
-
     for (int k = 0; k < mgr->n_gaps; k++) {
         double len = mgr->gaps[k].end_ms - mgr->gaps[k].start_ms;
         double settle = WWV_GAP_SETTLE_MIN_MS + len;
@@ -238,7 +237,6 @@ uint64_t wwv_detector_manager_get_detector_samples(wwv_detector_manager_t *mgr) 
 }
 
 wwv_time_ms_t wwv_detector_manager_get_now_ms(wwv_detector_manager_t *mgr) {
-
     return mgr ? mgr->now_ms : 0.0;
 }
 
