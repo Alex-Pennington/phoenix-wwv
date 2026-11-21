@@ -611,6 +611,42 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 - **`~/wwv-capture/score.py` matches chain-log lines by the prefix `TMARK`**, so any new line
   starting with it crashes the air scoring. The candidate lines are `CANDT` and `CANDM` for that
   reason.
+- **SoapySDRPlay3 0.5.3 passes on none of the SDRplay API's loss signals** (fix/wwv-gap-fill).
+  Its `rx_callback` (`Streaming.cpp`, saga's build of tag `soapy-sdrplay3-0.5.3`) ignores
+  `params->firstSampleNum` and the callback's `reset` argument; `acquireReadBuffer` sets
+  `flags = 0` and never sets `timeNs`, so readStream gives no `SOAPY_SDR_HAS_TIME`;
+  `SOAPY_SDR_OVERFLOW` means only that its own ring (8 buffers of 65536, about 262 ms) filled.
+  So the Sync section's "the SDRplay stream callback carries `firstSampleNum`, so the producer can
+  see each gap" holds for the API, not for what reaches `rsp2_stream.py`. `rsp2_stream.py` now
+  reads losses from arrival times instead (its docstring). A two-line patch to the plugin
+  (`firstSampleNum` into `timeNs`, as the private overload-logging build patches `Streaming.cpp`)
+  would give an exact count; not done, and whether `firstSampleNum` steps on a libusb errno=12
+  loss is not measured.
+- **run3h's stream slipped about 0.08 ms/s for 70 minutes, then lost 3.7 s** (console, as of
+  00:35 UTC 2026-11-21). rsp2_stream's "behind" and wwv_live's least lag grew alike, +12 to
+  +344 ms from t=600 to 4200 s with 0 timeouts and 0 overflows; NTP reports the host synchronised.
+  The saga capture's timelog drifts 5.9 ppm over 630 s, and the TCXO read 1.09 ppm, so 80 ppm is
+  not the radio clock alone; the cause is not found. From t=4200 to 5100 s it lost 3.7 s more, with
+  one 1.2 s timeout.
+- **rsp2_stream's "the reader is not keeping up" label is wrong on run3h.** The write wait is a
+  steady 1.5-3 s per 60 s whatever the loss, so a growth under twice that reads as the reader's
+  fault: the +159 ms and +225 ms minutes of the 3.7 s loss were labelled so, with a write-wait
+  maximum of 12 ms. The label is unchanged on fix/wwv-gap-fill; the gap fill does not use it.
+- **The gap fill's limits** (fix/wwv-gap-fill, `scripts/rsp2_stream.py`):
+  - Its margins (15 ms over 2 s, 2.5 ms over 30 s) come from one 10-minute capture at 5 MHz
+    with a quiet host. A busier host or another band could raise the window minimum past
+    them: a false fill would put the stream ahead by the excess, and nothing takes it back.
+  - A fill goes in at the block where the lag rose, to within a block (33 ms at 2 MS/s). When
+    the last block before a loss arrives late (jitter), part of the fill goes in one block early,
+    so up to the 15 ms margin briefly runs ahead (seen on the fake radio: +12 ms for one block).
+  - A slow loss is filled 15 ms at a time once 30 ms is owed, so the stream runs up to about
+    30 ms late in between. Each fill erases the BCD seconds it overlaps: on the synthetic ramp
+    23 of 181 seconds against 3 unfilled.
+  - The settle time after a span (100 ms + its length, at most 1.5 s) was set on synthetic
+    WWV, where the onset events fall within 40 ms of the span's end. It is not measured on air.
+  - wwv_live reads 0.5 ms of exact (0,0) as a fill. Any producer that sends real zeros that
+    long (a muted source, a test file) has them taken as gaps.
+  - `docs/WWV_LIVE.md` does not describe GAP / GAPEND, `--anchor-in` or the 3 s hold yet.
 
 ## Documentation
 

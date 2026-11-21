@@ -13,7 +13,16 @@
  * the block's duration), or to --t0 for a recording. UTC of a detector time t is
  * anchor + t - front-end group delay. The anchor is logged at start, sent as a
  * CONS telemetry line, and written by --timebase in the form the scoring scripts
- * read (out_utc0_unix = UTC of detector time 0).
+ * read (out_utc0_unix = UTC of detector time 0). With --anchor-in, the anchor is
+ * the one rsp2_stream.py measured before its hold line (see there), read when the
+ * 10 s refinement ends.
+ *
+ * Gaps: rsp2_stream.py fills samples lost upstream with zeros, so the sample count
+ * stays on true time. A run of at least GAP_MIN_S of exact zero samples (s16 or
+ * f32) is such a fill: it is passed to wwv_detector_manager_mark_gap() before it is
+ * processed, so no event the zeros made or cut reaches sync, the correlator or the
+ * decoder, and the log gets "GAP start= len=" before the span's events and
+ * "GAPEND ..." with what was held back once the span has settled.
  *
  * See docs/WWV_LIVE.md.
  */
@@ -88,6 +97,7 @@ typedef struct {
     double t0;
     const char *log_path;
     const char *timebase_path;
+    const char *anchor_in_path;  /* rsp2_stream.py --anchor-out */
     const char *csv_dir;
     const char *frames_path;
     double status_s;
@@ -113,7 +123,16 @@ typedef struct {
     double lag_min_ms, lag_max_ms;  /* arrival lag behind the anchor, this status interval */
     double lag_said_ms;             /* minimum lag at the last LAG line */
     double utc0;                /* UTC of detector time 0 */
+    double hold_s;              /* the producer's hold line (--anchor-in), taken off arrival times */
     uint64_t in_samples;
+
+    /* zero runs (filled gaps) */
+    uint64_t zero_run;          /* zero samples held back: a run that reached the end of a block */
+    bool in_gap;                /* pushing a fill: its arrival time says nothing of the stream's lag */
+    struct { double start_ms, len_ms, close_ms; } open_gaps[WWV_GAP_SPANS];
+    int n_open_gaps;
+    wwv_gap_drops_t drops_said; /* drop counts at the last GAPEND */
+    int n_gaps; double gap_ms_total;
     double next_status_ms;
 
     /* status */
@@ -376,6 +395,21 @@ static void set_anchor(double sample0_unix, const char *how) {
  * sample 0 plus a latency >= 0. The first block anchors; for ANCHOR_REFINE_S of
  * stream the anchor follows the lowest such value (least-delayed block), then it
  * is fixed and logged again. */
+/* --anchor-in: in_sample0_unix and hold_s from rsp2_stream's JSON; false if absent */
+static bool read_anchor_in(double *sample0, double *hold) {
+    FILE *f = fopen(A.opt.anchor_in_path, "r");
+    if (!f) return false;
+    char buf[4096];
+    size_t k = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[k] = '\0';
+    const char *a = strstr(buf, "\"in_sample0_unix\":"), *h = strstr(buf, "\"hold_s\":");
+    if (!a || !h) return false;
+    *sample0 = strtod(a + strlen("\"in_sample0_unix\":"), NULL);
+    *hold = strtod(h + strlen("\"hold_s\":"), NULL);
+    return *sample0 > 0.0 && *hold >= 0.0;
+}
+
 static void time_block(size_t n, double arrival) {
     double d = arrival - (double)(A.in_samples + n) / A.opt.rate;
     if (!A.anchored) {
@@ -394,19 +428,33 @@ static void time_block(size_t n, double arrival) {
         if (d < A.anchor_unix) { A.anchor_unix = d; A.utc0 = d - iq_frontend_group_delay_s(A.fe); }
         if ((double)A.in_samples / A.opt.rate >= ANCHOR_REFINE_S) {
             A.refining = false;
-            char how[128];
-            snprintf(how, sizeof how, "least-delayed block over the first %.0f s (arrival minus stream time)",
-                     ANCHOR_REFINE_S);
-            set_anchor(A.anchor_unix, how);
+            char how[160];
+            double s0, hold;
+            if (A.opt.anchor_in_path && read_anchor_in(&s0, &hold)) {
+                /* rsp2_stream measured it before its hold line; its own arrivals
+                 * here are late by the hold, which the lag now leaves out */
+                snprintf(how, sizeof how, "rsp2_stream: least-delayed block over the first %.0f s, "
+                         "before its %.3f s hold line", ANCHOR_REFINE_S, hold);
+                A.hold_s = hold;
+                set_anchor(s0, how);
+            } else {
+                if (A.opt.anchor_in_path)
+                    fprintf(stderr, "wwv_live: --anchor-in %s: no anchor read; using this end's, which is "
+                            "late by the producer's hold line\n", A.opt.anchor_in_path);
+                snprintf(how, sizeof how, "least-delayed block over the first %.0f s (arrival minus stream time)",
+                         ANCHOR_REFINE_S);
+                set_anchor(A.anchor_unix, how);
+            }
         }
     }
-    double lag = (d - A.anchor_unix) * 1000.0;
+    if (A.in_gap) return;
+    double lag = (d - A.hold_s - A.anchor_unix) * 1000.0;   /* hold_s: read with the anchor */
     if (lag < A.lag_min_ms) A.lag_min_ms = lag;
     if (lag > A.lag_max_ms) A.lag_max_ms = lag;
 }
 
 /* Convert n samples of the given format into floats and push them */
-static void push_raw(const void *buf, size_t n, int format, double arrival) {
+static void push_samples(const void *buf, size_t n, int format, double arrival) {
     static float *f = NULL;
     static size_t cap = 0;
     if (n > cap) { free(f); cap = n; f = malloc(sizeof(float) * 2 * cap); }
@@ -422,6 +470,115 @@ static void push_raw(const void *buf, size_t n, int format, double arrival) {
     time_block(n, arrival);
     A.in_samples += n;
     iq_frontend_push(A.fe, f, n, det_sample, A.opt.tones ? disp_sample : NULL, NULL);
+}
+
+/*----------------------------------------------------------------------------
+ * Filled gaps: runs of exact zeros
+ *----------------------------------------------------------------------------*/
+
+#define GAP_MIN_S     0.0005   /* a zero run at least this long is a filled gap */
+#define GAP_MIN_SAMPLES 64
+#define GAPEND_WAIT_MS 5000.0  /* after a span's settle time, for the slowest event report */
+
+static size_t gap_min_samples(void) {
+    size_t m = (size_t)(GAP_MIN_S * A.opt.rate);
+    return m < GAP_MIN_SAMPLES ? GAP_MIN_SAMPLES : m;
+}
+
+static bool is_zero(const void *buf, size_t k, int format) {
+    if (format == IQ_FORMAT_S16) { const int16_t *s = buf; return s[2 * k] == 0 && s[2 * k + 1] == 0; }
+    if (format == IQ_FORMAT_F32) { const float *s = buf; return s[2 * k] == 0.0f && s[2 * k + 1] == 0.0f; }
+    return false;
+}
+
+/* GAPEND lines for spans whose settle time has passed (all of them when `all`) */
+static void close_gaps(bool all) {
+    double now = wwv_detector_manager_get_now_ms(A.mgr);
+    int k = 0;
+    while (k < A.n_open_gaps) {
+        if (!all && now < A.open_gaps[k].close_ms) { k++; continue; }
+        /* events held back since the last GAPEND: spans that overlap in time share them */
+        wwv_gap_drops_t d = wwv_detector_manager_get_gap_drops(A.mgr), p = A.drops_said;
+        wwv_gap_drops_t x = { d.tick - p.tick, d.tmark - p.tmark, d.marker - p.marker,
+                              d.candidate - p.candidate, d.btime - p.btime, d.bfreq - p.bfreq };
+        A.drops_said = d;
+        if (A.log)
+            fprintf(A.log, "GAPEND start=%.1f len=%.1f tick=%d tmark=%d mark=%d cand=%d btime=%d bfreq=%d\n",
+                    A.open_gaps[k].start_ms, A.open_gaps[k].len_ms, x.tick, x.tmark, x.marker, x.candidate,
+                    x.btime, x.bfreq);
+        printf("GAPEND   stream %.1f s, %.0f ms: held back tick %d, tick-marker %d, marker %d, candidate %d, "
+               "BTIME %d, BFREQ %d\n", A.open_gaps[k].start_ms / 1000.0, A.open_gaps[k].len_ms,
+               x.tick, x.tmark, x.marker, x.candidate, x.btime, x.bfreq);
+        memmove(&A.open_gaps[k], &A.open_gaps[k + 1], sizeof A.open_gaps[0] * (size_t)(A.n_open_gaps - k - 1));
+        A.n_open_gaps--;
+    }
+}
+
+static int bytes_per_sample(int format);
+
+/* Push n zero samples as they are (a run too short to be a fill) */
+static void push_zeros(uint64_t n, double arrival) {
+    static const float zf[2 * 4096];
+    while (n > 0) {
+        size_t m = n > 4096 ? 4096 : (size_t)n;
+        push_samples(zf, m, IQ_FORMAT_F32, arrival);
+        n -= m;
+    }
+}
+
+/* Push n zero samples that are a filled gap: mark it first, then process it */
+static void push_gap(uint64_t n, int format, double arrival) {
+    double gd_ms = iq_frontend_group_delay_s(A.fe) * 1000.0;
+    double start_ms = (double)A.in_samples / A.opt.rate * 1000.0 + gd_ms;
+    double len_ms = (double)n / A.opt.rate * 1000.0;
+    wwv_detector_manager_mark_gap(A.mgr, start_ms, len_ms);
+    if (A.log) fprintf(A.log, "GAP start=%.1f len=%.1f\n", start_ms, len_ms);
+    char t[40];
+    fmt_utc(A.utc0 + start_ms / 1000.0, t, sizeof t, 3);
+    printf("GAP      %s stream %.1f s: %.1f ms of samples lost upstream (filled); "
+           "events there are not evidence\n", t, start_ms / 1000.0, len_ms);
+    if (A.n_open_gaps == WWV_GAP_SPANS) close_gaps(true);
+    A.open_gaps[A.n_open_gaps].start_ms = start_ms;
+    A.open_gaps[A.n_open_gaps].len_ms = len_ms;
+    A.open_gaps[A.n_open_gaps].close_ms = start_ms + len_ms + WWV_GAP_SETTLE_MS + GAPEND_WAIT_MS;
+    A.n_open_gaps++;
+    A.n_gaps++; A.gap_ms_total += len_ms;
+    (void)format;
+    A.in_gap = true;          /* a held run goes in at once, stamped with a later block's arrival */
+    push_zeros(n, arrival);
+    A.in_gap = false;
+}
+
+/* Push a block, taking its zero runs out as gaps. A run that reaches the block's
+ * end is held back until it ends, so it is marked once, whole. */
+static void push_raw(const void *buf, size_t n, int format, double arrival) {
+    if (A.n_open_gaps) close_gaps(false);
+    if (format != IQ_FORMAT_S16 && format != IQ_FORMAT_F32) { push_samples(buf, n, format, arrival); return; }
+    size_t bps = (size_t)bytes_per_sample(format);
+    const uint8_t *b = buf;
+    size_t k = 0, gmin = gap_min_samples();
+    while (k < n) {
+        size_t j = k;
+        while (j < n && !is_zero(buf, j, format)) j++;
+        if (j > k) {
+            if (A.zero_run) {    /* the held run ended at this block's start */
+                if (A.zero_run >= gmin) push_gap(A.zero_run, format, arrival);
+                else push_zeros(A.zero_run, arrival);
+                A.zero_run = 0;
+            }
+            push_samples(b + k * bps, j - k, format, arrival);
+            k = j;
+        }
+        size_t z = k;
+        while (z < n && is_zero(buf, z, format)) z++;
+        if (z == k) continue;
+        if (z == n) { A.zero_run += z - k; break; }   /* may continue in the next block */
+        uint64_t run = A.zero_run + (z - k);
+        A.zero_run = 0;
+        if (run >= gmin) push_gap(run, format, arrival);
+        else push_zeros(run, arrival);
+        k = z;
+    }
 }
 
 static int bytes_per_sample(int format) {
@@ -582,6 +739,8 @@ static void usage(const char *p) {
         "  -T, --t0 UNIX          UTC of input sample 0 (recordings; default: system clock)\n"
         "  -l, --log FILE         air-harness event log (score.py and tests/air/*.py read it)\n"
         "  -j, --timebase FILE    JSON with out_utc0_unix for the scoring scripts\n"
+        "      --anchor-in FILE   rsp2_stream.py --anchor-out: its anchor (taken before its hold\n"
+        "                         line) replaces this end's when the 10 s refinement ends\n"
         "  -c, --csv-dir DIR      detector CSV logs (default none)\n"
         "  -F, --frames FILE      BTIME detector state per 5.12 ms frame, 9 float32 (36 B,\n"
         "                         7 kB/s; layout at write_frame() in apps/wwv_live.c)\n"
@@ -597,7 +756,7 @@ int main(int argc, char **argv) {
         {"input", 1, 0, 'i'}, {"format", 1, 0, 'f'}, {"rate", 1, 0, 'r'}, {"shift", 1, 0, 's'},
         {"scale", 1, 0, 'g'}, {"agc", 0, 0, 'a'}, {"udp-port", 1, 0, 'p'}, {"t0", 1, 0, 'T'},
         {"log", 1, 0, 'l'}, {"timebase", 1, 0, 'j'}, {"csv-dir", 1, 0, 'c'}, {"frames", 1, 0, 'F'}, {"status", 1, 0, 'S'},
-        {"no-tones", 0, 0, 'N'}, {"help", 0, 0, 'h'}, {0, 0, 0, 0}};
+        {"no-tones", 0, 0, 'N'}, {"anchor-in", 1, 0, 'A'}, {"help", 0, 0, 'h'}, {0, 0, 0, 0}};
     int c;
     while ((c = getopt_long(argc, argv, "i:f:r:s:g:ap:T:l:j:c:F:S:h", lo, NULL)) != -1) {
         switch (c) {
@@ -619,6 +778,7 @@ int main(int argc, char **argv) {
             case 'F': A.opt.frames_path = optarg; break;
             case 'S': A.opt.status_s = atof(optarg); break;
             case 'N': A.opt.tones = false; break;
+            case 'A': A.opt.anchor_in_path = optarg; break;
             default: usage(argv[0]); return c == 'h' ? 0 : 2;
         }
     }
@@ -685,6 +845,13 @@ int main(int argc, char **argv) {
         run_stdin();
     }
 
+    if (A.zero_run) {     /* a gap at the very end */
+        if (A.zero_run >= gap_min_samples()) push_gap(A.zero_run, A.opt.format, now_unix());
+        A.zero_run = 0;
+    }
+    close_gaps(true);
+    if (A.n_gaps)
+        printf("GAPS     %d filled gaps, %.1f ms in all\n", A.n_gaps, A.gap_ms_total);
     uint64_t ns = wwv_detector_manager_get_detector_samples(A.mgr);
     print_status(wwv_detector_manager_get_now_ms(A.mgr));
     printf("END      %s: %llu input samples, %llu detector samples (%.1f s)\n",

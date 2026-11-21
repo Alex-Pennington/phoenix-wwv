@@ -3,7 +3,8 @@
 Usage: python3 -I rsp2_stream.py [--wwv-khz 5000] [--offset-khz 100] [--rate 2000000]
            [--lna N] [--ifgr N] [--gain KHZ:LNA:IFGR ...] [--antenna "Antenna A"]
            [--secs 0] [--record PREFIX] [--stall-secs 10] [--heartbeat FILE]
-           [--report-secs 60]
+           [--report-secs 60] [--hold-secs 3] [--gap-max-secs 10] [--no-fill]
+           [--gap-log FILE] [--anchor-out FILE]
 
 The tuner is set to wwv - offset, so WWV sits at +offset Hz, away from DC and LO
 leakage (the RSP2's DC removal stays on). AGC is off; the gain is fixed by the LNA
@@ -18,8 +19,36 @@ it starts, however many samples came; --secs 0 streams until SIGINT/SIGTERM or u
 the reader closes the pipe. --record PREFIX also writes PREFIX.cs16 (the same bytes),
 PREFIX.timelog.npy (rows: cumulative samples, time.time_ns() after readStream, ret,
 flags) and PREFIX.json (settings read back, overflow count), as rsp_record.py did.
-Overflows lose samples, which makes wwv_live's sample-counter clock run behind:
-each one is reported on stderr.
+Overflows lose samples; each one is reported on stderr.
+
+Gap fill: the stream is gap-exact, so a sample's index is its time since stream
+start. SoapySDRPlay3 0.5.3 passes none of the API's own loss signals on (its
+rx_callback ignores firstSampleNum and the reset flag, readStream never sets
+timeNs or SOAPY_SDR_HAS_TIME, and OVERFLOW means only that its own 8-buffer ring,
+about 262 ms, filled), so a loss is read from the arrival times: a block arrives
+no earlier than its last sample's time plus the least USB/API latency, so
+"lag" = arrival (CLOCK_MONOTONIC) minus stream time has a floor, and samples lost
+upstream raise the floor by what was lost. Two stages, each filling only the
+excess over a margin, so a fill is never too large:
+  fast: the least lag over the last 2 s against the floor (the least lag seen);
+        over 15 ms margin + 15 ms, the excess less the margin is filled, at the
+        block where the lag rose (to within a block, 33 ms at 2 MS/s);
+  slow: the least lag over the last 30 s; over 2.5 ms margin + 2 ms, the excess
+        less the margin is filled ahead of the held blocks (the remainder of a
+        fast fill, or the RSP2's clock running slow against the host's).
+The margins are the largest window-minimum excesses measured on saga's
+10-minute capture (13.4 ms at 2 s, 2.1 ms at 30 s). To place a fill where the
+loss was, output is held --hold-secs (3 s) behind the radio. Fills are zeros
+(I = Q = 0, which the radio never gives for 0.5 ms); wwv_live takes such a run
+out as a gap. Each fill is logged on stderr (GAP: UTC, stream time, size, cause:
+timeout or overflow when one came before it, else upstream with no report) and,
+with --gap-log, as a JSON line. A loss over --gap-max-secs (or a stall) ends the
+stream with exit status 76 (75 for a stall), and wwv_rsp2_live.sh reopens it as a
+new segment. --no-fill keeps the old behaviour (no hold, no fill).
+
+--anchor-out FILE: the UTC of sample 0 from the least-delayed block over the
+first 10 s, measured on arrival (before the hold), and hold_s, as JSON; written
+before the first sample past 10 s leaves, for wwv_live --anchor-in.
 
 Stall: when no sample has come for --stall-secs (the API service died or restarted
 under the stream, or the USB transfers stopped), the stream ends with exit status 75
@@ -29,13 +58,14 @@ starts and once when it ends, not one line each.
 --heartbeat FILE: its mtime is set at most once a second while samples come, so a
 supervisor can see a stream that hangs inside readStream.
 
-Every --report-secs the stream logs how far its sample count is behind the wall
-clock since streaming began ("behind"), and how long its writes to stdout blocked.
+Every --report-secs the stream logs how far its sample count (fills included) is
+behind the wall clock since streaming began ("behind"), what was filled, and how
+long its writes to stdout blocked.
 Behind growing with little write wait means samples were lost upstream of this
 process (USB or the API service) without an overflow report; a long write wait
 means the reader (wwv_live) is not keeping up.
 """
-import os, sys, json, time, argparse, signal
+import os, sys, json, time, argparse, signal, collections, itertools
 import numpy as np
 import SoapySDR
 from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CS16, SOAPY_SDR_OVERFLOW, SOAPY_SDR_TIMEOUT
@@ -56,7 +86,14 @@ ap.add_argument('--record', default=None)
 ap.add_argument('--stall-secs', type=float, default=10.0)
 ap.add_argument('--heartbeat', default=None)
 ap.add_argument('--report-secs', type=float, default=60.0)
+ap.add_argument('--hold-secs', type=float, default=3.0)
+ap.add_argument('--gap-max-secs', type=float, default=10.0)
+ap.add_argument('--no-fill', action='store_true')
+ap.add_argument('--gap-log', default=None)
+ap.add_argument('--anchor-out', default=None)
 a = ap.parse_args()
+if not a.no_fill and a.hold_secs < 2.5:
+    ap.error('--hold-secs must be at least 2.5 (the 2 s gap window and a block), or give --no-fill')
 _lna, _ifgr = wwv_bands.gain_for(a.wwv_khz, wwv_bands.parse_gain_overrides(a.gain))
 if a.lna is None:
     a.lna = _lna
@@ -126,7 +163,7 @@ nwant = int(round(a.secs * a.rate)) if a.secs > 0 else None
 out = sys.stdout.buffer
 rec = open(a.record + '.cs16', 'wb') if a.record else None
 tlog = []
-n = 0; overflows = 0; timeouts = 0
+n = 0; overflows = 0; timeouts = 0      # n: samples from the radio
 EX_STALLED = 75
 
 def heartbeat():
@@ -153,24 +190,154 @@ wait_s = 0.0; wait_max = 0.0         # time blocked writing stdout, this report 
 t_beat = 0.0
 
 def behind_ms(tn_s):
-    """Samples missing against the wall clock since streaming began, as ms."""
-    return ((tn_s - t_start_ns / 1e9) * a.rate - n) / a.rate * 1000.0
+    """Samples (fills included) missing against the wall clock since streaming began, as ms."""
+    return ((tn_s - t_start_ns / 1e9) * a.rate - idx) / a.rate * 1000.0
+
+# ---- gap fill ----
+FAST_W, FAST_B, FAST_T = 2.0, 0.015, 0.015     # window s, margin s, least fill s
+SLOW_W, SLOW_B, SLOW_T = 30.0, 0.0025, 0.002
+REFINE_S = 10.0                                 # wwv_live's anchor refinement
+EX_GAP = 76
+hold = 0.0 if a.no_fill else a.hold_secs
+held = collections.deque()      # records: [mono_s, wall_s, data or None, n, idx_end, fill_before]
+hist = collections.deque()      # the same records, last SLOW_W s (released ones too)
+idx = 0                         # true samples so far (fills included)
+mono0 = None                    # monotonic time of stream time 0 (any fixed origin)
+floor = None                    # least lag seen
+fills = []                      # (wall UTC, stream s, samples, cause)
+filled = 0
+events = collections.deque()    # (mono_s, 'timeout' | 'overflow'), last SLOW_W s
+anchor = None; anchor_said = False
+gap_log = open(a.gap_log, 'a') if a.gap_log else None
+
+def lag(r):
+    return r[0] - mono0 - r[4] / a.rate
+
+def cause_between(t0, t1):
+    k = [e for t, e in events if t0 - 0.05 <= t <= t1 + 0.05]
+    if 'overflow' in k:
+        return 'overflow (SOAPY_SDR_OVERFLOW)'
+    if 'timeout' in k:
+        return f'timeout ({k.count("timeout")} readStream timeouts)'
+    return 'upstream, no report (USB or API service)'
+
+def fill(at, nfill, cause):
+    """nfill zeros before held[at]: every later held record moves on"""
+    global idx, filled
+    r = held[at]
+    r[5] += nfill
+    for q in itertools.islice(held, at, None):
+        q[4] += nfill
+    idx += nfill; filled += nfill
+    start = r[4] - r[3] - nfill        # stream index of the first zero
+    utc = (anchor if anchor is not None else t_start_ns / 1e9) + start / a.rate
+    when = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(utc)) + f'.{int(utc * 1000) % 1000:03d}Z'
+    fills.append((utc, start / a.rate, nfill, cause))
+    log(f'GAP {when} at stream {start / a.rate:.3f} s (sample {start}): {nfill / a.rate * 1000:.1f} ms '
+        f'filled with zeros; cause: {cause}')
+    if gap_log:
+        gap_log.write(json.dumps(dict(utc=round(utc, 6), stream_s=round(start / a.rate, 6), sample=start,
+                                      samples=nfill, ms=round(nfill / a.rate * 1000, 3), cause=cause)) + '\n')
+        gap_log.flush()
+
+def check_gaps(now_m):
+    """The two stages, on the newest block's arrival"""
+    global floor
+    if len(hist) < 2 or not held:
+        return None
+    t_new = hist[-1][0]
+    # fast: the window must be all within the hold, so the fill can still be placed
+    if t_new - hist[0][0] >= FAST_W:
+        wmin = min(lag(q) for q in hist if q[0] >= t_new - FAST_W)
+        ex = wmin - floor
+        if ex - FAST_B >= FAST_T:
+            d = ex - FAST_B
+            k = len(held) - 1
+            while k > 0 and lag(held[k - 1]) >= floor + FAST_B + d / 2:
+                k -= 1
+            prev = held[k - 1][0] if k > 0 else hist[0][0]
+            cause = cause_between(prev, held[k][0])
+            if d > a.gap_max_secs:
+                while len(held) > k:           # after the loss: not this segment's
+                    held.pop()
+                return f'lost {d:.1f} s, more than --gap-max-secs {a.gap_max_secs:g}; cause: {cause}'
+            fill(k, int(round(d * a.rate)), cause)
+            return None
+    # slow
+    if t_new - hist[0][0] >= SLOW_W - 0.5:
+        ex = min(lag(q) for q in hist) - floor
+        if ex - SLOW_B >= SLOW_T:
+            d = ex - SLOW_B
+            fill(0, int(round(d * a.rate)),
+                 'remainder over 30 s (a fast fill\'s margin, or the radio clock slow against the host)')
+    return None
+
+def release(r):
+    """Write one held block (and the zeros before it)"""
+    global wait_s, wait_max, anchor, anchor_said
+    nz = r[5]
+    if a.anchor_out and not anchor_said and r[4] >= REFINE_S * a.rate:
+        with open(a.anchor_out + '.tmp', 'w') as f:
+            json.dump(dict(source='rsp2_stream', in_sample0_unix=anchor, hold_s=hold,
+                           anchor=f'least-delayed block over the first {REFINE_S:.0f} s, on arrival'), f)
+        os.replace(a.anchor_out + '.tmp', a.anchor_out)
+        anchor_said = True
+    tw = time.monotonic()
+    while nz > 0:
+        m = min(nz, len(zbuf) // 2)
+        out.write(memoryview(zbuf[:2 * m]))
+        if rec:
+            rec.write(memoryview(zbuf[:2 * m]))
+        nz -= m
+    out.write(r[2])
+    if rec:
+        rec.write(r[2])
+    dw = time.monotonic() - tw
+    wait_s += dw; wait_max = max(wait_max, dw)
+    r[2] = None
+
+zbuf = np.zeros(2 * 65536, np.int16)
+gap_end = None
 
 try:
-    while not stop and (nwant is None or n < nwant):
-        want = mtu if nwant is None else min(mtu, nwant - n)
+    while not stop and (nwant is None or idx < nwant):
+        want = mtu if nwant is None else min(mtu, nwant - idx)
         sr = dev.readStream(st, [buf], want, timeoutUs=1000000)
         tn = time.time_ns()
+        tm = time.monotonic()
         now = tn / 1e9
         if sr.ret > 0:
-            data = memoryview(buf[:2 * sr.ret])
-            tw = time.monotonic()
-            out.write(data)
-            dw = time.monotonic() - tw
-            wait_s += dw; wait_max = max(wait_max, dw)
-            if rec:
-                rec.write(data)
             n += sr.ret
+            idx += sr.ret
+            r = [tm, now, bytes(memoryview(buf[:2 * sr.ret])), sr.ret, idx, 0]
+            if mono0 is None:
+                mono0 = tm - idx / a.rate
+            ln = lag(r)
+            floor = ln if floor is None else min(floor, ln)
+            a0 = now - idx / a.rate
+            if idx <= REFINE_S * a.rate or anchor is None:
+                anchor = a0 if anchor is None else min(anchor, a0)
+            if hold > 0:
+                held.append(r); hist.append(r)
+                while hist and hist[0][0] < tm - SLOW_W:
+                    hist.popleft()
+                while events and events[0][0] < tm - SLOW_W:
+                    events.popleft()
+                if ln - floor > a.gap_max_secs + 0.3:     # past any queueing: certain
+                    held.pop()                 # after the loss: not this segment's
+                    gap_end = (f'lost about {ln - floor:.1f} s, more than --gap-max-secs {a.gap_max_secs:g}; '
+                               f'cause: {cause_between(held[-1][0] if held else tm - ln + floor, tm)}')
+                else:
+                    gap_end = check_gaps(tm)
+                if gap_end:
+                    reason = f'gap: {gap_end}'
+                    rc = EX_GAP
+                    log(f'GAP too large to fill: {gap_end}; ending the stream (exit {EX_GAP})')
+                    break
+                while held and tm - held[0][0] >= hold:
+                    release(held.popleft())
+            else:
+                release(r)
             if gap_timeouts:
                 log(f'samples again after {now - t_data:.1f} s ({gap_timeouts} timeouts)')
                 gap_timeouts = 0
@@ -179,10 +346,12 @@ try:
                 heartbeat(); t_beat = now
         elif sr.ret == SOAPY_SDR_OVERFLOW:
             overflows += 1
-            log(f'OVERFLOW #{overflows} after {n} samples ({n / a.rate:.1f} s): samples lost')
+            events.append((tm, 'overflow'))
+            log(f'OVERFLOW #{overflows} after {idx} samples ({idx / a.rate:.1f} s): samples lost')
         elif sr.ret == SOAPY_SDR_TIMEOUT:
             timeouts += 1
             gap_timeouts += 1
+            events.append((tm, 'timeout'))
             if gap_timeouts == 1:
                 log(f'timeout: no samples for {now - t_data:.1f} s (timeout #{timeouts} in all)')
         if rec:
@@ -195,6 +364,7 @@ try:
                 what = ('; samples lost upstream (USB or API service), no overflow reported'
                         if wait_s < 0.5 * grew / 1000.0 else '; the reader is not keeping up')
             log(f'behind wall clock {b:+.0f} ms ({grew:+.0f} in {a.report_secs:.0f} s), '
+                f'filled {filled / a.rate * 1000:.0f} ms in {len(fills)} gaps, '
                 f'write wait {wait_s * 1000:.0f} ms (max {wait_max * 1000:.0f}), '
                 f'{overflows} overflows, {timeouts} timeouts{what}')
             behind_last = b; wait_s = 0.0; wait_max = 0.0
@@ -208,6 +378,8 @@ try:
             break
     else:
         reason = 'signal' if stop else 'duration reached'
+    while held:                                   # what is held is good: send it
+        release(held.popleft())
 except BrokenPipeError:
     reason = 'reader closed the pipe'
     os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())   # no flush error at exit
@@ -216,14 +388,19 @@ finally:
     log(f'behind wall clock at the end: {behind_ms(t_end_ns / 1e9):+.0f} ms')
     dev.deactivateStream(st)
     dev.closeStream(st)
+    if gap_log:
+        gap_log.close()
     if rec:
         rec.close()
-        info = dict(readback(), mtu=mtu, samples=n, reads=len(tlog), overflows=overflows, timeouts=timeouts,
-                    t_start_ns=t_start_ns, t_end_ns=t_end_ns, stop_reason=reason)
+        info = dict(readback(), mtu=mtu, samples=idx, samples_radio=n, reads=len(tlog), overflows=overflows,
+                    timeouts=timeouts, t_start_ns=t_start_ns, t_end_ns=t_end_ns, stop_reason=reason,
+                    hold_s=hold, anchor_sample0_unix=anchor,
+                    gaps=[dict(utc=u, stream_s=t, samples=k, cause=c) for u, t, k, c in fills])
         np.save(a.record + '.timelog.npy', np.array(tlog, dtype=np.int64))
         json.dump(info, open(a.record + '.json', 'w'), indent=1)
         log(f'recorded {a.record}.cs16 / .timelog.npy / .json')
-    log(f'stopped ({reason}): {n} samples ({n / a.rate:.1f} s), {overflows} overflows, {timeouts} timeouts')
+    log(f'stopped ({reason}): {idx} samples ({idx / a.rate:.1f} s), {n} from the radio, '
+        f'{len(fills)} gaps filled ({filled / a.rate * 1000:.1f} ms), {overflows} overflows, {timeouts} timeouts')
     try:
         out.flush()
     except BrokenPipeError:

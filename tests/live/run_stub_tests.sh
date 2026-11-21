@@ -24,6 +24,18 @@
 #   stream_stall  rsp2_stream.py: no samples for --stall-secs: exit 75
 #   stream_lag    rsp2_stream.py: samples at half rate: "behind wall clock" names upstream loss
 #   scan_keep_raw wwv_band_scan.py --keep-raw: a --replay of the kept windows gives the same figures
+#   gap76         the stream exits 76 once (a loss too large to fill): REOPEN, segment 2
+#   stream_gaps   rsp2_stream.py: losses of 0.3 s and 1.05 s and a 5 s outage (timeouts), 30 ms
+#                 arrival jitter: every sample's stream index stays within 40 ms of its true
+#                 time, within 6 ms at the end; each fill logged (GAP) with its cause
+#   stream_ramp   rsp2_stream.py: 3 ms/s lost for 30 s as a little before every block: the same
+#   stream_toobig rsp2_stream.py, --stall-secs 20: a 12 s outage, over --gap-max-secs 10: exit 76,
+#                 and no sample from after the loss is sent
+#   gap_chain     wwv_live on synthetic WWV with a 1.05 s loss after LOCKED: filled (zeros), the
+#                 held phase stays (no break, no re-anchor) and every event overlapping the span is
+#                 held back from sync (recounted from the log); dropped (unfilled), it breaks.
+#                 The replay of the filled log honours its GAP line and holds back the same events.
+#                 A 3 ms/s loss for 3 minutes, filled as rsp2_stream fills it: no break either.
 # Every wrapper case also checks that the fake unit is inactive at the end.
 # Exit 0 when every case passes, 1 otherwise.
 set -uo pipefail
@@ -91,7 +103,8 @@ live() {
 want() { [ $# -eq 0 ] || [[ " ${CASES[*]} " == *" $1 "* ]]; }
 CASES=("$@")
 [ ${#CASES[@]} -eq 0 ] && CASES=(fixed_end stall75 svc_restart hang reopen_max deaf kill9 auto_end auto_switch
-                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw)
+                                 auto_rescan_end auto_none stream_stall stream_lag scan_keep_raw gap_chain gap76
+                                 stream_gaps stream_ramp stream_toobig)
 
 for c in "${CASES[@]}"; do
   case $c in
@@ -192,7 +205,7 @@ for c in "${CASES[@]}"; do
   stream_lag)
     begin "$c"
     env SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" lossy:0.5 -- \
-        --secs 4 --report-secs 1 --stall-secs 0 > /dev/null 2> "$D/console.txt"
+        --secs 4 --report-secs 1 --stall-secs 0 --no-fill > /dev/null 2> "$D/console.txt"
     has '[harness] exit 0'; has 'behind wall clock'; has 'samples lost upstream'
     end_case ;;
   scan_keep_raw)
@@ -212,6 +225,104 @@ bad = [(k, f) for k in a for f in ('tick_contrasts_db', 'bcd_contrasts_db', 'cn0
        if a[k].get(f) != b.get(k, {}).get(f)]
 print('replay check:', 'same' if not bad else f'differs: {bad}')
 sys.exit(1 if bad or not a else 0)
+PY
+    end_case ;;
+  gap76)
+    begin "$c"
+    live STUB_MODE=gap76_after:2 STUB_ONLY_FIRST=1 -- --wwv-khz 10000 --secs 10
+    rc_is 0; has 'REOPEN: segment 1: rsp2_stream lost more samples than it fills'
+    ended_in 2 10000; streams_is 2; unit_off
+    end_case ;;
+  stream_gaps|stream_ramp)
+    begin "$c"
+    if [ "$c" = stream_gaps ]; then
+      spec='true:jitter:30;loss@6:0.3;loss@14:1.05;outage@24:5'; secs=72; ngaps=3
+    else
+      spec='true:jitter:30;ramp@8-38:0.003'; secs=74; ngaps=5
+    fi
+    env FAKE_MTU=16384 SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" \
+        "$spec" -- --rate 500000 --secs "$secs" --stall-secs 10 --report-secs 30 --gap-log "$D/gaps.jsonl" \
+        --anchor-out "$D/anchor.json" > "$D/stream.cs16" 2> "$D/console.txt"
+    has '[harness] exit 0'; has '] GAP '
+    [ "$c" = stream_gaps ] && has 'cause: timeout'
+    python3 -I "$HERE/check_gapfill.py" "$D/stream.cs16" 500000 "$D/console.txt" --gaps "$ngaps" --max-ms 40 \
+        >> "$D/console.txt" 2>&1 || fail 'the stream is not gap-exact (check_gapfill)'
+    grep -q '"hold_s": 3.0' "$D/anchor.json" 2>/dev/null || fail 'no --anchor-out file'
+    [ "$(wc -l < "$D/gaps.jsonl")" -ge "$ngaps" ] || fail 'too few --gap-log lines'
+    /bin/rm -f "$D/stream.cs16"
+    end_case ;;
+  stream_toobig)
+    begin "$c"
+    env FAKE_MTU=16384 SOAPY_SDR_ROOT=/nonexistent python3 -I "$HERE/stream_fake_soapy.py" "$REPO/scripts/rsp2_stream.py" \
+        'true:outage@5:12' -- --rate 500000 --secs 40 --stall-secs 20 > "$D/stream.cs16" 2> "$D/console.txt"
+    has '[harness] exit 76'; has 'GAP too large to fill: lost about'
+    python3 -I - "$D/stream.cs16" >> "$D/console.txt" 2>&1 <<'PY' || fail 'samples after the loss were sent'
+import sys, numpy as np
+x = np.fromfile(sys.argv[1], np.int16).reshape(-1, 2).astype(np.int64)
+k = (x[:, 0] & 0x7fff) | ((x[:, 1] - 1) << 15)
+d = np.diff(k)
+print('stream_toobig: samples', len(k), 'steps in k', int((d != 1).sum()))
+sys.exit(0 if len(k) and (d == 1).all() else 1)
+PY
+    /bin/rm -f "$D/stream.cs16"
+    end_case ;;
+  gap_chain)
+    begin "$c"
+    for m in fill drop; do
+      python3 -I "$HERE/wwv_synth.py" 330 --gap "250.3:1.05:$m" |
+        "$BUILD/wwv_live" -r 50000 -p 0 --no-tones -S 60 -T 1795000000 --log "$D/$m.log" > "$D/$m.con" 2>&1 ||
+        fail "wwv_live on the $m stream failed"
+      "$BUILD/tests/replay_events" "$D/$m.log" > "$D/$m.rep" 2>&1 || fail "replay of $m failed"
+    done
+    cat "$D/fill.con" "$D/fill.rep" > "$D/console.txt"
+    has 'GAP      ' ; has 'GAPEND   stream 250.3 s, 1050 ms'
+    grep -q 'TENTATIVE -> LOCKED' "$D/fill.con" || fail 'never LOCKED before the gap'
+    grep -qE '^PHASE .* breaks=0 epoch=0$' "$D/fill.rep" || fail "filled: the phase broke: $(grep ^PHASE "$D/fill.rep")"
+    grep -qE '^PHASE .* breaks=[1-9]' "$D/drop.rep" || fail "dropped: no break, so the test shows nothing: $(grep ^PHASE "$D/drop.rep")"
+    grep -q '^GAP ' "$D/drop.log" && fail 'a GAP line in the unfilled stream'
+    # 3 ms/s lost for 3 minutes after LOCKED, filled as rsp2_stream's fast stage fills it
+    python3 -I "$HERE/wwv_synth.py" 330 --ramp 130:310:0.003 |
+      "$BUILD/wwv_live" -r 50000 -p 0 --no-tones -S 60 -T 1795000000 --log "$D/ramp.log" > "$D/ramp.con" 2>&1 ||
+      fail 'wwv_live on the ramp failed'
+    "$BUILD/tests/replay_events" "$D/ramp.log" > "$D/ramp.rep" 2>&1 || fail 'replay of the ramp failed'
+    grep -E '^(GAPS|PHASE)' "$D/ramp.con" "$D/ramp.rep" >> "$D/console.txt"
+    grep -qE '^GAPS     [1-9][0-9]* filled gaps' "$D/ramp.con" || fail 'ramp: no fills'
+    grep -qE '^PHASE .* breaks=0 epoch=0$' "$D/ramp.rep" || fail "ramp: the phase broke: $(grep ^PHASE "$D/ramp.rep")"
+    python3 -I - "$D/fill.log" "$D/fill.rep" "$REPO/include/wwv_detector_manager.h" >> "$D/console.txt" 2>&1 <<'PY' || fail 'held-back events differ from the overlap rule'
+import re, sys
+log, rep, hdr = sys.argv[1:4]
+k = {m.group(1): float(m.group(2)) for m in re.finditer(r'#define (WWV_GAP_\w+)\s+([\d.]+)', open(hdr).read())}
+gaps, ends, ev = [], [], []
+order_ok = True
+for l in open(log):
+    f = dict(re.findall(r'(\w+)=([-\d.]+)', l))
+    w = l.split(' ', 1)[0]
+    if w == 'GAP': gaps.append((float(f['start']), float(f['len'])))
+    elif w == 'GAPEND': ends.append({x: int(f[x]) for x in ('tick', 'tmark', 'mark', 'cand', 'btime', 'bfreq')})
+    elif w in ('TICK', 'TMARK', 'MARK', 'CANDT', 'CANDM', 'BTIME', 'BFREQ'):
+        g = {k2: float(v) for k2, v in f.items()}
+        lo, hi = {'TICK': (g.get('t', 0) - g.get('dur', 0) - 20, g.get('t', 0) + 20),
+                  'TMARK': (g.get('lead'), g.get('trail')), 'MARK': (g.get('lead'), g.get('t')),
+                  'CANDT': (g.get('start'), g.get('end')), 'CANDM': (g.get('lead'), g.get('t')),
+                  'BTIME': (g.get('t', 0) - 20, g.get('t', 0) + g.get('dur', 0) + 20),
+                  'BFREQ': (g.get('t', 0) - 20, g.get('t', 0) + g.get('dur', 0) + 20)}[w]
+        lo, hi = min(lo, hi), max(lo, hi)
+        ev.append((w, lo, hi, len(gaps)))
+key = {'TICK': 'tick', 'TMARK': 'tmark', 'MARK': 'mark', 'CANDT': 'cand', 'CANDM': 'cand', 'BTIME': 'btime', 'BFREQ': 'bfreq'}
+want = dict.fromkeys(key.values(), 0); inside = 0
+for w, lo, hi, ngap in ev:
+    for s, ln in gaps[:ngap]:      # only spans marked before the event's line
+        settle = min(k['WWV_GAP_SETTLE_MS'], k['WWV_GAP_SETTLE_MIN_MS'] + ln)
+        if hi >= s - k['WWV_GAP_GUARD_MS'] and lo <= s + ln + settle:
+            want[key[w]] += 1; break
+    for i, (s, ln) in enumerate(gaps):
+        if lo >= s and hi <= s + ln and i >= ngap:
+            inside += 1           # an event inside a span, logged before the span's GAP line
+got = {x: sum(e[x] for e in ends) for x in want}
+rd = dict(re.findall(r'(\w+)=(\d+)', next((l for l in open(rep) if l.startswith('GAPDROPS')), '')))
+rd = {x: int(rd.get(x, -1)) for x in want}
+print('gap_chain: gaps', gaps, 'overlap rule', want, 'live GAPEND', got, 'replay', rd, 'inside before GAP', inside)
+sys.exit(0 if gaps and want == got == rd and sum(want.values()) > 0 and inside == 0 else 1)
 PY
     end_case ;;
   *) echo "unknown case: $c" >&2; FAIL=$((FAIL + 1)) ;;

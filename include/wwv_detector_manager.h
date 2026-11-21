@@ -263,6 +263,28 @@ void wwv_detector_manager_log_metadata(wwv_detector_manager_t *mgr,
 void wwv_detector_manager_log_display_gain(wwv_detector_manager_t *mgr, float display_gain);
 
 /**
+ * Samples lost upstream and filled (zeros) by the host: [start_ms, start_ms + len_ms)
+ * in detector time. Call before the filled span is processed. Until the span's
+ * settle time has passed, routing still reports each detector event to the observer
+ * but does not pass it to sync, the correlators, the decoder or the external
+ * callbacks when its extent overlaps [start_ms - WWV_GAP_GUARD_MS,
+ * start_ms + len_ms + settle], settle = min(WWV_GAP_SETTLE_MS, WWV_GAP_SETTLE_MIN_MS
+ * + len_ms): an event the zeros made or cut is not evidence. (On the synthetic
+ * chain the detectors' onset events at a span's end come within 40 ms of it.) A BCD
+ * window with no event is an erasure. Abutting or overlapping spans merge. Up to
+ * WWV_GAP_SPANS spans are kept; the oldest is dropped first.
+ */
+#define WWV_GAP_GUARD_MS      20.0
+#define WWV_GAP_SETTLE_MIN_MS 100.0
+#define WWV_GAP_SETTLE_MS     1500.0
+#define WWV_GAP_SPANS      8
+void wwv_detector_manager_mark_gap(wwv_detector_manager_t *mgr, double start_ms, double len_ms);
+
+/** Events held back from routing by gaps, cumulative since create */
+typedef struct { int tick, tmark, marker, candidate, btime, bfreq; } wwv_gap_drops_t;
+wwv_gap_drops_t wwv_detector_manager_get_gap_drops(wwv_detector_manager_t *mgr);
+
+/**
  * Print statistics for all detectors
  */
 void wwv_detector_manager_print_stats(wwv_detector_manager_t *mgr);
