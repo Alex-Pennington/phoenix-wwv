@@ -74,6 +74,40 @@ extern "C" {
 #define BCD_TIME_START_LOW_RATIO    2.37f
 #endif
 
+/* Width from a step fit. At low pulse/low contrast the low level sits above half the
+ * event's mean, so the half-amplitude end comes on a dip of the 100 Hz phase ripple or
+ * of the noise, and a 1 or a P reads short. So an event whose edge width is at most
+ * BCD_TIME_FIT_EDGE_MAX_MS is held until BCD_TIME_FIT_SPAN_MS after its start, and a
+ * box is fitted to the log energy from BCD_TIME_FIT_PRE_MS before the start to
+ * BCD_TIME_FIT_SPAN_MS after it: one level inside [rise, end), one outside, least
+ * squares, the rise at most BCD_TIME_FIT_RISE_MAX_MS after the start, the box at least
+ * BCD_TIME_FIT_MIN_WIDTH_MS wide and ending at least BCD_TIME_FIT_TAIL_FRAMES frames
+ * before the window does. The log keeps a noise burst in the low part from moving the
+ * fit. The event's width is the box's width plus BCD_TIME_FIT_OFFSET_MS (the edge
+ * width's own excess over the sent high part) when the fit's contrast, exp of the
+ * inside less the outside mean log energy, is at least BCD_TIME_FIT_CONTRAST_MIN and
+ * under BCD_TIME_FIT_CONTRAST_MAX. Under the minimum the fit is noise; at the maximum
+ * or above the half-amplitude edges are reliable, and a low level that steps inside
+ * the window (a fade) would pull a two-level fit. The fit is not used either when the
+ * best box with its rise anywhere in the window rises more than
+ * BCD_TIME_FIT_LATE_RISE_MS after the latest rise allowed: the event started on the
+ * low level before a pulse, and the box would run on through that pulse. Otherwise
+ * the edge width stands. A fitted event starts at the box's rise, so its end stays
+ * where the box ends: a start late on a slow or noisy rise no longer shortens it. An
+ * event is reported when its window ends, and events are reported in start order. */
+#define BCD_TIME_FIT_EDGE_MAX_MS    850.0f
+#define BCD_TIME_FIT_PRE_MS         200.0f
+#define BCD_TIME_FIT_SPAN_MS        900.0f
+#define BCD_TIME_FIT_RISE_MAX_MS    30.0f
+#define BCD_TIME_FIT_MIN_WIDTH_MS   80.0f
+#define BCD_TIME_FIT_TAIL_FRAMES    6
+#define BCD_TIME_FIT_OFFSET_MS      15.0f
+#define BCD_TIME_FIT_CONTRAST_MIN   1.3f
+#ifndef BCD_TIME_FIT_CONTRAST_MAX   /* 0 disables the fit (tests/test_bcd_time_lowcontrast.c) */
+#define BCD_TIME_FIT_CONTRAST_MAX   3.0f
+#endif
+#define BCD_TIME_FIT_LATE_RISE_MS   150.0f
+
 /* Pulse classification thresholds (same as existing bcd_decoder) */
 #define BCD_TIME_PULSE_MIN_MS       100.0f  /* Ignore pulses shorter than this */
 /* An event that starts on the low level up to 250 ms before a second and runs

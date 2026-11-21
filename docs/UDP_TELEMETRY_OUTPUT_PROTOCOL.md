@@ -337,7 +337,7 @@ BCDS,FREQ,14:32:16,86320.0,128,0.042123,503.2,0.001234,19.2
 
 Broadcast once per correlator window while sync is LOCKED. This is the per-second BCD output.
 A window closes when an event arrives for a later second, or, when the host calls
-`bcd_correlator_periodic_check()`, 1100 ms after the window ends (every BCD event arrives by
+`bcd_correlator_periodic_check()`, 1110 ms after the window ends (every BCD event arrives by
 then). Each second is sent at most once, including when the next minute's anchor replaces the
 current one during the second.
 

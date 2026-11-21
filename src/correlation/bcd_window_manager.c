@@ -382,7 +382,7 @@ void bcd_window_periodic(bcd_correlator_t *corr, wwv_time_ms_t now_ms) {
         return;
     }
     /* Every event for a window arrives by its end + WINDOW_CLOSE_LATENCY_MS
-     * (BTIME and BFREQ report at pulse end and cap a pulse at 1100 / 1000 ms).
+     * (bcd_correlator_internal.h says why).
      * Past that, the window is complete: close it, and open the next second's. A window that ends with
      * no event while sync was LOCKED throughout is emitted as NONE. */
     while (now_ms >= corr->window_start_ms + WINDOW_DURATION_MS + WINDOW_CLOSE_LATENCY_MS) {

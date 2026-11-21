@@ -33,13 +33,20 @@ extern "C" {
  * that gap: a pulse detected up to 100 ms before its anchor second (anchor
  * late, start jitter) still lands in its own window. */
 #define WINDOW_LEAD_MS          100.0f
-/* BTIME and BFREQ report a pulse at its end and cap it at 1100 / 1000 ms, so
- * every event for a window arrives by the window's end + 1100 ms (plus BTIME's
- * 3-frame end debounce: an event starting in the last 15 ms of a window and
- * running the full 1100 ms is late, and dropped from that mid-second window;
- * its trailing edge is still noted). The periodic check closes a window this
- * long after its end. */
-#define WINDOW_CLOSE_LATENCY_MS 1100.0f
+/* When each event arrives, against the start time that places it in a window:
+ *   - BFREQ reports at its end and caps a pulse at 1000 ms.
+ *   - BTIME reports an edge-width event at its end and caps it at 1100 ms. An event
+ *     starting in the last 15 ms of a window and running the full 1100 ms arrives
+ *     after this latency (the 3-frame end debounce); it is dropped from that
+ *     mid-second window, and its trailing edge is still noted.
+ *   - BTIME holds a fitted event until 176 frames (901 ms) after the frame that
+ *     crossed its start threshold, and dates it from the fitted rise, up to
+ *     BCD_TIME_FIT_PRE_MS (200 ms) earlier: up to 1101 ms after its start time,
+ *     plus the frame it is reported on (5.12 ms) (BCD_TIME_FIT_*,
+ *     include/bcd_time_detector.h).
+ * So every fitted or BFREQ event for a window arrives by the window's end + 1107 ms.
+ * The periodic check closes a window this long after its end. */
+#define WINDOW_CLOSE_LATENCY_MS 1110.0f
 
 /* Trailing-edge symbols. When the BTIME detector starts an event on the
  * low-level subcarrier (after a cooldown, in a fade), that event runs on through

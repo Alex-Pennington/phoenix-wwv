@@ -427,6 +427,116 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
     FALSE CONFIRM was 0 everywhere. The earlier "+50 ms on seg2" was measured against the marker
     lead, not against UTC.
+  - **Changed (fix/wwv-btime-lowcontrast): at low contrast a BTIME event's width comes from a step
+    fit.** At 1-3 dB the per-frame energy of the low level has p10 at 0.55 of its median, and a
+    sent 1's high part is 1.2-1.8 times the low level (run90f, median over the seconds). So the
+    low level sits above half the event's mean, and the half-amplitude end comes on the first
+    dip of the ripple or the noise. That is the 182 ms median width above. An event whose edge
+    width is at most 850 ms is now held until 900 ms after its start. A box (one level inside,
+    one outside, least squares) is fitted to the log energy from 200 ms before the start to
+    900 ms after it, and when its contrast is 1.3 to 3 the event takes the box's rise as its
+    start and the box's width plus 15 ms as its width (`BCD_TIME_FIT_*`,
+    `include/bcd_time_detector.h`). The start and end thresholds, the cooldown and the pulse and
+    low levels are unchanged, so the state machine starts and ends the same events.
+    `tests/test_bcd_time_lowcontrast.c` covers it on synthetic pulses.
+    - **Measured** on every `--frames` record under `~/wwv-live` (run90f, run90g seg1 and seg2,
+      run3h, runF and its seg2/5/6, runF3 and its seg4/7/15/21, runN1, runG): each record
+      through `btime_replay`, then `replay_events`, both with the CANDT/CANDM ordering fix below.
+      Each decoder input symbol is scored against the decoder's own labels: the frame's minute,
+      rounded from `out_utc0_unix` plus the frame start, and the character index. runG's 1 s slip
+      moves no minute. On run90g seg2 truth is loss-corrected instead (the least-delayed console
+      lag, as `seg_attr.py`), and seconds whose held second is more than 100 ms off the true one
+      are left out. Contrast is the median energy over +80..+180 ms over -160..-10 ms of the held
+      second (WCLOSE window start + 100 ms). Right / wrong / erased, sent 0, 1 and P together,
+      main (ffba5d4) -> this branch:
+
+      | contrast | main            | ceiling 3 (kept) | ceiling 4       |
+      |----------|-----------------|------------------|-----------------|
+      | < 1 dB   | 606/310/1168    | 607/300/1196     | 614/299/1203    |
+      | 1-2 dB   | 1163/350/1057   | 1354/173/1087    | 1354/168/1081   |
+      | 2-3 dB   | 2475/395/876    | 2789/110/884     | 2779/109/879    |
+      | 3-5 dB   | 8092/428/1210   | 8494/126/1184    | 8531/106/1189   |
+      | >= 5 dB  | 14251/186/918   | 14358/124/890    | 14421/63/885    |
+      | all      | 26587/1669/5231 | 27602/833/5243   | 27699/745/5239  |
+
+      At ceiling 3, at 1-3 dB a sent 1 is read wrong (as 0 or P) 194 -> 88 times, and a sent P
+      172 -> 87. Per run, right never falls and wrong never rises. The runs with symbols,
+      right/wrong, main -> ceiling 3: run90f 753/144 -> 819/80; run90g seg2 755/167 -> 836/123;
+      run3h 6066/328 -> 6239/177; runF 1579/35 -> 1605/16, seg2 2088/54 -> 2135/20, seg5
+      1985/126 -> 2080/47, seg6 4166/414 -> 4446/163; runG 7622/275 -> 7785/147; run90g seg1
+      40/19 -> 43/17; runF3 328/39 -> 358/16, seg7 624/56 -> 661/26, seg21 112/1 -> 112/1; runN1
+      469/11 -> 483/0. FALSE CONFIRM is 0 on all, and no first-CONFIRMED time is later. Earlier
+      ones, time of day: run90f 1297 -> 937 s, run3h 727 -> 607 s, runF seg5 917 -> 857 s, seg6
+      1124 -> 1064 s, runF3 seg7 1037 -> 917 s. Date: run90f none -> 1237 s, runF seg5 977 ->
+      797 s, seg6 1364 -> 1124 s, runF3 seg7 1097 -> 977 s, runN1 none -> 712 s.
+    - **The ceiling is 3, kept for the capture confirms, a trade against the symbol counts.**
+      Ceiling 4 gives 97 more right and 88 fewer wrong over the frame records (table), and its
+      out-of-sample check (picked on half the runs, tested on the other half) found it close to
+      best. But it loses saga plain's time of day CONFIRMED on the captures (630 s on main and at
+      ceiling 3; at 4 only DECODED 7/7, never confirmed), and runG's date is first CONFIRMED at
+      720 s against 660 s. The captures are the one test set the ceiling was not tuned on, so 3
+      is kept (the coordinator's ruling). At 4, two clear 0s at runG's start read 1 (183 s and
+      213 s: edge widths 179 and 189 ms, fitted 537 and 742 ms): the low level steps up inside
+      the fit window, and a two-level fit gives the box the step. At 3 both read 0, so their fit
+      contrast is 3-4 (inferred from the two runs, not printed).
+    - **What it costs** (ceiling 3, all records). Under 1 dB there is no pulse to fit, and the
+      change trades there: sent 0 right 466 -> 430, because the edge width of a noise event is
+      short and reads 0 by luck. Classes that read wrong more often: under 1 dB, 0 read 1 90 -> 96
+      and P read 1 27 -> 38; at 5 dB and up, 0 read 1 18 -> 21. P read 1 still falls overall,
+      267 -> 156. 25 Ps that main reads right read 1 here. For 14 of the 25 the energy over
+      +500..+780 ms is more than 1 dB under that over +80..+400 ms: a sag inside the P, which the
+      box ends at (`test_bcd_time_lowcontrast` pins it: a P that sags for its last 300 ms reads
+      1). The other 11 are not traced. Erasures rise 5231 -> 5243.
+    - **Latency.** A held event is reported 176 frames (901 ms) after the frame that crossed its
+      start threshold, and is dated from the box's rise, up to 200 ms earlier. So it can arrive
+      up to 1101 ms plus a frame after its start time. The correlator's
+      `WINDOW_CLOSE_LATENCY_MS` was 1100 ms and is now 1110 ms. Events are reported in start
+      order. An event still held when the stream ends is not reported. Boundary starts move
+      earlier and tighten: right 1/P starts against the held second, run90f median +46 -> +36
+      ms (p25/p75 +37/+86 -> +24/+45), runG +45 -> +44 ms.
+    - **Captures** (`run_air.sh`, ceiling 3): FALSE CONFIRM 0. Correct 443 -> 444 (kiwi plain),
+      451 -> 451 (kiwi agc), 446 -> 449 (saga plain), 433 -> 435 (saga agc). saga plain is as main:
+      time of day first CONFIRMED at 630 s, DST at 571 s, date DECODED only (first at 271 s) on
+      both. saga agc loses two: DST is CONFIRMED at 630 s on main and only DECODED 7/7 here, never
+      confirmed; the date (DECODED only on both) is first decoded at 391 s, not 271 s, and its
+      third frame reads the P at :49 as 1. Its time of day is DECODED only on both, first at
+      271 s. Neither loss is traced to a symbol. At ceiling 4 saga plain's time of day is not
+      confirmed either (above).
+    - **Replay ordering (fixed with this change).** `btime_replay` placed a replayed BTIME line
+      by its at= among the lines `replay_events` times, but it did not time CANDT (end=) and
+      CANDM (t=) lines. So a held BTIME could land after a later candidate line, and
+      `replay_events` delivered it after it had advanced past that candidate. BTIME lines placed
+      after a later candidate, over the 15 records (counted on this tree): main 130, branch 153
+      (ceiling 4); now 0 on both. Late drops (`replay_events` now prints the correlator's
+      `BCDWIN` line): main 136 -> 94, branch at ceiling 4 68 -> 0, at ceiling 3 0 after the fix.
+      Main's 94 are edge-width events past the 1100 ms latency.
+    - **CPU.** The fit's two searches (constrained and free rise) are one pass over the boxes,
+      with a table of 1/k in place of the divisions; the 15 records give the same events.
+    - **Why each limit.** A box fit on raw energy lost to noise bursts in the low part: on run90g
+      seg2 after the loss, single 50 ms bins at 3-5 times the low level made a 0 read 1. The log
+      fit holds those. With no contrast floor, noise events under 1 dB read 1 or P where the edge
+      width read 0. With no ceiling (measured before the rise dating), runG's date was first
+      CONFIRMED 60 s later, as at ceiling 4. Taken from the event's own start, a late start on a
+      slow rise reads a 1 as 0. Dating the event from the box's rise fixes that and `test_bcd_time_width`'s lowrise end
+      check. The late-rise test (`BCD_TIME_FIT_LATE_RISE_MS`) stops an event that starts on the
+      low level just before a pulse from being fitted across that pulse (`test_bcd_time_width`
+      fade: a carried event). At ceiling 3, with the old replay ordering, it cost 765 right
+      symbols and took away 113 wrong ones against the same fit without it (28326/945). Before
+      the rise dating and the late-rise test were added, the other values were scanned over
+      run90f, run90g seg2, run3h, runF, its seg2/5/6 and runG: contrast floor 1.25-1.4, offset
+      10-20 ms, span 850-950 ms and lead-in 150-250 ms moved total right by under 1%.
+    - **Tried and not kept** (right/wrong over all the records, old replay ordering; main
+      26562/1665):
+      - the end tested on energy smoothed over 4 frames: 25595/1449; over 8 frames: 22094/1727;
+      - an end debounce of 6 frames: 17201/1188; of 10 frames: 8757/474;
+      - no end before 150 ms in the pulse: 25576/1967; before 300 ms: 22628/5281;
+      - an end threshold half-way between the event's mean and the tracked low level (the higher
+        of that and half the mean): 17656/4323; with 8-frame smoothing: 20902/2684.
+
+      Each loses right symbols. The debounce, the hold and the higher threshold end later or not
+      at all: at low contrast the low level holds the event open, it passes 1100 ms and is
+      rejected, and erasures rise. The smoothing's loss is not traced. A step fit of the end alone, from the event's own start, on raw energy,
+      gave 27550/1207, but wrong rose on run90g seg2 (167 -> 180).
 - `recovery_tick_seen` in `recovery_state_t` is written but never read since the holdover change
   (recovery re-locks on a marker on the held phase alone).
 - **Stream times are one type, `wwv_time_ms_t`, a double of milliseconds (fix/wwv-time-type),**
@@ -792,6 +902,18 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
   `bcd_window_note_edge()`. The old static `close_window()` in `bcd_correlator.c` (destroy path)
   does not use the edge.
 - `wwv_live` gained `-F` / `--frames FILE` (BTIME detector state per frame, 9 float32).
+- **BTIME events are held for the step fit (fix/wwv-btime-lowcontrast).** `struct
+  bcd_time_detector` (`include/detection/bcd_internal.h`) gained `log_energy`, `pending`,
+  `pending_head` and `pending_count`, and the new `bcd_time_pending_t`. An event whose edge width
+  is at most `BCD_TIME_FIT_EDGE_MAX_MS` reaches the callback 900 ms after its start (5.12 ms
+  frames: 176), not at its end. A fitted event's `timestamp_ms` is the box's rise, not the frame
+  that crossed the start threshold. The `[BCD_TIME] Pulse` line, the CSV row and the
+  `TELEM_BCDS` TIME line carry the reported width and go out when the callback does. The
+  `--frames` record's pulse column now holds the width on the frame where the event is reported
+  (`apps/wwv_live.c`, `write_frame()`). `WINDOW_CLOSE_LATENCY_MS` is 1110 ms (was 1100), so a
+  window closes 10 ms later. `BCD_TIME_FIT_CONTRAST_MAX` can be set on the compiler line; 0
+  disables the fit. `tests/air/replay_events` prints a `BCDWIN silent= late_events= broken=`
+  line after its `PHASE` line.
 - `wwv_td_config_t` gained `p01_pessimistic`, `p01_prior_weight` and `confirm_looks`. A caller
   that fills the struct by hand must set them; `wwv_td_default_config()` does. `BCDS,FRAME`'s
   p01 is the nominal model's.
@@ -1006,6 +1128,8 @@ captures in `~/wwv-capture`. "plain" is carrier at DC with no AGC; "agc" adds th
 
 ## Commit message corrections
 
+- "BCD time detector: width from a step fit at low contrast" says start times are unchanged. The
+  next commit changes that: a fitted event starts at the box's rise.
 - "BCD time detector: a start must clear 2.37 times the low level, measured after each pulse"
   quotes run90f's "75 of 80 sampled from the noise term" and "threshold 1.40 x the low level"
   from the first 138 s, next to counts from the first 1175 s. Over 1175 s, 1010 of the 1036

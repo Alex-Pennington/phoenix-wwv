@@ -122,7 +122,7 @@ typedef struct {
     FILE *log;
     wwv_detector_observer_t log_obs;
     FILE *frames;               /* --frames: BTIME detector state per frame */
-    float frame_pulse;          /* width of a BTIME event that ended on this frame */
+    float frame_pulse;          /* width of a BTIME event reported on this frame */
 
     bool anchored;
     bool refining;              /* anchor still taking the lower envelope */
@@ -347,7 +347,10 @@ static void print_status(double stream_ms) {
  *   start_threshold (what an idle frame must exceed: the highest of
  *   threshold_high, BCD_TIME_EDGE_FRACTION x pulse_level and
  *   BCD_TIME_START_LOW_RATIO x the low level), pulse_level, pulse
- *   (duration_ms of a BTIME event that ended on this frame, else 0).
+ *   (duration_ms of a BTIME event reported on this frame, else 0: the frame where
+ *   an edge-width event ends, or, for an event held for the step fit, the frame
+ *   176 frames after the frame that crossed its start threshold, with the fitted width;
+ *   BCD_TIME_FIT_* in include/bcd_time_detector.h).
  * The first six fields are tests/air/btime_frames's; its seventh (ref) needs
  * the data-channel samples and is not written here. */
 static void write_frame(const bcd_time_detector_t *bt) {

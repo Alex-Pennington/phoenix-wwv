@@ -33,6 +33,20 @@ extern "C" {
 #define NOISE_FLOOR_MAX         5.0f
 #define MIN_LOW_FRAMES          3       /* Debounce pulse end */
 #define BCD_TIME_COOLDOWN_FRAMES_MAX 64 /* holds a BTIME cooldown (39 frames) */
+#define BCD_TIME_HIST_FRAMES    256     /* log energy ring: holds a fit window (215 frames) */
+#define BCD_TIME_PENDING_MAX    8       /* events held for their fit window */
+
+/* A valid BTIME event held until its fit window has run (BCD_TIME_FIT_SPAN_MS) */
+typedef struct {
+    uint64_t start_frame;
+    uint64_t release_frame;     /* report it once this frame has run */
+    float duration_ms;          /* edge width */
+    bool fit;                   /* the width comes from the step fit if it passes */
+    float peak_energy;
+    float noise_floor;
+    float snr_db;
+    int pulse_num;
+} bcd_time_pending_t;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -81,6 +95,10 @@ struct bcd_time_detector {
     float cooldown_energy[BCD_TIME_COOLDOWN_FRAMES_MAX]; /* this cooldown's frames so far */
     int cooldown_energy_frames; /* how many frames cooldown_energy holds */
     float start_threshold;      /* what an idle frame must exceed to start an event */
+    float log_energy[BCD_TIME_HIST_FRAMES]; /* log energy of frame f at f % BCD_TIME_HIST_FRAMES */
+    bcd_time_pending_t pending[BCD_TIME_PENDING_MAX]; /* FIFO, start order */
+    int pending_head;
+    int pending_count;
 
     /* Phase 9: Minimum duration validation */
     int consecutive_low_frames;

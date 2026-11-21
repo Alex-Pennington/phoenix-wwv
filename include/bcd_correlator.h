@@ -149,7 +149,8 @@ void bcd_correlator_freq_event(bcd_correlator_t *corr,
 /**
  * Advance windows by stream time. Call it from the same loop as
  * sync_detector_periodic_check(), after it, with the same clock.
- * A window is closed once every event for it has arrived (its end + 1100 ms).
+ * A window is closed once every event for it has arrived (its end +
+ * WINDOW_CLOSE_LATENCY_MS, 1110 ms).
  * A second that sync covered as LOCKED from its window's start and that held
  * no BCD event is then emitted as BCD_CORR_SYM_NONE, source "NONE": an erasure.
  * A second with no symbol at all was not locked. Without this call, windows

@@ -42,13 +42,18 @@ static void on_bt(const bcd_time_event_t *e, void *u) {
     evs[nev++] = (ev_t){ e->timestamp_ms, e->duration_ms, at };
 }
 
-/* The time replay_events delivers a detector event line at (BFREQ at=, TICK and
- * MARK t=, TMARK trail=); 0 for the lines it does not read. */
+/* The time replay_events delivers a detector event line at (BFREQ at=, TICK,
+ * MARK and CANDM t=, TMARK trail=, CANDT end=); 0 for the lines it does not
+ * time. Every timed line counts: a held BTIME event placed after a later
+ * candidate line would reach replay_events after it had advanced past that
+ * candidate, and past the close of the event's window. */
 static int line_time(const char *l, double *out) {
     const char *key = NULL;
     if (strncmp(l, "BFREQ ", 6) == 0) key = " at=";
-    else if (strncmp(l, "TICK ", 5) == 0 || strncmp(l, "MARK ", 5) == 0) key = " t=";
+    else if (strncmp(l, "TICK ", 5) == 0 || strncmp(l, "MARK ", 5) == 0 ||
+             strncmp(l, "CANDM ", 6) == 0) key = " t=";
     else if (strncmp(l, "TMARK ", 6) == 0) key = " trail=";
+    else if (strncmp(l, "CANDT ", 6) == 0) key = " end=";
     const char *p = key ? strstr(l, key) : NULL;
     if (!p) return 0;
     *out = atof(p + strlen(key));

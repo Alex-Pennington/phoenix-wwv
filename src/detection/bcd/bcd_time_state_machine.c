@@ -56,6 +56,120 @@ static float median_of(float *v, int n) {
     return (n & 1) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
 }
 
+/* The step fit (BCD_TIME_FIT_* in bcd_time_detector.h) over the log energy of
+ * frames [sf - pre, sf + span). Returns the box's width in ms, or -1 when the
+ * window is not held or no box rises above the outside level; *contrast gets
+ * exp(inside - outside mean log energy), *rise the box's rise in frames from sf. */
+static float fit_width(const bcd_time_detector_t *td, uint64_t sf, float *contrast, int *rise) {
+    const int pre = MS_TO_FRAMES(BCD_TIME_FIT_PRE_MS);
+    const int span = MS_TO_FRAMES(BCD_TIME_FIT_SPAN_MS);
+    const int rise_max = MS_TO_FRAMES(BCD_TIME_FIT_RISE_MAX_MS);
+    const int min_width = (int)(BCD_TIME_FIT_MIN_WIDTH_MS / FRAME_DURATION_MS);
+    const int n = pre + span;
+    double ps[BCD_TIME_HIST_FRAMES + 1];
+
+    if (sf < (uint64_t)pre + 1 || n > BCD_TIME_HIST_FRAMES) return -1.0f;
+    uint64_t b0 = sf - pre;
+    ps[0] = 0.0;
+    for (int i = 0; i < n; i++) {
+        ps[i + 1] = ps[i] + td->log_energy[(b0 + i) % BCD_TIME_HIST_FRAMES];
+    }
+    /* 1/k for every box and outside length: no division in the loops below */
+    double inv[BCD_TIME_HIST_FRAMES + 1];
+    inv[0] = 0.0;
+    for (int k = 1; k <= n; k++) inv[k] = 1.0 / k;
+
+    /* One pass over every box [r, e). The best with its rise at most rise_max
+     * frames after the start is the fit. The best with its rise anywhere: one
+     * rising more than BCD_TIME_FIT_LATE_RISE_MS after the latest rise allowed
+     * means the event started before the pulse (on the low level), not at its
+     * rise. */
+    double tot = ps[n], best = -1.0, bh = 0.0, bl = 0.0, fb = -1.0;
+    int br = -1, be = -1, fr = -1;
+    for (int r = 0; r < n - min_width; r++) {
+        bool held = r <= pre + rise_max;
+        for (int e = r + min_width; e <= n - BCD_TIME_FIT_TAIL_FRAMES; e++) {
+            double si = ps[e] - ps[r], so = tot - si;
+            int ni = e - r, no = n - ni;
+            double h = si * inv[ni], l = so * inv[no];
+            if (h <= l) continue;
+            double f = si * h + so * l;   /* least squares: max of this */
+            if (fb < 0.0 || f > fb) { fb = f; fr = r; }
+            if (held && (best < 0.0 || f > best)) { best = f; br = r; be = e; bh = h; bl = l; }
+        }
+    }
+    if (br < 0) return -1.0f;
+    if (fr > pre + rise_max + MS_TO_FRAMES(BCD_TIME_FIT_LATE_RISE_MS)) return -1.0f;
+
+    *contrast = (float)exp(bh - bl);
+    *rise = br - pre;
+    return (be - br) * FRAME_DURATION_MS;
+}
+
+/* Print, log and call back one valid event */
+static void report_event(bcd_time_detector_t *td, const bcd_time_pending_t *p) {
+    uint64_t start_frame = p->start_frame;
+    float duration_ms = p->duration_ms;
+
+    if (p->fit) {
+        float contrast = 0.0f;
+        int rise = 0;
+        float w = fit_width(td, p->start_frame, &contrast, &rise);
+        if (w > 0.0f && contrast >= BCD_TIME_FIT_CONTRAST_MIN &&
+            contrast < BCD_TIME_FIT_CONTRAST_MAX) {
+            duration_ms = w + BCD_TIME_FIT_OFFSET_MS;
+            start_frame = (uint64_t)((int64_t)p->start_frame + rise);
+        }
+    }
+    wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(start_frame);
+
+    printf("[BCD_TIME] Pulse #%d at %.1fms  dur=%.0fms  SNR=%.1fdB\n",
+           p->pulse_num, timestamp_ms, duration_ms, p->snr_db);
+
+    /* CSV logging and telemetry */
+    char time_str[16];
+    bcd_get_wall_time_str(td->start_time, timestamp_ms, time_str, sizeof(time_str));
+
+    if (td->csv_file) {
+        fprintf(td->csv_file, "%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f\n",
+                time_str, timestamp_ms, p->pulse_num,
+                p->peak_energy, duration_ms,
+                p->noise_floor, p->snr_db);
+        fflush(td->csv_file);
+    }
+
+    /* UDP telemetry */
+    telem_sendf(TELEM_BCDS, "TIME,%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f",
+                time_str, timestamp_ms, p->pulse_num,
+                p->peak_energy, duration_ms,
+                p->noise_floor, p->snr_db);
+
+    if (td->callback) {
+        bcd_time_event_t event = {
+            .timestamp_ms = timestamp_ms,
+            .duration_ms = duration_ms,
+            .peak_energy = p->peak_energy,
+            .noise_floor = p->noise_floor,
+            .snr_db = p->snr_db
+        };
+        td->callback(&event, td->callback_user_data);
+    }
+}
+
+/* Report held events, in start order, whose fit window has run by this frame;
+ * with force, the oldest one regardless (the queue is full) */
+static void release_pending(bcd_time_detector_t *td, uint64_t frame, bool force) {
+    while (td->pending_count > 0) {
+        bcd_time_pending_t *p = &td->pending[td->pending_head];
+        if (!force && p->release_frame > frame) break;
+        if (force) p->fit = false;   /* its window has not run */
+        report_event(td, p);
+        td->pending_head = (td->pending_head + 1) % BCD_TIME_PENDING_MAX;
+        td->pending_count--;
+        force = false;
+    }
+}
+
 float bcd_time_calculate_bucket_energy(bcd_time_detector_t *td) {
     return fft_processor_get_bucket_energy(td->fft, BCD_TIME_TARGET_FREQ_HZ, BCD_TIME_BANDWIDTH_HZ);
 }
@@ -63,6 +177,9 @@ float bcd_time_calculate_bucket_energy(bcd_time_detector_t *td) {
 void bcd_time_run_state_machine(bcd_time_detector_t *td) {
     float energy = td->current_energy;
     uint64_t frame = td->frame_count;
+
+    /* the step fit's history (BCD_TIME_FIT_*) */
+    td->log_energy[frame % BCD_TIME_HIST_FRAMES] = logf(energy > 1e-9f ? energy : 1e-9f);
 
     /* Warmup phase - fast adaptation to establish baseline */
     if (!td->warmup_complete) {
@@ -149,35 +266,12 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
             if (td->consecutive_low_frames >= MIN_LOW_FRAMES) {
                 /* Pulse ended - check validity */
                 float duration_ms = td->pulse_duration_frames * FRAME_DURATION_MS;
-                wwv_time_ms_t timestamp_ms = TIME_FRAMES_TO_MS(td->pulse_start_frame);
                 float snr_db = 10.0f * log10f(td->pulse_peak_energy / td->noise_floor);
 
                 if (duration_ms >= BCD_TIME_PULSE_MIN_MS &&
                     duration_ms <= BCD_TIME_PULSE_MAX_MS) {
                     /* Valid pulse! */
                     td->pulses_detected++;
-
-                    printf("[BCD_TIME] Pulse #%d at %.1fms  dur=%.0fms  SNR=%.1fdB\n",
-                           td->pulses_detected, timestamp_ms, duration_ms, snr_db);
-
-                    /* CSV logging and telemetry */
-                    char time_str[16];
-                    bcd_get_wall_time_str(td->start_time, timestamp_ms, time_str, sizeof(time_str));
-
-                    if (td->csv_file) {
-                        fprintf(td->csv_file, "%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f\n",
-                                time_str, timestamp_ms, td->pulses_detected,
-                                td->pulse_peak_energy, duration_ms,
-                                td->noise_floor, snr_db);
-                        fflush(td->csv_file);
-                    }
-
-                    /* UDP telemetry */
-                    telem_sendf(TELEM_BCDS, "TIME,%s,%.1f,%d,%.6f,%.0f,%.6f,%.1f",
-                                time_str, timestamp_ms, td->pulses_detected,
-                                td->pulse_peak_energy, duration_ms,
-                                td->noise_floor, snr_db);
-
                     td->last_pulse_frame = td->pulse_start_frame;
 
                     /* Track the pulse level for the next start threshold */
@@ -187,17 +281,29 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
                         : level;
                     td->last_valid_frame = frame;
 
-                    /* Callback */
-                    if (td->callback) {
-                        bcd_time_event_t event = {
-                            .timestamp_ms = timestamp_ms,
-                            .duration_ms = duration_ms,
-                            .peak_energy = td->pulse_peak_energy,
-                            .noise_floor = td->noise_floor,
-                            .snr_db = snr_db
-                        };
-                        td->callback(&event, td->callback_user_data);
+                    /* Hold it for the step fit (BCD_TIME_FIT_*), in start order */
+                    if (td->pending_count == BCD_TIME_PENDING_MAX) {
+                        release_pending(td, frame, true);
                     }
+                    uint64_t sf = td->pulse_start_frame;
+                    bool fit = duration_ms <= BCD_TIME_FIT_EDGE_MAX_MS &&
+                               sf >= (uint64_t)MS_TO_FRAMES(BCD_TIME_FIT_PRE_MS) + 1;
+                    uint64_t release = frame;
+                    if (fit && sf + (uint64_t)MS_TO_FRAMES(BCD_TIME_FIT_SPAN_MS) > release) {
+                        release = sf + (uint64_t)MS_TO_FRAMES(BCD_TIME_FIT_SPAN_MS);
+                    }
+                    int k = (td->pending_head + td->pending_count) % BCD_TIME_PENDING_MAX;
+                    td->pending[k] = (bcd_time_pending_t){
+                        .start_frame = sf,
+                        .release_frame = release,
+                        .duration_ms = duration_ms,
+                        .fit = fit,
+                        .peak_energy = td->pulse_peak_energy,
+                        .noise_floor = td->noise_floor,
+                        .snr_db = snr_db,
+                        .pulse_num = td->pulses_detected
+                    };
+                    td->pending_count++;
                 } else {
                     /* Rejected pulse */
                     td->pulses_rejected++;
@@ -236,4 +342,7 @@ void bcd_time_run_state_machine(bcd_time_detector_t *td) {
             }
             break;
     }
+
+    /* Report held events whose fit window has run */
+    release_pending(td, frame, false);
 }
