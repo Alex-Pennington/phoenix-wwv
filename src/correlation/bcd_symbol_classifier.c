@@ -53,6 +53,12 @@ bcd_corr_symbol_t bcd_symbol_classify_duration(float duration_ms, int second) {
     return bcd_symbol_is_valid_p_position(second) ? BCD_CORR_SYM_MARKER : BCD_CORR_SYM_ONE;
 }
 
+bcd_corr_symbol_t bcd_symbol_classify_trailing(float width_ms, int second) {
+    bcd_corr_symbol_t sym = bcd_symbol_classify_duration(width_ms, second);
+    if (sym == BCD_CORR_SYM_ONE && width_ms <= TRAIL_ZERO_MAX_MS) sym = BCD_CORR_SYM_ZERO;
+    return sym;
+}
+
 float bcd_window_estimate_pulse_duration(bcd_correlator_t *corr) {
     /* Each event carries its own measured pulse width. With several events in
      * one window, the first is the one nearest the second's start, where the

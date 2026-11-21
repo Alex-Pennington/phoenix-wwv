@@ -90,6 +90,21 @@ void wwv_detector_manager_process_detector_sample(wwv_detector_manager_t *mgr,
         if (mgr->sync_detector) sync_detector_periodic_check(mgr->sync_detector, now);
         if (mgr->bcd_correlator) bcd_correlator_periodic_check(mgr->bcd_correlator, now);
         if (mgr->time_decoder) wwv_time_decoder_periodic(mgr->time_decoder, now);
+        /* Tick timing gate: on while sync is LOCKED, its epoch the held phase.
+         * Needs the sync rule that ignores a candidate's start reading for a
+         * whole-second loss: a gated run starts on a tick (NOTES.md, Detection). */
+        if (mgr->sync_detector && mgr->tick_detector) {
+            frame_time_t ft = sync_detector_get_frame_time(mgr->sync_detector);
+            bool locked = (ft.state == SYNC_LOCKED);
+            if (locked) {
+                float ep = fmodf(ft.second_start_ms, 1000.0f);
+                if (ep < 0.0f) ep += 1000.0f;
+                if (fabsf(ep - tick_detector_get_epoch(mgr->tick_detector)) > 0.5f)
+                    tick_detector_set_epoch_with_source(mgr->tick_detector, ep, EPOCH_SOURCE_MARKER, ft.confidence);
+            }
+            if (locked != tick_detector_is_gating_enabled(mgr->tick_detector))
+                tick_detector_set_gating_enabled(mgr->tick_detector, locked);
+        }
     }
     
     mgr->detector_samples++;
